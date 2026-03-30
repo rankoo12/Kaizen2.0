@@ -1,0 +1,23 @@
+# Worker container — includes a full Chromium installation via the official
+# Playwright Docker image. The tag must match the playwright version in package.json.
+#
+# ─── Build stage ──────────────────────────────────────────────────────────────
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci
+COPY tsconfig.json ./
+COPY src ./src
+RUN npm run build
+
+# ─── Production stage ─────────────────────────────────────────────────────────
+# mcr.microsoft.com/playwright ships with all browser dependencies pre-installed.
+FROM mcr.microsoft.com/playwright:v1.49.0-noble AS production
+WORKDIR /app
+ENV NODE_ENV=production
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY --from=builder /app/dist ./dist
+# pwuser is the non-root user defined in the Playwright base image.
+USER pwuser
+CMD ["node", "dist/workers/worker.js"]

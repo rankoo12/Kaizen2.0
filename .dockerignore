@@ -1,0 +1,13 @@
+node_modules/
+dist/
+.env
+.env.*
+*.log
+coverage/
+.nyc_output/
+.git/
+.gitignore
+docs/
+test-results/
+playwright-report/
+*.md

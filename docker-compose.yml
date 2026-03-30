@@ -1,0 +1,41 @@
+version: "3.9"
+
+# Local development infrastructure only.
+# The API and workers run outside Docker in dev (npm run dev / npm run dev:worker).
+# Use this to spin up Postgres and Redis with a single command: docker compose up -d
+
+services:
+  postgres:
+    # pgvector/pgvector includes the pgvector extension — available as a fallback
+    # vector store in Phase 2 (pgvector) before Pinecone is integrated.
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: kaizen
+      POSTGRES_PASSWORD: kaizen
+      POSTGRES_DB: kaizen
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kaizen -d kaizen"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: redis-server --appendonly yes
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres_data:
+  redis_data:
