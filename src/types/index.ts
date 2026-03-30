@@ -37,11 +37,15 @@ export type StepAST = {
 // ─── DOM Pruning ─────────────────────────────────────────────────────────────
 
 export type CandidateNode = {
+  /** Execution tracking ID injected directly into the live DOM for zero-guesswork location */
+  kaizenId?: string;
   role: string;
   /** Accessible name from the AX tree. */
   name: string;
   cssSelector: string;
   xpath: string;
+  /** Center coordinates for Playwright native clicks */
+  centerPoint?: { x: number; y: number };
   /** id, class, placeholder, aria-label, data-testid, etc. */
   attributes: Record<string, string>;
   textContent: string;
