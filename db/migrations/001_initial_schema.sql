@@ -253,7 +253,7 @@ CREATE INDEX idx_step_results_run
   ON step_results (run_id);
 
 CREATE INDEX idx_billing_events_tenant_month
-  ON billing_events (tenant_id, date_trunc('month', created_at));
+  ON billing_events (tenant_id, created_at);
 
 CREATE INDEX idx_healing_events_tenant
   ON healing_events (tenant_id, created_at);
