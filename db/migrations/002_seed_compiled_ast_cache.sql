@@ -16,6 +16,16 @@
 -- from the calling context and the table's primary key respectively.
 -- =============================================================================
 
+-- ─── TABLE ───────────────────────────────────────────────────────────────────
+-- Global dictionary — no tenant_id because linguistic mappings contain no PII.
+-- Any tenant compiling "click submit" gets the same AST.
+
+CREATE TABLE IF NOT EXISTS compiled_ast_cache (
+  content_hash  TEXT PRIMARY KEY,
+  ast_json      JSONB NOT NULL,
+  created_at    TIMESTAMPTZ DEFAULT now()
+);
+
 -- ─── PRESS KEY ────────────────────────────────────────────────────────────────
 -- Most valuable seeds: press_key actions are fully deterministic. No element
 -- resolution needed, no ambiguity, universal across every test suite.
