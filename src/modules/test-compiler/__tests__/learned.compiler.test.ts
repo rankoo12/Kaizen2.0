@@ -1,17 +1,26 @@
 import { LearnedCompiler } from '../learned.compiler';
 import type { ILLMGateway } from '../../llm-gateway/interfaces';
 import type { IObservability } from '../../observability/interfaces';
-import type { StepAST, CandidateNode } from '../../../types';
+import type { StepAST } from '../../../types';
+
+// Mock the DB pool so tests run without a real Postgres connection
+jest.mock('../../../db/pool', () => ({
+  getPool: jest.fn().mockReturnValue({
+    query: jest.fn(),
+  }),
+}));
+
+import { getPool } from '../../../db/pool';
 
 describe('LearnedCompiler', () => {
-  let mockLLMGateway: ILLMGateway;
-  let mockObservability: IObservability;
+  let mockLLMGateway: jest.Mocked<ILLMGateway>;
+  let mockObservability: jest.Mocked<IObservability>;
+  let mockQuery: jest.Mock;
   let compiler: LearnedCompiler;
 
   beforeEach(() => {
     mockLLMGateway = {
       compileStep: jest.fn(),
-      // Adding resolveElement to fulfill the ILLMGateway interface strictly
       resolveElement: jest.fn(),
     };
 
@@ -22,49 +31,120 @@ describe('LearnedCompiler', () => {
       histogram: jest.fn(),
     };
 
+    // Reset the DB mock before each test
+    mockQuery = jest.fn();
+    (getPool as jest.Mock).mockReturnValue({ query: mockQuery });
+
     compiler = new LearnedCompiler(mockLLMGateway, mockObservability);
   });
 
-  it('compiles pre-seeded standard phrases instantly from cache without calling LLM', async () => {
-    const rawText = "search for cats";
-    const ast = await compiler.compile(rawText);
+  // ─── L2: DB cache hit ──────────────────────────────────────────────────────
 
-    expect(ast.action).toBe('type');
-    expect(ast.value).toBe('cats');
-    expect(ast.targetDescription).toBe('search box');
-    expect(ast.contentHash).toBeDefined();
+  it('returns from DB cache and skips LLM when compiled_ast_cache has the entry', async () => {
+    const rawText = 'click the submit button';
+    const storedAst = { action: 'click', targetDescription: 'submit button', value: null, url: null };
 
-    // Verify LLM was bypassed
+    // Simulate DB returning a seeded entry
+    mockQuery.mockResolvedValueOnce({ rows: [{ ast_json: storedAst }] });
+
+    const result = await compiler.compile(rawText);
+
+    expect(result.action).toBe('click');
+    expect(result.targetDescription).toBe('submit button');
+    expect(result.rawText).toBe(rawText);
+    expect(result.contentHash).toBeDefined();
     expect(mockLLMGateway.compileStep).not.toHaveBeenCalled();
-    expect(mockObservability.increment).toHaveBeenCalledWith('compiler.cache_hit');
+    expect(mockObservability.increment).toHaveBeenCalledWith('compiler.cache_hit', { source: 'db' });
   });
 
-  it('calls LLMGateway on Cache Misses, then remembers it for subsequent identical calls', async () => {
-    const customText = "smash the subscribe button";
-    
-    const fakeLLMAst: StepAST = {
+  // ─── L1: memory cache hit (second call) ───────────────────────────────────
+
+  it('serves from memory cache on the second call — no DB or LLM hit', async () => {
+    const rawText = 'click the submit button';
+    const storedAst = { action: 'click', targetDescription: 'submit button', value: null, url: null };
+
+    // First call hits DB
+    mockQuery.mockResolvedValueOnce({ rows: [{ ast_json: storedAst }] });
+    await compiler.compile(rawText);
+
+    // Second call — DB query should NOT be called again
+    const result = await compiler.compile(rawText);
+
+    expect(result.action).toBe('click');
+    expect(mockQuery).toHaveBeenCalledTimes(1); // only the first call queries DB
+    expect(mockObservability.increment).toHaveBeenLastCalledWith('compiler.cache_hit', { source: 'memory' });
+  });
+
+  // ─── L3: LLM fallback on full miss ────────────────────────────────────────
+
+  it('calls LLM when both memory and DB miss, then persists the result', async () => {
+    const rawText = 'smash the subscribe button';
+    const llmAst: StepAST = {
       action: 'click',
       targetDescription: 'subscribe button',
       value: null,
       url: null,
-      rawText: customText,
-      contentHash: 'hash-stub' // Overwritten by compiler anyway
+      rawText,
+      contentHash: 'stub',
     };
 
-    (mockLLMGateway.compileStep as jest.Mock).mockResolvedValueOnce(fakeLLMAst);
+    // DB returns empty (cache miss)
+    mockQuery
+      .mockResolvedValueOnce({ rows: [] })   // lookupFromDB
+      .mockResolvedValueOnce({ rows: [] });  // persistToDB
 
-    // Call 1: Cache Miss
-    const ast1 = await compiler.compile(customText);
-    expect(ast1.action).toBe('click');
-    expect(ast1.targetDescription).toBe('subscribe button');
+    mockLLMGateway.compileStep.mockResolvedValueOnce(llmAst);
+
+    const result = await compiler.compile(rawText);
+
+    expect(result.action).toBe('click');
+    expect(result.targetDescription).toBe('subscribe button');
     expect(mockLLMGateway.compileStep).toHaveBeenCalledTimes(1);
     expect(mockObservability.increment).toHaveBeenCalledWith('compiler.cache_miss');
 
-    // Call 2: Cache Hit
-    const ast2 = await compiler.compile(customText);
-    expect(ast2).toEqual(ast1); // Should return EXACT structure from memory dictionary
-    
-    // Crucially, it did NOT call the LLM a second time for the exact same phrasing!
-    expect(mockLLMGateway.compileStep).toHaveBeenCalledTimes(1); 
+    // Verify it persisted to DB
+    expect(mockQuery).toHaveBeenCalledTimes(2);
+    const persistCall = mockQuery.mock.calls[1];
+    expect(persistCall[0]).toContain('INSERT INTO compiled_ast_cache');
+  });
+
+  // ─── DB failure resilience ─────────────────────────────────────────────────
+
+  it('falls back to LLM gracefully when DB is unavailable', async () => {
+    const rawText = 'click the buy now button';
+    const llmAst: StepAST = {
+      action: 'click',
+      targetDescription: 'buy now button',
+      value: null,
+      url: null,
+      rawText,
+      contentHash: 'stub',
+    };
+
+    // DB throws (connection refused)
+    mockQuery.mockRejectedValue(new Error('ECONNREFUSED'));
+    mockLLMGateway.compileStep.mockResolvedValueOnce(llmAst);
+
+    const result = await compiler.compile(rawText);
+
+    expect(result.action).toBe('click');
+    expect(mockLLMGateway.compileStep).toHaveBeenCalledTimes(1);
+    expect(mockObservability.log).toHaveBeenCalledWith('warn', 'compiler.db_lookup_failed', expect.any(Object));
+  });
+
+  // ─── compileMany ───────────────────────────────────────────────────────────
+
+  it('compiles multiple steps and returns them in order', async () => {
+    const steps = ['press enter', 'scroll down'];
+
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ ast_json: { action: 'press_key', value: 'Enter', targetDescription: null, url: null } }] })
+      .mockResolvedValueOnce({ rows: [{ ast_json: { action: 'scroll', targetDescription: 'bottom of page', value: null, url: null } }] });
+
+    const results = await compiler.compileMany(steps);
+
+    expect(results).toHaveLength(2);
+    expect(results[0].action).toBe('press_key');
+    expect(results[1].action).toBe('scroll');
   });
 });
