@@ -1,31 +1,173 @@
 /**
- * Worker entry point — separate Node.js process.
+ * Kaizen worker process.
  *
- * Workers are stateless. They consume jobs from the BullMQ queue (backed by Redis),
- * spin up an isolated Playwright BrowserContext per run, and communicate results
- * back only through the internal API and the job queue.
+ * Consumes run jobs from the BullMQ queue, executes each step against a live
+ * Playwright browser, and writes the final run status back to Postgres.
  *
- * Workers do NOT have direct access to Postgres, Redis (beyond the job queue),
- * or the vector DB. All persistence goes through the API layer.
- *
- * Phase 1 stub — BullMQ queue setup and job handlers will be added in Phase 1.
+ * Phase 1 simplifications (noted for Phase 2):
+ *  - Worker writes directly to Postgres. Phase 2 routes all persistence through
+ *    the internal API to enforce the isolation boundary from spec §15.
+ *  - No step_results rows — the full test_suite → test_case → test_steps hierarchy
+ *    is not created for ad-hoc runs yet. Only run.status is updated.
+ *  - No tenant concurrency control (Redis INCR/DECR gate from spec §15).
+ *  - One browser per worker process; one context per job (spec-correct isolation).
  */
-import dotenv from 'dotenv';
 
+import dotenv from 'dotenv';
 dotenv.config();
 
-const log = (level: 'info' | 'error', msg: string, data?: Record<string, unknown>) =>
-  process.stdout.write(
-    JSON.stringify({ level, msg, timestamp: new Date().toISOString(), ...data }) + '\n',
+import { Worker } from 'bullmq';
+import { chromium } from 'playwright';
+import pino from 'pino';
+import { PinoObservability } from '../modules/observability/pino.observability';
+import { PostgresBillingMeter } from '../modules/billing-meter/postgres.billing-meter';
+import { OpenAIGateway } from '../modules/llm-gateway/openai.gateway';
+import { PlaywrightDOMPruner } from '../modules/dom-pruner/playwright.dom-pruner';
+import { LLMElementResolver } from '../modules/element-resolver/llm.element-resolver';
+import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
+import { getPool, closePool } from '../db/pool';
+import { createRedisConnection, RUNS_QUEUE_NAME } from '../queue';
+import type { RunJobPayload } from '../queue';
+import type { StepAST } from '../types';
+
+// ─── Module Setup ─────────────────────────────────────────────────────────────
+
+const logger = pino({
+  level: process.env.LOG_LEVEL ?? 'info',
+  ...(process.env.NODE_ENV === 'development' && {
+    transport: { target: 'pino-pretty' },
+  }),
+});
+
+const obs = new PinoObservability(logger);
+const billing = new PostgresBillingMeter(obs);
+const llm = new OpenAIGateway(billing, obs);
+const domPruner = new PlaywrightDOMPruner();
+const resolver = new LLMElementResolver(domPruner, llm, obs);
+const engine = new PlaywrightExecutionEngine(obs);
+
+// ─── DB Helpers ───────────────────────────────────────────────────────────────
+
+async function markRunRunning(runId: string): Promise<void> {
+  await getPool().query(
+    `UPDATE runs SET status = 'running', started_at = now() WHERE id = $1`,
+    [runId],
   );
+}
 
-log('info', 'Kaizen worker process starting');
+async function markRunComplete(runId: string, status: 'passed' | 'failed'): Promise<void> {
+  await getPool().query(
+    `UPDATE runs SET status = $1, completed_at = now() WHERE id = $2`,
+    [status, runId],
+  );
+}
 
-const shutdown = (signal: string) => {
-  log('info', `Worker received ${signal}, shutting down gracefully`);
-  // Phase 1: close BullMQ worker and Playwright browser here before exiting.
+// ─── Job Processor ────────────────────────────────────────────────────────────
+
+async function processRun(payload: RunJobPayload): Promise<void> {
+  const { runId, tenantId, compiledSteps, baseUrl } = payload;
+  const span = obs.startSpan('worker.processRun', { runId, tenantId });
+
+  await markRunRunning(runId);
+  logger.info({ event: 'run_started', runId, tenantId, stepCount: compiledSteps.length });
+
+  const browser = await chromium.launch({ headless: true });
+  // One isolated BrowserContext per run — clean cookies, no cached state
+  const context = await browser.newContext({ baseURL: baseUrl });
+  const page = await context.newPage();
+
+  let runPassed = true;
+  const domain = new URL(baseUrl).hostname;
+
+  try {
+    for (const step of compiledSteps) {
+      const stepResult = await executeStep(step, page, tenantId, domain);
+
+      if (stepResult === 'failed') {
+        runPassed = false;
+        // Phase 1: log and continue. Phase 3 will invoke HealingEngine here.
+        logger.warn({ event: 'step_failed', runId, action: step.action, rawText: step.rawText });
+      }
+    }
+  } finally {
+    // Always clean up the browser context — even if a step throws unexpectedly
+    await context.close();
+    await browser.close();
+  }
+
+  const finalStatus = runPassed ? 'passed' : 'failed';
+  await markRunComplete(runId, finalStatus);
+
+  obs.increment('worker.run_completed', { status: finalStatus });
+  logger.info({ event: 'run_completed', runId, status: finalStatus });
+  span.end();
+}
+
+async function executeStep(
+  step: StepAST,
+  page: unknown,
+  tenantId: string,
+  domain: string,
+): Promise<'passed' | 'failed'> {
+  const context = { tenantId, domain, page };
+
+  // Resolve selectors (LLM call on miss; early exit for navigate/press_key)
+  const selectorSet = await resolver.resolve(step, context);
+
+  // Execute against live browser
+  const result = await engine.executeStep(step, selectorSet, page);
+
+  // Feed outcome back to the resolver for future confidence scoring
+  if (result.status === 'passed' && result.selectorUsed) {
+    void resolver.recordSuccess(step.contentHash, domain, result.selectorUsed);
+  } else if (result.status === 'failed') {
+    const firstSelector = selectorSet.selectors[0]?.selector ?? '';
+    void resolver.recordFailure(step.contentHash, domain, firstSelector);
+  }
+
+  return result.status;
+}
+
+// ─── BullMQ Worker ────────────────────────────────────────────────────────────
+
+const worker = new Worker<RunJobPayload>(
+  RUNS_QUEUE_NAME,
+  async (job) => {
+    logger.info({ event: 'job_received', jobId: job.id, runId: job.data.runId });
+    try {
+      await processRun(job.data);
+    } catch (err: any) {
+      // Unexpected error (e.g. Playwright launch failure, DB down)
+      // Mark the run as failed so GET /runs/:id doesn't hang in 'queued'
+      logger.error({ event: 'job_error', jobId: job.id, runId: job.data.runId, error: err.message });
+      await markRunComplete(job.data.runId, 'failed').catch(() => {});
+      throw err; // re-throw so BullMQ records the job as failed
+    }
+  },
+  {
+    connection: createRedisConnection(),
+    concurrency: 1, // Phase 1: one run at a time per worker process
+  },
+);
+
+worker.on('completed', (job) => {
+  logger.info({ event: 'job_completed', jobId: job.id });
+});
+
+worker.on('failed', (job, err) => {
+  logger.error({ event: 'job_failed', jobId: job?.id, error: err.message });
+});
+
+// ─── Graceful Shutdown ────────────────────────────────────────────────────────
+
+const shutdown = async (signal: string): Promise<void> => {
+  logger.info({ event: 'shutdown', signal });
+  await worker.close();
+  await closePool();
   process.exit(0);
 };
 
-process.on('SIGTERM', () => shutdown('SIGTERM'));
-process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
+
+logger.info({ event: 'worker_started', queue: RUNS_QUEUE_NAME });

@@ -1,0 +1,212 @@
+{
+  "info": {
+    "name": "Kaizen — Phase 1",
+    "_postman_id": "kaizen-phase1-collection",
+    "description": "Phase 1 Core Loop — NL steps in, browser action out.\n\nOrder of operations:\n1. Health Check — confirm API is up\n2. Seed Dev Tenant — run once to insert the tenant row\n3. POST /runs — enqueue a test run\n4. GET /runs/:id — poll until status is passed/failed\n\nThe collection uses a {{runId}} variable that is automatically captured from the POST /runs response.",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "variable": [
+    {
+      "key": "baseUrl",
+      "value": "http://localhost:3000",
+      "type": "string"
+    },
+    {
+      "key": "tenantId",
+      "value": "00000000-0000-0000-0000-000000000001",
+      "type": "string"
+    },
+    {
+      "key": "runId",
+      "value": "",
+      "type": "string",
+      "description": "Auto-populated by the POST /runs test script"
+    }
+  ],
+  "item": [
+    {
+      "name": "1 — Health Check",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["health"]
+        },
+        "description": "Confirms the API server is up. Expect: { status: 'ok' }"
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('API is healthy', () => {",
+              "  pm.response.to.have.status(200);",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.status).to.eql('ok');",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "2 — Seed Dev Tenant (run once)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/health",
+          "host": ["{{baseUrl}}"],
+          "path": ["health"]
+        },
+        "description": "Postman cannot run raw SQL. Run this command in a terminal instead, then skip this request:\n\ndocker exec -it kaizen20-postgres-1 psql -U kaizen -d kaizen -c \"INSERT INTO tenants (id, name, slug, plan_tier) VALUES ('00000000-0000-0000-0000-000000000001', 'Dev Tenant', 'dev', 'starter') ON CONFLICT DO NOTHING;\"\n\nThis request is just a GET /health placeholder so the collection runs without error."
+      },
+      "response": []
+    },
+    {
+      "name": "3 — POST /runs (YouTube smoke test)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"tenantId\": \"{{tenantId}}\",\n  \"steps\": [\n    \"open youtube\",\n    \"search for cats\",\n    \"press enter\"\n  ],\n  \"baseUrl\": \"https://youtube.com\"\n}",
+          "options": {
+            "raw": { "language": "json" }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/runs",
+          "host": ["{{baseUrl}}"],
+          "path": ["runs"]
+        },
+        "description": "Compiles the NL steps, creates a run record, and enqueues the job. Returns { runId, status: 'queued' }.\n\nThe test script below auto-saves the runId to the collection variable so GET /runs/:id is pre-filled."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Returns 202 with runId', () => {",
+              "  pm.response.to.have.status(202);",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.runId).to.be.a('string');",
+              "  pm.expect(body.status).to.eql('queued');",
+              "  // Auto-save for the GET request below",
+              "  pm.collectionVariables.set('runId', body.runId);",
+              "  console.log('Run enqueued:', body.runId);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "3b — POST /runs (invalid body — validation check)",
+      "request": {
+        "method": "POST",
+        "header": [
+          { "key": "Content-Type", "value": "application/json" }
+        ],
+        "body": {
+          "mode": "raw",
+          "raw": "{\n  \"tenantId\": \"not-a-uuid\",\n  \"steps\": [],\n  \"baseUrl\": \"not-a-url\"\n}",
+          "options": {
+            "raw": { "language": "json" }
+          }
+        },
+        "url": {
+          "raw": "{{baseUrl}}/runs",
+          "host": ["{{baseUrl}}"],
+          "path": ["runs"]
+        },
+        "description": "Sends deliberately bad input to verify Zod validation returns 400."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Returns 400 for invalid input', () => {",
+              "  pm.response.to.have.status(400);",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.error).to.eql('INVALID_REQUEST');",
+              "  pm.expect(body.details).to.be.an('array').that.is.not.empty;",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4 — GET /runs/:id (poll status)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/runs/{{runId}}",
+          "host": ["{{baseUrl}}"],
+          "path": ["runs", "{{runId}}"]
+        },
+        "description": "Poll this until status is 'passed' or 'failed'. The runId is auto-filled from request 3.\n\nExpected progression: queued → running → passed/failed\nTypical duration: 15–30 seconds (LLM calls + browser execution)"
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Returns run record', () => {",
+              "  pm.response.to.have.status(200);",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.id).to.be.a('string');",
+              "  pm.expect(['queued', 'running', 'passed', 'failed']).to.include(body.status);",
+              "  console.log('Run status:', body.status);",
+              "});"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "name": "4b — GET /runs/:id (not found check)",
+      "request": {
+        "method": "GET",
+        "header": [],
+        "url": {
+          "raw": "{{baseUrl}}/runs/00000000-0000-0000-0000-000000000000",
+          "host": ["{{baseUrl}}"],
+          "path": ["runs", "00000000-0000-0000-0000-000000000000"]
+        },
+        "description": "Verifies 404 is returned for a run ID that doesn't exist."
+      },
+      "response": [],
+      "event": [
+        {
+          "listen": "test",
+          "script": {
+            "type": "text/javascript",
+            "exec": [
+              "pm.test('Returns 404 for unknown runId', () => {",
+              "  pm.response.to.have.status(404);",
+              "  const body = pm.response.json();",
+              "  pm.expect(body.error).to.eql('NOT_FOUND');",
+              "});"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

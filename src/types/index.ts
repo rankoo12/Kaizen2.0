@@ -3,7 +3,7 @@
  *
  * These types are the source of truth for cross-module communication.
  * They are derived directly from the interface definitions in Section 6
- * of the master spec (docs/kaizen-spec-v1.md).
+ * of the master spec (docs/kaizen-spec-v2.md).
  *
  * Rule: no module imports another module's implementation.
  *       All cross-module data flows through these types.
@@ -37,11 +37,15 @@ export type StepAST = {
 // ─── DOM Pruning ─────────────────────────────────────────────────────────────
 
 export type CandidateNode = {
+  /** Execution tracking ID injected directly into the live DOM for zero-guesswork location */
+  kaizenId?: string;
   role: string;
   /** Accessible name from the AX tree. */
   name: string;
   cssSelector: string;
   xpath: string;
+  /** Center coordinates for Playwright native clicks */
+  centerPoint?: { x: number; y: number };
   /** id, class, placeholder, aria-label, data-testid, etc. */
   attributes: Record<string, string>;
   textContent: string;

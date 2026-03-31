@@ -1,0 +1,7 @@
+PlaywrightDOMPruner — targetDescription is passed to the browser script but never used. All similarityScore values are hardcoded 1.0. The spec says to run Levenshtein/Jaro-Winkler and return top 20 by score. Right now it returns every interactive element unfiltered. Phase 1 acceptable since the LLM filters anyway, but it means potentially large candidate lists → more tokens → higher cost.
+
+PlaywrightDOMPruner — cssSelector and xpath fields are empty strings on every node. The spec says to compute them. Again, Phase 1 acceptable since the LLM uses data-kaizen-id anyway.
+
+types/index.ts line 9 — still references kaizen-spec-v1.md. Minor.
+
+OpenAIGateway.compileStep — billing events fire for system_global tenant (the hash cache misses). That tenant doesn't exist in the DB, so those inserts will quietly fail and get swallowed by the catch in PostgresBillingMeter. Not a bug that breaks anything, but billing data for compiler cache misses will be silently lost.
