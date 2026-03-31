@@ -9,7 +9,7 @@ export type RunJobPayload = {
   baseUrl: string;
 };
 
-export const RUNS_QUEUE_NAME = 'kaizen:runs';
+export const RUNS_QUEUE_NAME = 'kaizen-runs';
 
 /**
  * Creates a Redis connection configured for BullMQ.

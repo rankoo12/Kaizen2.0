@@ -126,6 +126,7 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
       this.observability.increment('engine.step_passed', { action: 'press_key' });
       return this.passResult(start, null);
     } catch (e: any) {
+      this.observability.log('error', 'engine.press_key_failed', { key: step.value, error: e.message });
       this.observability.increment('engine.step_failed', { action: 'press_key' });
       return this.failResult(start, 'KeyPressError', e.message);
     }
