@@ -3,7 +3,7 @@
  *
  * These types are the source of truth for cross-module communication.
  * They are derived directly from the interface definitions in Section 6
- * of the master spec (docs/kaizen-spec-v1.md).
+ * of the master spec (docs/kaizen-spec-v2.md).
  *
  * Rule: no module imports another module's implementation.
  *       All cross-module data flows through these types.
