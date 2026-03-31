@@ -1,5 +1,7 @@
 import Fastify from 'fastify';
 import dotenv from 'dotenv';
+import { runsRoutes } from './routes/runs';
+import { closePool } from '../db/pool';
 
 dotenv.config();
 
@@ -17,6 +19,18 @@ app.get('/health', async () => ({
   status: 'ok',
   timestamp: new Date().toISOString(),
 }));
+
+void app.register(runsRoutes);
+
+const shutdown = async (signal: string): Promise<void> => {
+  app.log.info({ event: 'shutdown', signal });
+  await app.close();
+  await closePool();
+  process.exit(0);
+};
+
+process.on('SIGTERM', () => void shutdown('SIGTERM'));
+process.on('SIGINT', () => void shutdown('SIGINT'));
 
 const start = async (): Promise<void> => {
   try {
