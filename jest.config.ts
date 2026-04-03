@@ -5,6 +5,7 @@ const config: Config = {
   testEnvironment: 'node',
   roots: ['<rootDir>/src'],
   testMatch: ['**/__tests__/**/*.ts', '**/*.test.ts'],
+  testPathIgnorePatterns: ['/node_modules/', '\\.integration\\.test\\.ts$'],
   collectCoverageFrom: [
     'src/**/*.ts',
     '!src/**/*.d.ts',
