@@ -1,6 +1,8 @@
 import Fastify from 'fastify';
+import fjwt from '@fastify/jwt';
 import dotenv from 'dotenv';
 import { runsRoutes } from './routes/runs';
+import { authRoutes } from './routes/auth';
 import { closePool } from '../db/pool';
 
 dotenv.config();
@@ -14,6 +16,11 @@ const app = Fastify({
   },
 });
 
+// JWT plugin — used by POST /auth/token to issue short-lived session tokens
+void app.register(fjwt, {
+  secret: process.env.JWT_SECRET ?? 'dev-secret-change-in-production',
+});
+
 // Health check — used by load balancers and docker healthcheck
 app.get('/health', async () => ({
   status: 'ok',
@@ -21,6 +28,7 @@ app.get('/health', async () => ({
 }));
 
 void app.register(runsRoutes);
+void app.register(authRoutes);
 
 const shutdown = async (signal: string): Promise<void> => {
   app.log.info({ event: 'shutdown', signal });

@@ -22,6 +22,7 @@ describe('LearnedCompiler', () => {
     mockLLMGateway = {
       compileStep: jest.fn(),
       resolveElement: jest.fn(),
+      generateEmbedding: jest.fn(),
     };
 
     mockObservability = {

@@ -35,4 +35,13 @@ export interface ILLMGateway {
    * Called by LLMCompiler when rule-based parsing confidence is below threshold.
    */
   compileStep(rawText: string, tenantId: string): Promise<StepAST>;
+
+  /**
+   * Generate a 1536-dimensional semantic embedding vector for the given text.
+   * Uses text-embedding-3-small. Called by:
+   *  - LLMElementResolver: to persist step_embedding after resolution
+   *  - CachedElementResolver: to embed the incoming query before pgvector search
+   * This is a separate OpenAI Embeddings API call — not a chat completion.
+   */
+  generateEmbedding(text: string): Promise<number[]>;
 }
