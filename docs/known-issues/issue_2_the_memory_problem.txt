@@ -1,0 +1,40 @@
+The Memory Problem
+HNSW builds an in-RAM graph of all vectors. Each node in the graph stores the vector itself (1536 floats × 4 bytes = ~6KB) plus graph edges to its neighbours (~200 bytes each). The entire index must fit in RAM — it cannot be paged to disk without destroying query performance (a disk-paged HNSW is ~1000× slower).
+
+Two columns × 1536 dimensions:
+
+Rows in selector_cache	RAM per index	Both indexes
+10,000	~90 MB	~180 MB
+100,000	~900 MB	~1.8 GB
+1,000,000	~9 GB	~18 GB
+At scale, 18 GB just for the vector indexes, on top of normal Postgres working memory.
+
+How to Solve It
+Short-term (Phase 2–3, < 100K rows): nothing to do
+The indexes will fit in RAM comfortably. A $100/month Postgres instance with 8GB RAM handles this fine.
+
+Medium-term: partition the table
+
+Don't query the entire selector_cache globally. Partition by tenant_id and only build/query the index for rows belonging to the current tenant. pgvector respects WHERE clauses before the ANN search, so:
+
+
+SELECT * FROM selector_cache
+WHERE tenant_id = $1
+ORDER BY element_embedding <=> $2
+LIMIT 1;
+This means the effective search space per query is 1 tenant's elements, not all elements. Most tenants will have < 10,000 rows — that's trivial RAM.
+
+Long-term: two-tier approach
+
+Keep selector_cache as-is but add a confidence threshold. Only index rows where confidence_score > 0.6 — stale or low-confidence entries are not worth healing from and don't need to be in the index. A background job periodically removes stale rows from the index (or marks them for exclusion). This keeps the index size proportional to active, trusted elements only.
+
+Architectural option: IVFFlat instead of HNSW for large deployments
+
+HNSW is fastest but most RAM-hungry. pgvector also supports IVFFlat — a clustering-based index that divides vectors into buckets. It uses far less RAM (no graph edges) at the cost of slightly lower recall (~95% vs ~99%). For self-healing this tradeoff is fine — a 95% chance of finding the right element via vector is still far better than 0% (which is what broken selectors give you).
+
+
+-- Switch from HNSW to IVFFlat when RAM becomes a constraint
+CREATE INDEX idx_selector_cache_element_vec
+  ON selector_cache USING ivfflat (element_embedding vector_cosine_ops)
+  WITH (lists = 100);  -- tune: sqrt(row_count) is a good starting point
+In short: HNSW until ~500K rows, IVFFlat after that, partition by tenant throughout.
