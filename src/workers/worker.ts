@@ -4,13 +4,15 @@
  * Consumes run jobs from the BullMQ queue, executes each step against a live
  * Playwright browser, and writes the final run status back to Postgres.
  *
- * Phase 1 simplifications (noted for Phase 2):
- *  - Worker writes directly to Postgres. Phase 2 routes all persistence through
- *    the internal API to enforce the isolation boundary from spec §15.
- *  - No step_results rows — the full test_suite → test_case → test_steps hierarchy
- *    is not created for ad-hoc runs yet. Only run.status is updated.
- *  - No tenant concurrency control (Redis INCR/DECR gate from spec §15).
- *  - One browser per worker process; one context per job (spec-correct isolation).
+ * Phase 2 additions:
+ *  - CompositeElementResolver replaces direct LLMElementResolver
+ *  - CachedElementResolver provides L1 Redis + L2 alias + L3/L4 pgvector lookup
+ *  - OpenAIGateway receives Redis instance for prompt dedup cache
+ *
+ * Remaining Phase 1 simplifications:
+ *  - No step_results rows (requires full test hierarchy)
+ *  - No tenant concurrency control (Redis INCR/DECR gate from spec §15)
+ *  - One browser per worker process; one context per job (spec-correct isolation)
  */
 
 import dotenv from 'dotenv';
@@ -24,6 +26,8 @@ import { PostgresBillingMeter } from '../modules/billing-meter/postgres.billing-
 import { OpenAIGateway } from '../modules/llm-gateway/openai.gateway';
 import { PlaywrightDOMPruner } from '../modules/dom-pruner/playwright.dom-pruner';
 import { LLMElementResolver } from '../modules/element-resolver/llm.element-resolver';
+import { CachedElementResolver } from '../modules/element-resolver/cached.element-resolver';
+import { CompositeElementResolver } from '../modules/element-resolver/composite.element-resolver';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
 import { getPool, closePool } from '../db/pool';
 import { createRedisConnection, RUNS_QUEUE_NAME } from '../queue';
@@ -41,9 +45,12 @@ const logger = pino({
 
 const obs = new PinoObservability(logger);
 const billing = new PostgresBillingMeter(obs);
-const llm = new OpenAIGateway(billing, obs);
+const cacheRedis = createRedisConnection();
+const llm = new OpenAIGateway(billing, obs, undefined, cacheRedis);
 const domPruner = new PlaywrightDOMPruner();
-const resolver = new LLMElementResolver(domPruner, llm, obs);
+const llmResolver = new LLMElementResolver(domPruner, llm, obs);
+const cachedResolver = new CachedElementResolver(cacheRedis, llm, obs);
+const resolver = new CompositeElementResolver(cachedResolver, llmResolver, obs);
 const engine = new PlaywrightExecutionEngine(obs);
 
 // ─── DB Helpers ───────────────────────────────────────────────────────────────

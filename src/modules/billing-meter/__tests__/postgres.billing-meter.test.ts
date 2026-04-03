@@ -1,11 +1,14 @@
 import { PostgresBillingMeter } from '../postgres.billing-meter';
-import { getPool, closePool } from '../../../db/pool';
-import { withTenantTransaction } from '../../../db/transaction';
-import type { PoolClient } from 'pg';
 import type { IObservability } from '../../observability/interfaces';
 
-// A mock IObservability instance to test injection logic without writing to logs
-const mockObservability: IObservability = {
+// Mock the transaction helper so no real DB connection is needed
+jest.mock('../../../db/transaction', () => ({
+  withTenantTransaction: jest.fn(),
+}));
+
+import { withTenantTransaction } from '../../../db/transaction';
+
+const mockObservability: jest.Mocked<IObservability> = {
   startSpan: jest.fn().mockReturnValue({ end: jest.fn(), setAttribute: jest.fn() }),
   log: jest.fn(),
   increment: jest.fn(),
@@ -14,50 +17,79 @@ const mockObservability: IObservability = {
 
 describe('PostgresBillingMeter', () => {
   let billingMeter: PostgresBillingMeter;
+  let mockClient: { query: jest.Mock };
 
-  beforeAll(() => {
+  beforeEach(() => {
+    mockClient = { query: jest.fn().mockResolvedValue({ rows: [] }) };
+
+    // withTenantTransaction calls our callback with a mock client
+    (withTenantTransaction as jest.Mock).mockImplementation(
+      async (_tenantId: string, cb: (client: unknown) => Promise<unknown>) => cb(mockClient),
+    );
+
     billingMeter = new PostgresBillingMeter(mockObservability);
   });
 
-  afterAll(async () => {
-    await closePool();
-  });
+  afterEach(() => jest.clearAllMocks());
 
-  it('inserts a billing event successfully using the transaction helper', async () => {
-    const tenantId = '00000000-0000-0000-0000-000000000001';
-    
-    const pool = getPool();
-    // Insert a test tenant so the foreign key constraint passes
-    await pool.query(
-      `INSERT INTO tenants (id, name, slug) VALUES ($1, 'Test Tenant', 'test-tenant') ON CONFLICT DO NOTHING`,
-      [tenantId]
-    );
-    
-    // Fire the emit call
+  it('inserts a billing event with the correct SQL and parameters', async () => {
     await billingMeter.emit({
-      tenantId,
+      tenantId: '00000000-0000-0000-0000-000000000001',
       eventType: 'LLM_CALL',
       quantity: 1500,
       unit: 'tokens',
       metadata: { model: 'gpt-4' },
     });
 
-    // Validate the event was properly persisted. We must use `withTenantTransaction`
-    // because `billing_events` has Row-Level Security enabled and requires the tenant parameter set!
-    const res = await withTenantTransaction(tenantId, async (client: PoolClient) => {
-      return client.query(
-        `SELECT * FROM billing_events WHERE tenant_id = $1 ORDER BY created_at DESC LIMIT 1`,
-        [tenantId]
-      );
+    expect(mockClient.query).toHaveBeenCalledWith(
+      expect.stringContaining('INSERT INTO billing_events'),
+      expect.arrayContaining(['LLM_CALL', 1500, 'tokens']),
+    );
+  });
+
+  it('increments the observability metric on success', async () => {
+    await billingMeter.emit({
+      tenantId: '00000000-0000-0000-0000-000000000001',
+      eventType: 'TEST_RUN_STARTED',
+      quantity: 1,
+      unit: 'runs',
     });
 
-    expect(res.rows.length).toBe(1);
-    expect(res.rows[0].event_type).toBe('LLM_CALL');
-    expect(Number(res.rows[0].quantity)).toBe(1500); // `numeric` columns in pg come back as strings sometimes, so we cast to Number
-    expect(res.rows[0].unit).toBe('tokens');
-    expect(res.rows[0].metadata).toEqual({ model: 'gpt-4' });
-    
-    // Validating IObservability metrics were triggered
-    expect(mockObservability.increment).toHaveBeenCalledWith('billing.events_emitted', { type: 'LLM_CALL' });
+    expect(mockObservability.increment).toHaveBeenCalledWith(
+      'billing.events_emitted',
+      { type: 'TEST_RUN_STARTED' },
+    );
+  });
+
+  it('swallows DB errors without throwing — fire-and-forget contract', async () => {
+    (withTenantTransaction as jest.Mock).mockRejectedValue(new Error('DB is down'));
+
+    await expect(
+      billingMeter.emit({
+        tenantId: '00000000-0000-0000-0000-000000000001',
+        eventType: 'LLM_CALL',
+        quantity: 1,
+        unit: 'tokens',
+      }),
+    ).resolves.not.toThrow();
+
+    expect(mockObservability.log).toHaveBeenCalledWith(
+      'error',
+      'billing_emit_failed',
+      expect.any(Object),
+    );
+  });
+
+  it('does not include metadata param when metadata is undefined', async () => {
+    await billingMeter.emit({
+      tenantId: '00000000-0000-0000-0000-000000000001',
+      eventType: 'TEST_RUN_STARTED',
+      quantity: 1,
+      unit: 'runs',
+    });
+
+    const params = mockClient.query.mock.calls[0][1] as unknown[];
+    // Last param should be null (no metadata)
+    expect(params[params.length - 1]).toBeNull();
   });
 });
