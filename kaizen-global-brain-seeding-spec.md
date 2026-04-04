@@ -87,3 +87,29 @@ Automated Pruning: A weekly chron job will select 5% of the shared pool at rando
 Heal-Driven Updates: If a tenant relies on a shared vector, and the step fails but is successfully healed via ElementSimilarityStrategy or ResolveAndRetryStrategy, the updated element_embedding replaces the old one in the shared pool globally.
 
 Anomaly Detection: If a shared vector triggers failures across multiple distinct tenants within a 24-hour period, its confidence_score is immediately zeroed, forcing a fresh LLM resolution.
+
+Kaizen UI – Interactive Color Palette Specification
+Core Concept: Relying on the "Ocean Serenity" palette for a trustworthy, technical foundation, while injecting "Desert Dusk" (Orange) for critical accents and alerts.
+
+1. Primary Action Buttons (CTAs like "Run Test", "Save")
+Default State: Deep Teal (#397C82) – Establishes a bold, reliable, and professional presence.
+
+Hover State: Teal Green (#65B0A2) – A lighter, brighter shade that provides clear, immediate visual feedback.
+
+Active / Click State: Navy Blue (#1F455A) – A dark, grounded shade that creates a realistic "pressed-in" depth effect.
+
+Disabled State: Pale Turquoise (#9FDBCB) with 50% opacity – Indicates the action is unavailable.
+
+2. Typography, Forms & Navigation
+Primary Text & Headings: Navy Blue (#1F455A) – An elegant, low-fatigue alternative to pure black, maintaining readability on long dashboard sessions.
+
+Input Fields (Default Border): Soft Light Gray (e.g., #E2E8F0) – Keeps the interface clean and spacious.
+
+Input Fields (Focus / Active): Deep Teal (#397C82) – Highlights the active input, guiding the user's focus.
+
+3. System States & Accents (The Orange Integration)
+Warnings, Anomalies & Important Alerts: Sunburnt Orange (#E1A95F) – Immediately catches the eye without the harshness of pure red. Ideal for flagging failed steps, missing elements, or system warnings.
+
+Alert Button (Hover State): Terracotta (#C17F59) – Provides interactive feedback when the user interacts with an alert or a destructive action.
+
+Success States: Teal Green (#65B0A2) – Keeps the success feedback harmonious with the core brand colors.
