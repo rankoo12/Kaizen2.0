@@ -9,7 +9,7 @@
   "scripts": {
     "dev": "tsx watch src/api/server.ts",
     "dev:worker": "tsx watch src/workers/worker.ts",
-    "build": "tsc --project tsconfig.json",
+    "build": "tsc --project tsconfig.build.json",
     "start": "node dist/api/server.js",
     "start:worker": "node dist/workers/worker.js",
     "db:migrate": "tsx scripts/migrate.ts",
