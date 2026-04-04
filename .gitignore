@@ -40,3 +40,9 @@ Thumbs.db
 
 # Misc
 *.pem
+
+# Secrets — service account keys, credentials; NEVER commit
+secrets/
+*.json.key
+*-key.json
+*-credentials.json
