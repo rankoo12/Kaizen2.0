@@ -7,8 +7,9 @@
  */
 import { Client } from 'pg';
 import dotenv from 'dotenv';
+import path from 'path';
 
-dotenv.config();
+dotenv.config({ path: path.resolve(__dirname, '../../../.env') });
 
 const DB_URL = process.env.DATABASE_URL;
 
