@@ -214,8 +214,11 @@ async function executeStep(
   const afterKey = await screenshots.upload(afterPng!, tenantId, runId, stepIndex, 'after');
 
   // ── Success path ──────────────────────────────────────────────────────────
-  if (result.status === 'passed' && result.selectorUsed) {
-    void resolver.recordSuccess(step.contentHash, domain, result.selectorUsed);
+  // navigate and press_key pass with selectorUsed: null — check status only
+  if (result.status === 'passed') {
+    if (result.selectorUsed) {
+      void resolver.recordSuccess(step.contentHash, domain, result.selectorUsed);
+    }
     void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart);
     return { status: 'passed', healed: false };
   }
