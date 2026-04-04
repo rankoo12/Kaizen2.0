@@ -12,7 +12,7 @@ Synthetic data is useful, but mapping out real-world, complex, and nested applic
 ### Execution Targets:
 * **E-Commerce Flows:** Writing end-to-end checkout, cart manipulation, and inventory filtering tests against the Brunch clothing brand storefront. This captures embeddings for standard Shopify/custom e-commerce DOM patterns, payment gateways, and product grids.
 * **Data-Heavy Dashboards:** Developing test suites for the MapleStory market database application. This secures semantic vectors for complex data tables, pagination, sorting filters, and dynamic search bars.
-* **Internal Tools & Forms:** Automating interactions within the multi-store scheduling application (outlet and חנות הדגל). This captures localized inputs, calendar pickers, cross-origin authentication flows, and dynamic grid layouts.
+* **Internal Tools & Forms:** Automating interactions within the multi-store scheduling application. This captures localized inputs, calendar pickers, cross-origin authentication flows, and dynamic grid layouts.
 
 ### Pipeline:
 1. Tests are written and executed locally.
