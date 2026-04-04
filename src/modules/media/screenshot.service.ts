@@ -68,6 +68,41 @@ export class ScreenshotService {
     return this.saveLocally(png, key);
   }
 
+  /**
+   * Download a PNG from GCS or local disk by its key.
+   * Used to fetch the last-known-good screenshot for Signal C classification.
+   * Returns null if the key is a GCS path but GCS is not configured, or on error.
+   */
+  async download(key: string): Promise<Buffer | null> {
+    if (!key) return null;
+
+    if (key.startsWith('gs://') || (this.storage && !key.startsWith('/'))) {
+      return this.downloadFromGCS(key.replace(`gs://${this.bucket}/`, ''));
+    }
+
+    return this.readLocally(key);
+  }
+
+  private async downloadFromGCS(objectKey: string): Promise<Buffer | null> {
+    if (!this.storage) return null;
+    try {
+      const [contents] = await this.storage.bucket(this.bucket).file(objectKey).download();
+      return contents;
+    } catch (e: any) {
+      this.observability.log('warn', 'screenshot.gcs_download_failed', { objectKey, error: e.message });
+      return null;
+    }
+  }
+
+  private readLocally(filePath: string): Buffer | null {
+    try {
+      return fs.readFileSync(filePath);
+    } catch (e: any) {
+      this.observability.log('warn', 'screenshot.local_read_failed', { filePath, error: e.message });
+      return null;
+    }
+  }
+
   private async uploadToGCS(png: Buffer, key: string): Promise<string | null> {
     try {
       const file = this.storage!.bucket(this.bucket).file(key);

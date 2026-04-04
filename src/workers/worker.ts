@@ -134,6 +134,50 @@ async function processRun(payload: RunJobPayload): Promise<void> {
   span.end();
 }
 
+async function insertStepResult(
+  tenantId: string,
+  runId: string,
+  step: StepAST,
+  status: 'passed' | 'failed' | 'healed',
+  selectorUsed: string | null,
+  screenshotKey: string | null,
+  durationMs: number,
+): Promise<string | null> {
+  try {
+    const { rows } = await getPool().query<{ id: string }>(
+      `INSERT INTO step_results
+         (tenant_id, run_id, content_hash, status, selector_used, screenshot_key, duration_ms)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id`,
+      [tenantId, runId, step.contentHash, status, selectorUsed, screenshotKey, durationMs],
+    );
+    return rows[0]?.id ?? null;
+  } catch (e: any) {
+    obs.log('warn', 'worker.step_result_insert_failed', { error: e.message });
+    return null;
+  }
+}
+
+async function fetchLastGoodScreenshot(
+  tenantId: string,
+  contentHash: string,
+): Promise<Buffer | null> {
+  try {
+    const { rows } = await getPool().query<{ screenshot_key: string }>(
+      `SELECT screenshot_key FROM step_results
+       WHERE tenant_id = $1 AND content_hash = $2 AND status = 'passed'
+         AND screenshot_key IS NOT NULL
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [tenantId, contentHash],
+    );
+    if (rows.length === 0 || !rows[0].screenshot_key) return null;
+    return screenshots.download(rows[0].screenshot_key);
+  } catch {
+    return null;
+  }
+}
+
 async function executeStep(
   step: StepAST,
   page: Page,
@@ -143,13 +187,14 @@ async function executeStep(
   stepIndex: number,
 ): Promise<{ status: 'passed' | 'failed'; healed: boolean }> {
   const resolutionContext = { tenantId, domain, page };
+  const stepStart = Date.now();
 
   // ── AX snapshot + before screenshot ──────────────────────────────────────
   // page.accessibility is deprecated in Playwright 1.44+ but still functional;
   // cast to any to avoid the removed type definition.
   const axBefore = await (page as any).accessibility?.snapshot().catch(() => null) ?? null;
   const beforePng = await page.screenshot({ type: 'png' }).catch(() => null);
-  void screenshots.upload(beforePng!, tenantId, runId, stepIndex, 'before').catch(() => {});
+  void screenshots.upload(beforePng!, tenantId, runId, stepIndex, 'before');
 
   // ── Resolve selectors ─────────────────────────────────────────────────────
   const selectorSet = await resolver.resolve(step, resolutionContext);
@@ -164,13 +209,14 @@ async function executeStep(
     stepError = e;
   }
 
-  // ── After screenshot ──────────────────────────────────────────────────────
+  // ── After screenshot (upload and get key) ─────────────────────────────────
   const afterPng = await page.screenshot({ type: 'png' }).catch(() => null);
-  void screenshots.upload(afterPng!, tenantId, runId, stepIndex, 'after').catch(() => {});
+  const afterKey = await screenshots.upload(afterPng!, tenantId, runId, stepIndex, 'after');
 
   // ── Success path ──────────────────────────────────────────────────────────
   if (result.status === 'passed' && result.selectorUsed) {
     void resolver.recordSuccess(step.contentHash, domain, result.selectorUsed);
+    void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart);
     return { status: 'passed', healed: false };
   }
 
@@ -180,12 +226,19 @@ async function executeStep(
   const error = stepError ?? new Error('Step execution failed');
   const axAfter = await (page as any).accessibility?.snapshot().catch(() => null) ?? null;
 
-  // lastGoodPng: for now use beforePng as the reference (last known good would
-  // ideally be fetched from S3 for the previous successful run of this step)
-  const failureClass = classify(error, axBefore, axAfter, selectorSet.selectors[0]?.selector ?? '', afterPng, beforePng);
+  // Signal C: fetch the real last-known-good "after" screenshot from GCS/disk
+  const lastGoodPng = await fetchLastGoodScreenshot(tenantId, step.contentHash);
+  const failureClass = classify(error, axBefore, axAfter, selectorSet.selectors[0]?.selector ?? '', afterPng, lastGoodPng);
+
+  // Insert failed step_result now so healing_events can reference it
+  const stepResultId = await insertStepResult(
+    tenantId, runId, step, 'failed',
+    selectorSet.selectors[0]?.selector ?? null, afterKey, Date.now() - stepStart,
+  );
 
   const classifiedFailure: ClassifiedFailure = {
     stepResult: result as any,
+    stepResultId: stepResultId ?? undefined,
     failureClass,
     step,
     previousSelector: selectorSet.selectors[0]?.selector ?? '',
@@ -202,6 +255,13 @@ async function executeStep(
       strategy: healingResult.strategyUsed,
       newSelector: healingResult.newSelector,
     });
+    // Update the step_result status to healed
+    if (stepResultId) {
+      void getPool().query(
+        `UPDATE step_results SET status = 'healed', selector_used = $1 WHERE id = $2`,
+        [healingResult.newSelector, stepResultId],
+      ).catch(() => {});
+    }
     return { status: 'passed', healed: true };
   }
 
