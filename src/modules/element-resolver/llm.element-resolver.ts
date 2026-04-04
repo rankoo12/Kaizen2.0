@@ -1,10 +1,25 @@
 import type { IElementResolver } from './interfaces';
-import type { StepAST, SelectorSet, ResolutionContext, SelectorEntry } from '../../types';
+import type { StepAST, SelectorSet, ResolutionContext, SelectorEntry, CandidateNode } from '../../types';
 import type { IDOMPruner } from '../dom-pruner/interfaces';
 import type { ILLMGateway } from '../llm-gateway/interfaces';
 import type { IObservability } from '../observability/interfaces';
 import { getPool } from '../../db/pool';
 import { appendOutcome, computeConfidence } from './confidence';
+
+/**
+ * Converts a CandidateNode into a compact text description for embedding.
+ * Produces a stable, semantic string like: "button: Add to Cart [id=add-to-cart aria-label=Add to Cart]"
+ * This vector is stored as element_embedding and used by ElementSimilarityStrategy
+ * to find structurally similar elements across DOM changes without LLM calls.
+ */
+function serializeCandidateForEmbedding(candidate: CandidateNode): string {
+  const attrs = Object.entries(candidate.attributes)
+    .filter(([, v]) => v)
+    .map(([k, v]) => `${k}=${v}`)
+    .join(' ');
+  const text = candidate.textContent?.trim() || candidate.name || '';
+  return `${candidate.role}: ${text}${attrs ? ` [${attrs}]` : ''}`.trim();
+}
 
 interface PlaywrightPageLike {
   $(selector: string): Promise<unknown | null>;
@@ -68,9 +83,9 @@ export class LLMElementResolver implements IElementResolver {
         cacheSource: null,
       };
 
-      // Persist to selector_cache + generate step_embedding (fire-and-forget)
+      // Persist to selector_cache + generate step_embedding + element_embedding (fire-and-forget)
       if (validSelectors.length > 0) {
-        void this.persistToCache(step, context, selectorSet);
+        void this.persistToCache(step, context, selectorSet, candidates);
       }
 
       return selectorSet;
@@ -95,27 +110,42 @@ export class LLMElementResolver implements IElementResolver {
     step: StepAST,
     context: ResolutionContext,
     selectorSet: SelectorSet,
+    candidates: CandidateNode[],
   ): Promise<void> {
     try {
-      // Generate step_embedding for vector similarity lookup in Phase 2 cache
-      const embedding = await this.llmGateway.generateEmbedding(step.rawText);
-      const embeddingSQL = '[' + embedding.join(',') + ']';
+      const winningSelector = selectorSet.selectors[0].selector;
+
+      // step_embedding: semantic intent of the NL step text
+      const stepEmbedding = await this.llmGateway.generateEmbedding(step.rawText);
+
+      // element_embedding: semantic description of the resolved DOM element (AX tree form).
+      // Find the candidate that matches the winning selector; fall back to the top candidate.
+      const winningCandidate =
+        candidates.find(
+          (c) => c.cssSelector === winningSelector || c.xpath === winningSelector,
+        ) ?? candidates[0];
+      const elementText = serializeCandidateForEmbedding(winningCandidate);
+      const elementEmbedding = await this.llmGateway.generateEmbedding(elementText);
+
+      const toSQL = (v: number[]) => '[' + v.join(',') + ']';
 
       await getPool().query(
         `INSERT INTO selector_cache
-           (tenant_id, content_hash, domain, selectors, step_embedding)
-         VALUES ($1, $2, $3, $4, $5::vector)
+           (tenant_id, content_hash, domain, selectors, step_embedding, element_embedding)
+         VALUES ($1, $2, $3, $4, $5::vector, $6::vector)
          ON CONFLICT (tenant_id, content_hash, domain)
          DO UPDATE SET
-           selectors      = EXCLUDED.selectors,
-           step_embedding = EXCLUDED.step_embedding,
-           updated_at     = now()`,
+           selectors         = EXCLUDED.selectors,
+           step_embedding    = EXCLUDED.step_embedding,
+           element_embedding = EXCLUDED.element_embedding,
+           updated_at        = now()`,
         [
           context.tenantId,
           step.contentHash,
           context.domain,
           JSON.stringify(selectorSet.selectors),
-          embeddingSQL,
+          toSQL(stepEmbedding),
+          toSQL(elementEmbedding),
         ],
       );
 

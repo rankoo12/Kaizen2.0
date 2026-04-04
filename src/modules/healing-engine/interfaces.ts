@@ -20,6 +20,9 @@ import type { ClassifiedFailure, HealingContext, HealingResult, HealingAttempt }
  *  - Auto-disable healing after 5 consecutive ResolveAndRetry failures on same step
  */
 export interface IHealingStrategy {
+  /** Human-readable strategy name used in logging and healing_events rows. */
+  readonly name: string;
+
   /** Returns true if this strategy can handle the given failure class. */
   canHandle(failure: ClassifiedFailure): boolean;
 
