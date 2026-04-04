@@ -136,7 +136,7 @@ export function classifyScreenshotSignal(
     if (imgA.width !== imgB.width || imgA.height !== imgB.height) return 'LowSimilarity';
 
     const totalPixels = imgA.width * imgA.height;
-    const diffPixels = pixelmatch(imgA.data, imgB.data, undefined, imgA.width, imgA.height, {
+    const diffPixels = pixelmatch(imgA.data, imgB.data, null, imgA.width, imgA.height, {
       threshold: 0.1,
     });
 
