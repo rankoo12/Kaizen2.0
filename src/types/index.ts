@@ -101,6 +101,8 @@ export type FailureClass =
 
 export type ClassifiedFailure = {
   stepResult: StepExecutionResult;
+  /** DB id of the step_results row, if one was created for this execution. */
+  stepResultId?: string;
   failureClass: FailureClass;
   step: StepAST;
   previousSelector: string;

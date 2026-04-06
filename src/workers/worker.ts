@@ -9,17 +9,18 @@
  *  - CachedElementResolver provides L1 Redis + L2 alias + L3/L4 pgvector lookup
  *  - OpenAIGateway receives Redis instance for prompt dedup cache
  *
- * Remaining Phase 1 simplifications:
- *  - No step_results rows (requires full test hierarchy)
- *  - No tenant concurrency control (Redis INCR/DECR gate from spec §15)
- *  - One browser per worker process; one context per job (spec-correct isolation)
+ * Phase 3 additions:
+ *  - Before/after screenshot capture + S3 upload (ScreenshotService)
+ *  - AX tree (DOM) snapshot before each step
+ *  - HealingEngine invoked on step failure (chain-of-responsibility)
+ *  - FailureClassifier classifies errors into FailureClass before healing
  */
 
 import dotenv from 'dotenv';
 dotenv.config();
 
 import { Worker } from 'bullmq';
-import { chromium } from 'playwright';
+import { chromium, type Page } from 'playwright';
 import pino from 'pino';
 import { PinoObservability } from '../modules/observability/pino.observability';
 import { PostgresBillingMeter } from '../modules/billing-meter/postgres.billing-meter';
@@ -29,10 +30,19 @@ import { LLMElementResolver } from '../modules/element-resolver/llm.element-reso
 import { CachedElementResolver } from '../modules/element-resolver/cached.element-resolver';
 import { CompositeElementResolver } from '../modules/element-resolver/composite.element-resolver';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
+import { HealingEngine } from '../modules/healing-engine/healing-engine';
+import { FallbackSelectorStrategy } from '../modules/healing-engine/strategies/fallback-selector.strategy';
+import { AdaptiveWaitStrategy } from '../modules/healing-engine/strategies/adaptive-wait.strategy';
+import { ElementSimilarityStrategy } from '../modules/healing-engine/strategies/element-similarity.strategy';
+import { ResolveAndRetryStrategy } from '../modules/healing-engine/strategies/resolve-and-retry.strategy';
+import { EscalationStrategy } from '../modules/healing-engine/strategies/escalation.strategy';
+import { LogNotifier } from '../modules/healing-engine/notifier/log.notifier';
+import { classify } from '../modules/healing-engine/failure-classifier';
+import { ScreenshotService } from '../modules/media/screenshot.service';
 import { getPool, closePool } from '../db/pool';
 import { createRedisConnection, RUNS_QUEUE_NAME } from '../queue';
 import type { RunJobPayload } from '../queue';
-import type { StepAST } from '../types';
+import type { StepAST, ClassifiedFailure } from '../types';
 
 // ─── Module Setup ─────────────────────────────────────────────────────────────
 
@@ -52,6 +62,19 @@ const llmResolver = new LLMElementResolver(domPruner, llm, obs);
 const cachedResolver = new CachedElementResolver(cacheRedis, llm, obs);
 const resolver = new CompositeElementResolver(cachedResolver, llmResolver, obs);
 const engine = new PlaywrightExecutionEngine(obs);
+const screenshots = new ScreenshotService(obs);
+
+const notifier = new LogNotifier(obs);
+const healingEngine = new HealingEngine(
+  [
+    new FallbackSelectorStrategy(),
+    new AdaptiveWaitStrategy(),
+    new ElementSimilarityStrategy(llm, obs),
+    new ResolveAndRetryStrategy(domPruner, llm, cacheRedis, obs),
+    new EscalationStrategy(notifier, obs),
+  ],
+  obs,
+);
 
 // ─── DB Helpers ───────────────────────────────────────────────────────────────
 
@@ -62,7 +85,7 @@ async function markRunRunning(runId: string): Promise<void> {
   );
 }
 
-async function markRunComplete(runId: string, status: 'passed' | 'failed'): Promise<void> {
+async function markRunComplete(runId: string, status: 'passed' | 'failed' | 'healed'): Promise<void> {
   await getPool().query(
     `UPDATE runs SET status = $1, completed_at = now() WHERE id = $2`,
     [status, runId],
@@ -79,30 +102,33 @@ async function processRun(payload: RunJobPayload): Promise<void> {
   logger.info({ event: 'run_started', runId, tenantId, stepCount: compiledSteps.length });
 
   const browser = await chromium.launch({ headless: true });
-  // One isolated BrowserContext per run — clean cookies, no cached state
   const context = await browser.newContext({ baseURL: baseUrl });
   const page = await context.newPage();
 
   let runPassed = true;
+  let anyHealed = false;
   const domain = new URL(baseUrl).hostname;
+  let previousAfterPng: Buffer | null = null;
 
   try {
-    for (const step of compiledSteps) {
-      const stepResult = await executeStep(step, page, tenantId, domain);
+    for (let i = 0; i < compiledSteps.length; i++) {
+      const step = compiledSteps[i];
+      const { status, healed, afterPng } = await executeStep(step, page, tenantId, runId, domain, i, previousAfterPng);
+      previousAfterPng = afterPng;
 
-      if (stepResult === 'failed') {
+      if (status === 'failed') {
         runPassed = false;
-        // Phase 1: log and continue. Phase 3 will invoke HealingEngine here.
         logger.warn({ event: 'step_failed', runId, action: step.action, rawText: step.rawText });
+      } else if (healed) {
+        anyHealed = true;
       }
     }
   } finally {
-    // Always clean up the browser context — even if a step throws unexpectedly
     await context.close();
     await browser.close();
   }
 
-  const finalStatus = runPassed ? 'passed' : 'failed';
+  const finalStatus = runPassed ? (anyHealed ? 'healed' : 'passed') : 'failed';
   await markRunComplete(runId, finalStatus);
 
   obs.increment('worker.run_completed', { status: finalStatus });
@@ -110,29 +136,147 @@ async function processRun(payload: RunJobPayload): Promise<void> {
   span.end();
 }
 
+async function insertStepResult(
+  tenantId: string,
+  runId: string,
+  step: StepAST,
+  status: 'passed' | 'failed' | 'healed',
+  selectorUsed: string | null,
+  screenshotKey: string | null,
+  durationMs: number,
+): Promise<string | null> {
+  try {
+    const { rows } = await getPool().query<{ id: string }>(
+      `INSERT INTO step_results
+         (tenant_id, run_id, content_hash, status, selector_used, screenshot_key, duration_ms)
+       VALUES ($1, $2, $3, $4, $5, $6, $7)
+       RETURNING id`,
+      [tenantId, runId, step.contentHash, status, selectorUsed, screenshotKey, durationMs],
+    );
+    return rows[0]?.id ?? null;
+  } catch (e: any) {
+    obs.log('warn', 'worker.step_result_insert_failed', { error: e.message });
+    return null;
+  }
+}
+
+async function fetchLastGoodScreenshot(
+  tenantId: string,
+  contentHash: string,
+): Promise<Buffer | null> {
+  try {
+    const { rows } = await getPool().query<{ screenshot_key: string }>(
+      `SELECT screenshot_key FROM step_results
+       WHERE tenant_id = $1 AND content_hash = $2 AND status = 'passed'
+         AND screenshot_key IS NOT NULL
+       ORDER BY created_at DESC
+       LIMIT 1`,
+      [tenantId, contentHash],
+    );
+    if (rows.length === 0 || !rows[0].screenshot_key) return null;
+    return screenshots.download(rows[0].screenshot_key);
+  } catch {
+    return null;
+  }
+}
+
 async function executeStep(
   step: StepAST,
-  page: unknown,
+  page: Page,
   tenantId: string,
+  runId: string,
   domain: string,
-): Promise<'passed' | 'failed'> {
-  const context = { tenantId, domain, page };
+  stepIndex: number,
+  previousAfterPng?: Buffer | null,
+): Promise<{ status: 'passed' | 'failed'; healed: boolean; afterPng: Buffer | null }> {
+  const resolutionContext = { tenantId, domain, page };
+  const stepStart = Date.now();
 
-  // Resolve selectors (LLM call on miss; early exit for navigate/press_key)
-  const selectorSet = await resolver.resolve(step, context);
+  // ── AX snapshot + before screenshot ──────────────────────────────────────
+  // page.accessibility is deprecated in Playwright 1.44+ but still functional;
+  // cast to any to avoid the removed type definition.
+  const axBefore = await (page as any).accessibility?.snapshot().catch(() => null) ?? null;
 
-  // Execute against live browser
-  const result = await engine.executeStep(step, selectorSet, page);
-
-  // Feed outcome back to the resolver for future confidence scoring
-  if (result.status === 'passed' && result.selectorUsed) {
-    void resolver.recordSuccess(step.contentHash, domain, result.selectorUsed);
-  } else if (result.status === 'failed') {
-    const firstSelector = selectorSet.selectors[0]?.selector ?? '';
-    void resolver.recordFailure(step.contentHash, domain, firstSelector);
+  // Reuse the previous step's after-screenshot as this step's before-screenshot.
+  // Only capture a fresh one for the very first step (no previous).
+  const beforePng = previousAfterPng ?? await page.screenshot({ type: 'png' }).catch(() => null);
+  if (!previousAfterPng) {
+    void screenshots.upload(beforePng!, tenantId, runId, stepIndex, 'before');
   }
 
-  return result.status;
+  // ── Resolve selectors ─────────────────────────────────────────────────────
+  const selectorSet = await resolver.resolve(step, resolutionContext);
+
+  let stepError: Error | null = null;
+  let result: Awaited<ReturnType<typeof engine.executeStep>>;
+
+  try {
+    result = await engine.executeStep(step, selectorSet, page);
+  } catch (e: any) {
+    result = { status: 'failed', selectorUsed: null, durationMs: 0, errorType: null, errorMessage: e.message ?? null, screenshotKey: null, domSnapshotKey: null };
+    stepError = e;
+  }
+
+  // ── After screenshot (upload and get key) ─────────────────────────────────
+  const afterPng = await page.screenshot({ type: 'png' }).catch(() => null);
+  const afterKey = await screenshots.upload(afterPng!, tenantId, runId, stepIndex, 'after');
+
+  // ── Success path ──────────────────────────────────────────────────────────
+  // navigate and press_key pass with selectorUsed: null — check status only
+  if (result.status === 'passed') {
+    if (result.selectorUsed) {
+      void resolver.recordSuccess(step.contentHash, domain, result.selectorUsed);
+    }
+    void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart);
+    return { status: 'passed', healed: false, afterPng };
+  }
+
+  // ── Failure path: classify → heal ─────────────────────────────────────────
+  void resolver.recordFailure(step.contentHash, domain, selectorSet.selectors[0]?.selector ?? '');
+
+  const error = stepError ?? new Error('Step execution failed');
+  const axAfter = await (page as any).accessibility?.snapshot().catch(() => null) ?? null;
+
+  // Signal C: fetch the real last-known-good "after" screenshot from GCS/disk
+  const lastGoodPng = await fetchLastGoodScreenshot(tenantId, step.contentHash);
+  const failureClass = classify(error, axBefore, axAfter, selectorSet.selectors[0]?.selector ?? '', afterPng, lastGoodPng);
+
+  // Insert failed step_result now so healing_events can reference it
+  const stepResultId = await insertStepResult(
+    tenantId, runId, step, 'failed',
+    selectorSet.selectors[0]?.selector ?? null, afterKey, Date.now() - stepStart,
+  );
+
+  const classifiedFailure: ClassifiedFailure = {
+    stepResult: result as any,
+    stepResultId: stepResultId ?? undefined,
+    failureClass,
+    step,
+    previousSelector: selectorSet.selectors[0]?.selector ?? '',
+  };
+
+  const healingResult = await healingEngine.heal(classifiedFailure, { tenantId, runId, page });
+
+  if (healingResult.succeeded) {
+    obs.increment('worker.step_healed', { failureClass, strategy: healingResult.strategyUsed });
+    logger.info({
+      event: 'step_healed',
+      runId,
+      stepText: step.rawText,
+      strategy: healingResult.strategyUsed,
+      newSelector: healingResult.newSelector,
+    });
+    // Update the step_result status to healed
+    if (stepResultId) {
+      void getPool().query(
+        `UPDATE step_results SET status = 'healed', selector_used = $1 WHERE id = $2`,
+        [healingResult.newSelector, stepResultId],
+      ).catch(() => {});
+    }
+    return { status: 'passed', healed: true, afterPng };
+  }
+
+  return { status: 'failed', healed: false, afterPng };
 }
 
 // ─── BullMQ Worker ────────────────────────────────────────────────────────────
@@ -144,16 +288,14 @@ const worker = new Worker<RunJobPayload>(
     try {
       await processRun(job.data);
     } catch (err: any) {
-      // Unexpected error (e.g. Playwright launch failure, DB down)
-      // Mark the run as failed so GET /runs/:id doesn't hang in 'queued'
       logger.error({ event: 'job_error', jobId: job.id, runId: job.data.runId, error: err.message });
       await markRunComplete(job.data.runId, 'failed').catch(() => {});
-      throw err; // re-throw so BullMQ records the job as failed
+      throw err;
     }
   },
   {
     connection: createRedisConnection(),
-    concurrency: 1, // Phase 1: one run at a time per worker process
+    concurrency: 1,
   },
 );
 
