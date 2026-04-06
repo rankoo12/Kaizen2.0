@@ -46,3 +46,6 @@ secrets/
 *.json.key
 *-key.json
 *-credentials.json
+
+# Local screenshot downloads (GCS is the source of truth)
+screenshots/

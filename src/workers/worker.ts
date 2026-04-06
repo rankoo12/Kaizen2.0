@@ -108,11 +108,13 @@ async function processRun(payload: RunJobPayload): Promise<void> {
   let runPassed = true;
   let anyHealed = false;
   const domain = new URL(baseUrl).hostname;
+  let previousAfterPng: Buffer | null = null;
 
   try {
     for (let i = 0; i < compiledSteps.length; i++) {
       const step = compiledSteps[i];
-      const { status, healed } = await executeStep(step, page, tenantId, runId, domain, i);
+      const { status, healed, afterPng } = await executeStep(step, page, tenantId, runId, domain, i, previousAfterPng);
+      previousAfterPng = afterPng;
 
       if (status === 'failed') {
         runPassed = false;
@@ -185,7 +187,8 @@ async function executeStep(
   runId: string,
   domain: string,
   stepIndex: number,
-): Promise<{ status: 'passed' | 'failed'; healed: boolean }> {
+  previousAfterPng?: Buffer | null,
+): Promise<{ status: 'passed' | 'failed'; healed: boolean; afterPng: Buffer | null }> {
   const resolutionContext = { tenantId, domain, page };
   const stepStart = Date.now();
 
@@ -193,8 +196,13 @@ async function executeStep(
   // page.accessibility is deprecated in Playwright 1.44+ but still functional;
   // cast to any to avoid the removed type definition.
   const axBefore = await (page as any).accessibility?.snapshot().catch(() => null) ?? null;
-  const beforePng = await page.screenshot({ type: 'png' }).catch(() => null);
-  void screenshots.upload(beforePng!, tenantId, runId, stepIndex, 'before');
+
+  // Reuse the previous step's after-screenshot as this step's before-screenshot.
+  // Only capture a fresh one for the very first step (no previous).
+  const beforePng = previousAfterPng ?? await page.screenshot({ type: 'png' }).catch(() => null);
+  if (!previousAfterPng) {
+    void screenshots.upload(beforePng!, tenantId, runId, stepIndex, 'before');
+  }
 
   // ── Resolve selectors ─────────────────────────────────────────────────────
   const selectorSet = await resolver.resolve(step, resolutionContext);
@@ -220,7 +228,7 @@ async function executeStep(
       void resolver.recordSuccess(step.contentHash, domain, result.selectorUsed);
     }
     void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart);
-    return { status: 'passed', healed: false };
+    return { status: 'passed', healed: false, afterPng };
   }
 
   // ── Failure path: classify → heal ─────────────────────────────────────────
@@ -265,10 +273,10 @@ async function executeStep(
         [healingResult.newSelector, stepResultId],
       ).catch(() => {});
     }
-    return { status: 'passed', healed: true };
+    return { status: 'passed', healed: true, afterPng };
   }
 
-  return { status: 'failed', healed: false };
+  return { status: 'failed', healed: false, afterPng };
 }
 
 // ─── BullMQ Worker ────────────────────────────────────────────────────────────
