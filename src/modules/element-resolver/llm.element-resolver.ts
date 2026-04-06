@@ -3,6 +3,7 @@ import type { StepAST, SelectorSet, ResolutionContext, SelectorEntry, CandidateN
 import type { IDOMPruner } from '../dom-pruner/interfaces';
 import type { ILLMGateway } from '../llm-gateway/interfaces';
 import type { IObservability } from '../observability/interfaces';
+import type { ISharedPoolService } from '../shared-pool/interfaces';
 import { getPool } from '../../db/pool';
 import { appendOutcome, computeConfidence } from './confidence';
 
@@ -38,6 +39,7 @@ export class LLMElementResolver implements IElementResolver {
     private readonly domPruner: IDOMPruner,
     private readonly llmGateway: ILLMGateway,
     private readonly observability: IObservability,
+    private readonly sharedPool?: ISharedPoolService,
   ) {}
 
   async resolve(step: StepAST, context: ResolutionContext): Promise<SelectorSet> {
@@ -150,6 +152,19 @@ export class LLMElementResolver implements IElementResolver {
       );
 
       this.observability.increment('resolver.cache_write', { domain: context.domain });
+
+      // Contribute to shared pool (fire-and-forget) — skips if tenant not opted in or quality < 0.8
+      if (this.sharedPool) {
+        void this.sharedPool.contribute({
+          tenantId: context.tenantId,
+          contentHash: step.contentHash,
+          domain: context.domain,
+          selectors: selectorSet.selectors,
+          stepEmbedding,
+          elementEmbedding,
+          confidenceScore: 1.0, // freshly resolved = max confidence
+        });
+      }
     } catch (e: any) {
       // Fire-and-forget — a failed persist must never break the current run
       this.observability.log('warn', 'resolver.cache_write_failed', { error: e.message });
