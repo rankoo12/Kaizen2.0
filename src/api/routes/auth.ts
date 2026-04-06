@@ -2,6 +2,9 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { getPool } from '../../db/pool';
 import { generateRawKey, hashKey, requireApiKey, requireScope } from '../middleware/auth';
+import { SharedPoolService } from '../../modules/shared-pool/shared-pool.service';
+import { PinoObservability } from '../../modules/observability/pino.observability';
+import { createRedisConnection } from '../../queue';
 
 /**
  * Spec ref: Section 19 — API Key Management
@@ -20,7 +23,13 @@ const CreateKeyBody = z.object({
   expiresAt: z.string().datetime().optional(),
 });
 
+const BrainOptInBody = z.object({
+  optIn: z.boolean(),
+});
+
 export async function authRoutes(app: FastifyInstance): Promise<void> {
+  const obs = new PinoObservability(app.log as any);
+  const sharedPool = new SharedPoolService(createRedisConnection(), obs);
   // ── POST /auth/keys — issue a new API key ─────────────────────────────────
   app.post(
     '/auth/keys',
@@ -121,6 +130,32 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       );
 
       return reply.send({ token, expiresIn: 3600 });
+    },
+  );
+
+  // ── PATCH /auth/brain-opt-in — toggle Global Brain contribution opt-in ────
+  // Spec ref: kaizen-phase4-spec.md §5
+  // Admin scope required. Phase 5 will add enterprise-plan enforcement.
+  app.patch(
+    '/auth/brain-opt-in',
+    { preHandler: [requireApiKey, requireScope('admin')] },
+    async (request, reply) => {
+      const body = BrainOptInBody.safeParse(request.body);
+      if (!body.success) {
+        return reply.status(400).send({ error: 'Invalid request body', details: body.error.issues });
+      }
+
+      await sharedPool.setOptIn(request.tenantId, body.data.optIn);
+
+      const { rows } = await getPool().query<{ global_brain_opt_in: boolean }>(
+        `SELECT global_brain_opt_in FROM tenants WHERE id = $1`,
+        [request.tenantId],
+      );
+
+      return reply.send({
+        tenantId: request.tenantId,
+        globalBrainOptIn: rows[0]?.global_brain_opt_in ?? body.data.optIn,
+      });
     },
   );
 }

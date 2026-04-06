@@ -27,6 +27,7 @@ import { PostgresBillingMeter } from '../modules/billing-meter/postgres.billing-
 import { OpenAIGateway } from '../modules/llm-gateway/openai.gateway';
 import { PlaywrightDOMPruner } from '../modules/dom-pruner/playwright.dom-pruner';
 import { LLMElementResolver } from '../modules/element-resolver/llm.element-resolver';
+import { SharedPoolService } from '../modules/shared-pool/shared-pool.service';
 import { CachedElementResolver } from '../modules/element-resolver/cached.element-resolver';
 import { CompositeElementResolver } from '../modules/element-resolver/composite.element-resolver';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
@@ -58,7 +59,8 @@ const billing = new PostgresBillingMeter(obs);
 const cacheRedis = createRedisConnection();
 const llm = new OpenAIGateway(billing, obs, undefined, cacheRedis);
 const domPruner = new PlaywrightDOMPruner();
-const llmResolver = new LLMElementResolver(domPruner, llm, obs);
+const sharedPool = new SharedPoolService(cacheRedis, obs);
+const llmResolver = new LLMElementResolver(domPruner, llm, obs, sharedPool);
 const cachedResolver = new CachedElementResolver(cacheRedis, llm, obs);
 const resolver = new CompositeElementResolver(cachedResolver, llmResolver, obs);
 const engine = new PlaywrightExecutionEngine(obs);
