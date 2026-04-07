@@ -64,12 +64,6 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
     return reply.status(202).send({ runId, status: 'queued' });
   });
 
-  /**
-   * GET /runs/:id
-   *
-   * Returns the current state of a run.
-   * Clients poll this until status is 'passed' | 'failed' | 'cancelled'.
-   */
   app.get<{ Params: { id: string } }>('/runs/:id', async (request, reply) => {
     const pool = getPool();
     const { rows } = await pool.query(
@@ -83,6 +77,78 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
       return reply.status(404).send({ error: 'NOT_FOUND' });
     }
 
-    return reply.send(rows[0]);
+    const run = rows[0];
+
+    // Fetch granular step results
+    const { rows: stepRows } = await pool.query(
+      `SELECT sr.id, sr.step_id, sr.status, sr.cache_hit, sr.selector_used, sr.duration_ms, sr.error_type, sr.failure_class, sr.healing_event_id, sr.screenshot_key, sr.content_hash, sr.created_at
+       FROM step_results sr
+       WHERE sr.run_id = $1
+       ORDER BY sr.created_at ASC`,
+      [request.params.id]
+    );
+
+    let healingRows: any[] = [];
+    if (stepRows.length > 0) {
+      const stepIds = stepRows.map((s: { id: string }) => s.id);
+      const healingQuery = await pool.query(
+        `SELECT id, step_result_id, failure_class, strategy_used, attempts, succeeded, duration_ms
+         FROM healing_events
+         WHERE step_result_id = ANY($1::uuid[])`,
+        [stepIds]
+      );
+      healingRows = healingQuery.rows;
+    }
+
+    // Fetch tokens used by this tenant during the run
+    const { rows: llmRows } = await pool.query(
+      `SELECT id, quantity as tokens, created_at, metadata->>'purpose' as purpose
+       FROM billing_events
+       WHERE tenant_id = $1 
+         AND event_type = 'LLM_CALL' 
+         AND created_at >= $2 
+         AND created_at <= COALESCE($3, now())
+       ORDER BY created_at ASC`,
+      [run.tenant_id, run.started_at, run.completed_at]
+    );
+
+    let lastTime = new Date(run.started_at || run.created_at);
+    run.stepResults = stepRows.map((step: any) => {
+      const stepTime = new Date(step.created_at);
+      const stepLlmCalls = llmRows.filter((r: any) => {
+        const t = new Date(r.created_at);
+        return t > lastTime && t <= stepTime;
+      });
+      lastTime = stepTime;
+
+      const tokens = stepLlmCalls.reduce((sum: number, r: any) => sum + Number(r.tokens || 0), 0);
+
+      return {
+        ...step,
+        healingEvents: healingRows.filter((h: any) => h.step_result_id === step.id),
+        tokens
+      };
+    });
+
+    // Also attach general total tokens to run itself
+    run.total_tokens = llmRows.reduce((sum: number, r: any) => sum + Number(r.tokens || 0), 0);
+
+
+    return reply.send(run);
+  });
+
+  const screenshots = new (require('../../modules/media/screenshot.service').ScreenshotService)(obs);
+
+  /**
+   * GET /media?key=...
+   * Resolves a screenshot from memory/GCS and streams it back
+   */
+  app.get<{ Querystring: { key: string } }>('/media', async (request, reply) => {
+    if (!request.query.key) return reply.status(400).send({ error: 'Missing key' });
+    const buffer = await screenshots.download(request.query.key);
+    if (!buffer) return reply.status(404).send({ error: 'Not found' });
+    
+    reply.header('Content-Type', 'image/png');
+    return reply.send(buffer);
   });
 }

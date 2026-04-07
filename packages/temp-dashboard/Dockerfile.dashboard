@@ -1,0 +1,15 @@
+FROM node:20-alpine
+WORKDIR /app
+
+# Copy root metadata if any workspaces exist, 
+# but for standalone we can just install here.
+COPY package*.json ./
+RUN npm install
+
+COPY . .
+
+# Expose Vite's default dev port
+EXPOSE 5173
+
+# We run the Vite dev server with host exposed so it binds to 0.0.0.0
+CMD ["npm", "run", "dev", "--", "--host"]
