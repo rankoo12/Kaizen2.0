@@ -1,13 +1,10 @@
 version: "3.9"
 
-# Local development infrastructure only.
-# The API and workers run outside Docker in dev (npm run dev / npm run dev:worker).
-# Use this to spin up Postgres and Redis with a single command: docker compose up -d
+# Kaizen Dockerized Development Infrastructure
+# Composes Postgres, Redis, the API server, the Playwright Worker engine, and the UI Dashboard seamlessly.
 
 services:
   postgres:
-    # pgvector/pgvector includes the pgvector extension — available as a fallback
-    # vector store in Phase 2 (pgvector) before Pinecone is integrated.
     image: pgvector/pgvector:pg16
     environment:
       POSTGRES_USER: kaizen
@@ -35,6 +32,73 @@ services:
       interval: 5s
       timeout: 5s
       retries: 10
+
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    ports:
+      - "3000:3000"
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgres://kaizen:kaizen@postgres:5432/kaizen
+      - REDIS_URL=redis://redis:6379
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - CHOKIDAR_USEPOLLING=true
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - /app/node_modules
+    # Boot the dev server
+    command: npm run dev
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile.worker
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgres://kaizen:kaizen@postgres:5432/kaizen
+      - REDIS_URL=redis://redis:6379
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-}
+      - CHOKIDAR_USEPOLLING=true
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - /app/node_modules
+    # Standard dev worker explicitly executes DB migrations
+    command: >
+      sh -c "npm run db:migrate && npm run dev:worker"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  dashboard:
+    build:
+      context: ./packages/temp-dashboard
+      dockerfile: Dockerfile.dashboard
+    ports:
+      - "5173:5173"
+    environment:
+      - NODE_ENV=development
+      - VITE_API_URL=http://localhost:3000
+    volumes:
+      - ./packages/temp-dashboard:/app
+      - /app/node_modules
+    # Force bindings
+    command: npm run dev -- --host
+    depends_on:
+      api:
+        condition: service_started
 
 volumes:
   postgres_data:

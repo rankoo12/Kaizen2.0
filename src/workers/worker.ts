@@ -103,9 +103,12 @@ async function processRun(payload: RunJobPayload): Promise<void> {
   await markRunRunning(runId);
   logger.info({ event: 'run_started', runId, tenantId, stepCount: compiledSteps.length });
 
+  // Enforcement: Docker environments absolutely require headless: true without xvfb
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ baseURL: baseUrl });
   const page = await context.newPage();
+
+  await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
 
   let runPassed = true;
   let anyHealed = false;
@@ -273,7 +276,7 @@ async function executeStep(
       void getPool().query(
         `UPDATE step_results SET status = 'healed', selector_used = $1 WHERE id = $2`,
         [healingResult.newSelector, stepResultId],
-      ).catch(() => {});
+      ).catch(() => { });
     }
     return { status: 'passed', healed: true, afterPng };
   }
@@ -291,7 +294,7 @@ const worker = new Worker<RunJobPayload>(
       await processRun(job.data);
     } catch (err: any) {
       logger.error({ event: 'job_error', jobId: job.id, runId: job.data.runId, error: err.message });
-      await markRunComplete(job.data.runId, 'failed').catch(() => {});
+      await markRunComplete(job.data.runId, 'failed').catch(() => { });
       throw err;
     }
   },

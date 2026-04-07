@@ -1,5 +1,6 @@
 import Fastify from 'fastify';
 import fjwt from '@fastify/jwt';
+import cors from '@fastify/cors';
 import dotenv from 'dotenv';
 import { runsRoutes } from './routes/runs';
 import { authRoutes } from './routes/auth';
@@ -19,6 +20,12 @@ const app = Fastify({
 // JWT plugin — used by POST /auth/token to issue short-lived session tokens
 void app.register(fjwt, {
   secret: process.env.JWT_SECRET ?? 'dev-secret-change-in-production',
+});
+
+// Configure CORS for the frontend dashboard
+void app.register(cors, {
+  origin: '*',
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'PATCH', 'OPTIONS'],
 });
 
 // Health check — used by load balancers and docker healthcheck
