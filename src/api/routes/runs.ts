@@ -81,7 +81,7 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
 
     // Fetch granular step results
     const { rows: stepRows } = await pool.query(
-      `SELECT sr.id, sr.step_id, sr.status, sr.cache_hit, sr.selector_used, sr.duration_ms, sr.error_type, sr.failure_class, sr.healing_event_id, sr.screenshot_key, sr.content_hash, sr.created_at
+      `SELECT sr.id, sr.step_id, sr.status, sr.cache_hit, sr.selector_used, sr.duration_ms, sr.error_type, sr.failure_class, sr.healing_event_id, sr.screenshot_key, sr.content_hash, sr.target_hash, sr.user_verdict, sr.resolution_source, sr.similarity_score, sr.dom_candidates, sr.llm_picked_kaizen_id, sr.created_at
        FROM step_results sr
        WHERE sr.run_id = $1
        ORDER BY sr.created_at ASC`,
@@ -138,6 +138,78 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   const screenshots = new (require('../../modules/media/screenshot.service').ScreenshotService)(obs);
+
+  /**
+   * PATCH /runs/:runId/steps/:stepId/verdict
+   *
+   * Records a human pass/fail verdict for a step result from the QA dashboard.
+   * When verdict = 'passed', the selector used by that step is pinned in
+   * selector_cache so healing and re-resolution never overwrite it.
+   */
+  const VerdictBody = z.object({
+    verdict: z.enum(['passed', 'failed']),
+  });
+
+  app.patch<{ Params: { runId: string; stepId: string } }>(
+    '/runs/:runId/steps/:stepId/verdict',
+    async (request, reply) => {
+      const parsed = VerdictBody.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'INVALID_REQUEST', details: parsed.error.issues });
+      }
+
+      const { verdict } = parsed.data;
+      const { runId, stepId } = request.params;
+      const pool = getPool();
+
+      // Fetch the step result — target_hash links to selector_cache.content_hash
+      const { rows } = await pool.query(
+        `SELECT sr.id, sr.target_hash, sr.selector_used, r.tenant_id
+         FROM step_results sr
+         JOIN runs r ON r.id = sr.run_id
+         WHERE sr.id = $1 AND sr.run_id = $2`,
+        [stepId, runId],
+      );
+
+      if (rows.length === 0) {
+        return reply.status(404).send({ error: 'NOT_FOUND' });
+      }
+
+      const stepResult = rows[0];
+
+      // Record the verdict on the step result
+      await pool.query(
+        `UPDATE step_results SET user_verdict = $1 WHERE id = $2`,
+        [verdict, stepId],
+      );
+
+      if (stepResult.target_hash) {
+        if (verdict === 'passed' && stepResult.selector_used) {
+          // Pin this selector_cache row — healing and re-resolution will never overwrite it.
+          await pool.query(
+            `UPDATE selector_cache
+             SET pinned_at = now()
+             WHERE content_hash = $1
+               AND tenant_id = $2
+               AND $3 = ANY(
+                 SELECT s->>'selector'
+                 FROM jsonb_array_elements(selectors::jsonb) AS s
+               )`,
+            [stepResult.target_hash, stepResult.tenant_id, stepResult.selector_used],
+          );
+        } else if (verdict === 'failed') {
+          // Human says this selector is wrong — delete it so the next run resolves fresh via LLM.
+          await pool.query(
+            `DELETE FROM selector_cache
+             WHERE content_hash = $1 AND tenant_id = $2 AND pinned_at IS NULL`,
+            [stepResult.target_hash, stepResult.tenant_id],
+          );
+        }
+      }
+
+      return reply.status(200).send({ ok: true, verdict });
+    },
+  );
 
   /**
    * GET /media?key=...
