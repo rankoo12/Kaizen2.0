@@ -43,7 +43,7 @@ import { ScreenshotService } from '../modules/media/screenshot.service';
 import { getPool, closePool } from '../db/pool';
 import { createRedisConnection, RUNS_QUEUE_NAME } from '../queue';
 import type { RunJobPayload } from '../queue';
-import type { StepAST, ClassifiedFailure } from '../types';
+import type { StepAST, ClassifiedFailure, SelectorSet } from '../types';
 
 // ─── Module Setup ─────────────────────────────────────────────────────────────
 
@@ -149,14 +149,22 @@ async function insertStepResult(
   selectorUsed: string | null,
   screenshotKey: string | null,
   durationMs: number,
+  resolutionSource: string | null,
+  similarityScore: number | null,
+  domCandidates: SelectorSet['candidates'] | null,
+  llmPickedKaizenId: string | null,
 ): Promise<string | null> {
   try {
     const { rows } = await getPool().query<{ id: string }>(
       `INSERT INTO step_results
-         (tenant_id, run_id, content_hash, status, selector_used, screenshot_key, duration_ms)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+         (tenant_id, run_id, content_hash, target_hash, status, selector_used,
+          screenshot_key, duration_ms, resolution_source, similarity_score, dom_candidates, llm_picked_kaizen_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING id`,
-      [tenantId, runId, step.contentHash, status, selectorUsed, screenshotKey, durationMs],
+      [tenantId, runId, step.contentHash, step.targetHash, status, selectorUsed,
+       screenshotKey, durationMs, resolutionSource, similarityScore,
+       domCandidates ? JSON.stringify(domCandidates) : null,
+       llmPickedKaizenId],
     );
     return rows[0]?.id ?? null;
   } catch (e: any) {
@@ -206,11 +214,16 @@ async function executeStep(
   // Only capture a fresh one for the very first step (no previous).
   const beforePng = previousAfterPng ?? await page.screenshot({ type: 'png' }).catch(() => null);
   if (!previousAfterPng) {
-    void screenshots.upload(beforePng!, tenantId, runId, stepIndex, 'before');
+    void screenshots.upload(beforePng!, tenantId, runId, stepIndex, 'before')
+      .catch((e) => obs.log('warn', 'worker.screenshot_upload_failed', { phase: 'before', error: e.message }));
   }
 
   // ── Resolve selectors ─────────────────────────────────────────────────────
-  const selectorSet = await resolver.resolve(step, resolutionContext);
+  // navigate and press_key act on the page/keyboard, not a specific DOM element.
+  const needsElement = step.action !== 'navigate' && step.action !== 'press_key' && step.action !== 'wait';
+  const selectorSet: SelectorSet = needsElement
+    ? await resolver.resolve(step, resolutionContext)
+    : { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
 
   let stepError: Error | null = null;
   let result: Awaited<ReturnType<typeof engine.executeStep>>;
@@ -230,14 +243,14 @@ async function executeStep(
   // navigate and press_key pass with selectorUsed: null — check status only
   if (result.status === 'passed') {
     if (result.selectorUsed) {
-      void resolver.recordSuccess(step.contentHash, domain, result.selectorUsed);
+      void resolver.recordSuccess(step.targetHash, domain, result.selectorUsed);
     }
-    void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart);
+    void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart, selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null, selectorSet.llmPickedKaizenId ?? null);
     return { status: 'passed', healed: false, afterPng };
   }
 
   // ── Failure path: classify → heal ─────────────────────────────────────────
-  void resolver.recordFailure(step.contentHash, domain, selectorSet.selectors[0]?.selector ?? '');
+  void resolver.recordFailure(step.targetHash, domain, selectorSet.selectors[0]?.selector ?? '');
 
   const error = stepError ?? new Error('Step execution failed');
   const axAfter = await (page as any).accessibility?.snapshot().catch(() => null) ?? null;
@@ -250,6 +263,8 @@ async function executeStep(
   const stepResultId = await insertStepResult(
     tenantId, runId, step, 'failed',
     selectorSet.selectors[0]?.selector ?? null, afterKey, Date.now() - stepStart,
+    selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null,
+    selectorSet.llmPickedKaizenId ?? null,
   );
 
   const classifiedFailure: ClassifiedFailure = {

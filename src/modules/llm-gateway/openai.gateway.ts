@@ -2,9 +2,57 @@ import { createHash } from 'crypto';
 import { OpenAI } from 'openai';
 import type { Redis } from 'ioredis';
 import type { ILLMGateway } from './interfaces';
-import type { StepAST, CandidateNode, LLMResolutionResult } from '../../types';
+import type { StepAST, CandidateNode, LLMResolutionResult, CompactCandidate } from '../../types';
 import type { IBillingMeter } from '../billing-meter/interfaces';
 import type { IObservability } from '../observability/interfaces';
+
+/**
+ * Actions that can only target specific ARIA roles.
+ * Filters out semantically impossible candidates before the LLM sees them —
+ * e.g. a `type` action should never pick a `link` or `button`.
+ * No hardcoded element lists: the constraint is purely role-based (ARIA spec).
+ */
+const ACTION_ROLE_ALLOWLIST: Record<string, string[]> = {
+  type:   ['textbox', 'searchbox', 'combobox', 'spinbutton'],
+  select: ['combobox', 'listbox'],
+  // click, assert_visible, scroll, press_key, navigate: no constraint (all roles valid)
+};
+
+function filterByActionRole(candidates: CandidateNode[], action: string): CandidateNode[] {
+  const allowed = ACTION_ROLE_ALLOWLIST[action];
+  if (!allowed) return candidates;
+  const filtered = candidates.filter((c) => allowed.includes(c.role));
+  // If filtering removed everything (e.g. page has no textboxes at all), fall back to all candidates
+  // so the LLM can at least signal a "no match" rather than hallucinating from an empty list.
+  return filtered.length > 0 ? filtered : candidates;
+}
+
+/**
+ * Score candidates by word-overlap with the target description and return them
+ * sorted descending. O(n) — no embeddings, no API calls.
+ */
+function scoreAndRankCandidates(candidates: CandidateNode[], target: string): CandidateNode[] {
+  const words = target.toLowerCase().split(/\s+/)
+    .map((w) => w.replace(/[^a-z0-9]/g, ''))   // strip quotes, punctuation
+    .filter((w) => w.length > 2);
+  if (words.length === 0) return candidates;
+
+  return candidates
+    .map((c) => {
+      const haystack = [
+        c.role, c.name, c.textContent,
+        c.attributes['placeholder'] ?? '',
+        c.attributes['aria-label'] ?? '',
+        c.attributes['id'] ?? '',
+        c.attributes['name'] ?? '',
+      ].join(' ').toLowerCase();
+
+      const score = words.reduce((n, w) => n + (haystack.includes(w) ? 1 : 0), 0);
+      return { c, score };
+    })
+    .sort((a, b) => b.score - a.score)
+    .map(({ c }) => c);
+}
 
 export class OpenAIGateway implements ILLMGateway {
   private openai: OpenAI;
@@ -78,7 +126,9 @@ Return only valid JSON.`,
   async resolveElement(step: StepAST, candidates: CandidateNode[], tenantId: string): Promise<LLMResolutionResult> {
     const span = this.observability.startSpan('llm.resolveElement', { tenantId });
     try {
-      const dedupKey = this.buildDedupKey(step.contentHash, '', candidates);
+      const roleFiltered = filterByActionRole(candidates, step.action);
+      const filtered = scoreAndRankCandidates(roleFiltered, step.targetDescription ?? '').slice(0, 7);
+      const dedupKey = this.buildDedupKey(step.targetHash, '', filtered);
 
       if (this.redis) {
         const cached = await this.redis.get(dedupKey);
@@ -88,28 +138,23 @@ Return only valid JSON.`,
         }
       }
 
-      const promptCandidates = candidates
-        .map((c) => `ID: ${c.kaizenId} | Role: ${c.role} | Name: ${c.name} | Text: ${c.textContent}`)
+      const promptCandidates = filtered
+        .map((c: CandidateNode) =>
+          `[${c.kaizenId}] ${c.role}: "${c.name || c.textContent || c.attributes['placeholder'] || ''}"`,
+        )
         .join('\n');
 
       const response = await this.openai.chat.completions.create({
-        model: 'gpt-4o',
+        model: 'gpt-4o-mini',
         response_format: { type: 'json_object' },
         messages: [
           {
             role: 'system',
-            content: `Given a test step and candidate UI elements, return the best selectors.
-Output JSON schema:
-{
-  "selectors": [
-    { "selector": "[data-kaizen-id='kz-1']", "strategy": "data-testid", "confidence": 0.95 }
-  ]
-}
-Prefer data-kaizen-id selectors. Return up to 5, ordered by confidence descending.`,
+            content: `Pick the UI element that best matches the test step target. Return JSON: { "kaizenId": "kz-N" }`,
           },
           {
             role: 'user',
-            content: `Step Action: ${step.action}\nTarget: ${step.targetDescription}\nValue: ${step.value}\nCandidates:\n${promptCandidates}`,
+            content: `Action: ${step.action} | Target: ${step.targetDescription}\nCandidates:\n${promptCandidates}`,
           },
         ],
       });
@@ -117,7 +162,7 @@ Prefer data-kaizen-id selectors. Return up to 5, ordered by confidence descendin
       const jsonStr = response.choices[0].message.content;
       if (!jsonStr) throw new Error('Empty LLM response');
 
-      const result = JSON.parse(jsonStr);
+      const result = JSON.parse(jsonStr) as { kaizenId?: string };
       const tokens = response.usage?.total_tokens ?? 0;
       const promptTokens = response.usage?.prompt_tokens ?? 0;
       const completionTokens = response.usage?.completion_tokens ?? 0;
@@ -127,15 +172,30 @@ Prefer data-kaizen-id selectors. Return up to 5, ordered by confidence descendin
         eventType: 'LLM_CALL',
         quantity: tokens,
         unit: 'tokens',
-        metadata: { model: 'gpt-4o', purpose: 'resolveElement' },
+        metadata: { model: 'gpt-4o-mini', purpose: 'resolveElement' },
       });
 
+      // Map the returned kaizenId back to the pre-generated stable selectors.
+      // The LLM's only job is disambiguation — selector generation is done by the DOM pruner.
+      const pickedCandidate = filtered.find((c: CandidateNode) => c.kaizenId === result.kaizenId);
+      const selectors = pickedCandidate?.selectorCandidates ?? [];
+
+      // Build compact snapshot of what the LLM was shown, in the order it saw them
+      const llmPromptedCandidates: CompactCandidate[] = filtered.map((c: CandidateNode) => ({
+        kaizenId: c.kaizenId ?? '',
+        role: c.role,
+        name: c.name?.trim() || c.textContent?.trim() || '',
+        selector: c.cssSelector,
+      }));
+
       const resolution: LLMResolutionResult = {
-        selectors: result.selectors ?? [],
+        selectors,
         fromCache: false,
         promptTokens,
         completionTokens,
         templateVersion: '1.0.0',
+        llmPickedKaizenId: result.kaizenId ?? null,
+        llmPromptedCandidates,
       };
 
       if (this.redis) {

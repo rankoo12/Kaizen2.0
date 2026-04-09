@@ -35,7 +35,7 @@ const BASE_PARAMS = {
   tenantId: 'tenant-abc',
   contentHash: 'hash-123',
   domain: 'github.com',
-  selectors: [{ selector: '#login_field', strategy: 'css' as const, priority: 1 }],
+  selectors: [{ selector: '#login_field', strategy: 'css' as const, confidence: 0.93 }],
   stepEmbedding: Array(1536).fill(0.1),
   elementEmbedding: null,
   confidenceScore: 1.0,

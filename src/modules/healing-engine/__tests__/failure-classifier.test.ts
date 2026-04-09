@@ -3,8 +3,8 @@ import {
   classifyDOMSignal,
   classifyScreenshotSignal,
   classify,
-  type AXNode,
 } from '../failure-classifier';
+import type { AXNode } from '../../../types';
 
 // ─── Signal A ─────────────────────────────────────────────────────────────────
 

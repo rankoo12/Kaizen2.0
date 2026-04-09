@@ -69,7 +69,7 @@ describe('OpenAIGateway', () => {
       usage: { total_tokens: 150, prompt_tokens: 100, completion_tokens: 50 },
     });
 
-    const step = { action: 'click' as const, targetDescription: 'login', value: null, url: null, rawText: 'click login', contentHash: '123' };
+    const step = { action: 'click' as const, targetDescription: 'login', value: null, url: null, rawText: 'click login', contentHash: '123', targetHash: 'test-target-hash' };
     const candidates = [{ kaizenId: 'kz-2', role: 'button', name: 'Login', cssSelector: '', xpath: '', attributes: {}, textContent: 'Login', isVisible: true, similarityScore: 1 }];
 
     const result = await gateway.resolveElement(step, candidates, 'tenant-1');
@@ -87,7 +87,7 @@ describe('OpenAIGateway', () => {
       usage: { total_tokens: 50, prompt_tokens: 30, completion_tokens: 20 },
     });
 
-    const step = { action: 'click' as const, targetDescription: 'btn', value: null, url: null, rawText: 'click btn', contentHash: 'abc' };
+    const step = { action: 'click' as const, targetDescription: 'btn', value: null, url: null, rawText: 'click btn', contentHash: 'abc', targetHash: 'test-target-hash' };
     await gateway.resolveElement(step, [], 'tenant-1');
 
     expect(mockRedis.setex).toHaveBeenCalledWith(
@@ -101,7 +101,7 @@ describe('OpenAIGateway', () => {
     const cached = { selectors: [{ selector: '#btn', strategy: 'css', confidence: 0.8 }], promptTokens: 0, completionTokens: 0, templateVersion: '1.0.0' };
     mockRedis.get.mockResolvedValueOnce(JSON.stringify(cached));
 
-    const step = { action: 'click' as const, targetDescription: 'btn', value: null, url: null, rawText: 'click btn', contentHash: 'abc' };
+    const step = { action: 'click' as const, targetDescription: 'btn', value: null, url: null, rawText: 'click btn', contentHash: 'abc', targetHash: 'test-target-hash' };
     const result = await gateway.resolveElement(step, [], 'tenant-1');
 
     expect(result.fromCache).toBe(true);

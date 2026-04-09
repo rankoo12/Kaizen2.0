@@ -57,6 +57,7 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
       }
 
       // Try each selector in confidence order (already sorted by LLMElementResolver)
+      let lastError: Error | null = null;
       for (const entry of selectorSet.selectors) {
         try {
           await this.dispatchAction(step, entry.selector, pw);
@@ -75,13 +76,18 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
             screenshotKey: null,   // Phase 3: captured and uploaded to S3
             domSnapshotKey: null,  // Phase 3: AX tree snapshot persisted
           };
-        } catch {
-          // This selector failed — try the next one
+        } catch (e: any) {
+          // This selector failed — try the next one, but preserve the real error
+          lastError = e instanceof Error ? e : new Error(String(e));
           this.observability.increment('engine.selector_failed', { strategy: entry.strategy });
         }
       }
 
-      // All selectors exhausted
+      // All selectors exhausted — throw the real Playwright error so the worker's
+      // failure classifier receives the actual error message (e.g. "timeout exceeded")
+      // rather than a generic fallback. This is critical for correct healing strategy selection.
+      if (lastError) throw lastError;
+
       this.observability.increment('engine.step_failed', { action: step.action, reason: 'all_selectors_failed' });
       return this.failResult(
         start,

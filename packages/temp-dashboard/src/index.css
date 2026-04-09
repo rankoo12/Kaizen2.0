@@ -266,6 +266,22 @@ button {
   border: 1px solid rgba(245, 158, 11, 0.2);
 }
 
+/* Resolution source badges — colour by cache tier */
+.meta-item.resolution-source.redis,
+.meta-item.resolution-source.db_exact {
+  color: var(--success);
+  background: rgba(16, 185, 129, 0.1);
+}
+.meta-item.resolution-source.pgvector_step,
+.meta-item.resolution-source.pgvector_element {
+  color: #a78bfa;
+  background: rgba(167, 139, 250, 0.1);
+}
+.meta-item.resolution-source.llm {
+  color: var(--warning);
+  background: rgba(245, 158, 11, 0.1);
+}
+
 .meta-item.cache-hit {
   color: var(--success);
   background: rgba(16, 185, 129, 0.1);
@@ -366,6 +382,73 @@ button {
   color: #fbbf24;
 }
 
+/* ─── Verdict ─── */
+.verdict-row {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 1rem;
+}
+
+.btn-verdict {
+  flex: 1;
+  padding: 0.4rem 0.75rem;
+  font-size: 0.8rem;
+  font-weight: 600;
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  background: transparent;
+  color: var(--text-muted);
+  cursor: pointer;
+  transition: all 0.15s ease;
+}
+
+.btn-verdict.pass:hover:not(:disabled) {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: var(--success);
+  color: var(--success);
+}
+
+.btn-verdict.pass.active {
+  background: rgba(16, 185, 129, 0.15);
+  border-color: var(--success);
+  color: var(--success);
+  cursor: default;
+}
+
+.btn-verdict.fail:hover:not(:disabled) {
+  background: rgba(239, 68, 68, 0.1);
+  border-color: var(--danger);
+  color: var(--danger);
+}
+
+.btn-verdict.fail.active {
+  background: rgba(239, 68, 68, 0.15);
+  border-color: var(--danger);
+  color: var(--danger);
+  cursor: default;
+}
+
+.btn-verdict:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.verdict-locked-badge {
+  font-size: 0.7em;
+  font-weight: 600;
+  padding: 0.1rem 0.5rem;
+  border-radius: 999px;
+  background: rgba(16, 185, 129, 0.15);
+  border: 1px solid rgba(16, 185, 129, 0.4);
+  color: #34d399;
+  letter-spacing: 0.03em;
+}
+
+.step-card.pinned {
+  border-left-color: var(--success);
+  background: rgba(16, 185, 129, 0.03);
+}
+
 .btn-trace-toggle {
   background: transparent;
   border: 1px solid var(--border);
@@ -384,4 +467,62 @@ button {
 .btn-trace-toggle:hover {
   background: var(--bg-panel-hover);
   color: var(--text-main);
+}
+
+/* ─── DOM Candidates Table ─── */
+.dom-candidates-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin-top: 0.5rem;
+  font-size: 0.78rem;
+}
+
+.dom-candidates-table th {
+  text-align: left;
+  color: #475569;
+  font-weight: 600;
+  padding: 0.3rem 0.5rem;
+  border-bottom: 1px solid #1e293b;
+  white-space: nowrap;
+}
+
+.dom-candidates-table td {
+  padding: 0.3rem 0.5rem;
+  color: #94a3b8;
+  border-bottom: 1px solid #0f172a;
+  vertical-align: top;
+}
+
+.dom-candidates-table .selector-cell {
+  font-family: 'SFMono-Regular', Consolas, monospace;
+  color: #64748b;
+  word-break: break-all;
+}
+
+.dom-candidates-table tr.chosen-row td {
+  background: rgba(56, 189, 248, 0.06);
+  color: #e2e8f0;
+}
+
+.dom-candidates-table tr.chosen-row .selector-cell {
+  color: #38bdf8;
+}
+
+.dom-candidates-table tr:hover td {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+.llm-pick-badge {
+  display: inline-block;
+  margin-left: 0.4rem;
+  font-size: 0.68rem;
+  font-weight: 700;
+  padding: 0.1rem 0.35rem;
+  border-radius: 3px;
+  background: rgba(56, 189, 248, 0.18);
+  border: 1px solid rgba(56, 189, 248, 0.4);
+  color: #38bdf8;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  vertical-align: middle;
 }

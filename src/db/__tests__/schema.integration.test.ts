@@ -116,6 +116,7 @@ describeIfDB('DB schema — migration validation', () => {
     '001_initial_schema',
     '002_seed_compiled_ast_cache',
     '003_add_pgvector_and_auth',
+    '007_user_verdict',
   ])('migration "%s" is recorded as applied', async (version) => {
     const { rows } = await client.query(
       `SELECT version FROM schema_migrations WHERE version = $1`,

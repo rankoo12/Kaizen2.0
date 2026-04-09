@@ -80,6 +80,7 @@ describe('Shared Pool Integration', () => {
       url: null,
       rawText: 'click seeded button',
       contentHash: 'new-hash-123',
+      targetHash: 'test-target-hash',
     };
 
     const context = {

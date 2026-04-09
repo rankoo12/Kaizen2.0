@@ -1,25 +1,52 @@
 import type { IElementResolver } from './interfaces';
-import type { StepAST, SelectorSet, ResolutionContext, SelectorEntry, CandidateNode } from '../../types';
+import type { StepAST, SelectorSet, ResolutionContext, SelectorEntry, CandidateNode, CompactCandidate } from '../../types';
 import type { IDOMPruner } from '../dom-pruner/interfaces';
 import type { ILLMGateway } from '../llm-gateway/interfaces';
 import type { IObservability } from '../observability/interfaces';
 import type { ISharedPoolService } from '../shared-pool/interfaces';
 import { getPool } from '../../db/pool';
 import { appendOutcome, computeConfidence } from './confidence';
+import { toVectorSQL } from '../../utils/vector';
 
 /**
- * Converts a CandidateNode into a compact text description for embedding.
- * Produces a stable, semantic string like: "button: Add to Cart [id=add-to-cart aria-label=Add to Cart]"
- * This vector is stored as element_embedding and used by ElementSimilarityStrategy
- * to find structurally similar elements across DOM changes without LLM calls.
+ * Converts a CandidateNode into a compact semantic string for element_embedding.
+ * Uses ONLY role + accessible name — both are AX-tree stable and survive DOM restructuring,
+ * class/id/attribute churn, and CSS changes. Deliberately excludes DOM attributes
+ * so the same logical element on two different page versions maps to the same vector.
  */
-function serializeCandidateForEmbedding(candidate: CandidateNode): string {
-  const attrs = Object.entries(candidate.attributes)
-    .filter(([, v]) => v)
-    .map(([k, v]) => `${k}=${v}`)
-    .join(' ');
-  const text = candidate.textContent?.trim() || candidate.name || '';
-  return `${candidate.role}: ${text}${attrs ? ` [${attrs}]` : ''}`.trim();
+export function serializeCandidateForEmbedding(candidate: CandidateNode): string {
+  const name = candidate.name?.trim() || candidate.textContent?.trim() || '';
+  return name ? `${candidate.role}: ${name}` : candidate.role;
+}
+
+/**
+ * Returns the single candidate whose visible text/role best word-overlaps the
+ * target description. Used for element_embedding L2.5 lookup to pick which
+ * candidate's semantic identity to search the cache with.
+ */
+function pickTopCandidate(candidates: CandidateNode[], target: string): CandidateNode {
+  const words = target.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
+  if (words.length === 0) return candidates[0];
+
+  let best = candidates[0];
+  let bestScore = -1;
+  for (const c of candidates) {
+    const haystack = `${c.role} ${c.name ?? ''} ${c.textContent ?? ''}`.toLowerCase();
+    const score = words.reduce((n, w) => n + (haystack.includes(w) ? 1 : 0), 0);
+    if (score > bestScore) { bestScore = score; best = c; }
+  }
+  return best;
+}
+
+const ELEMENT_EMBEDDING_THRESHOLD = 0.92;
+
+function toCompactCandidates(candidates: CandidateNode[]): CompactCandidate[] {
+  return candidates.map((c) => ({
+    kaizenId: c.kaizenId ?? '',
+    role: c.role,
+    name: c.name?.trim() || c.textContent?.trim() || '',
+    selector: c.cssSelector,
+  }));
 }
 
 interface PlaywrightPageLike {
@@ -50,32 +77,84 @@ export class LLMElementResolver implements IElementResolver {
           reason: 'no target description',
           action: step.action,
         });
-        return { selectors: [], fromCache: false, cacheSource: null };
+        return { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
       }
 
       const candidates = await this.domPruner.prune(context.page, step.targetDescription);
 
       if (candidates.length === 0) {
         this.observability.log('warn', 'resolver.no_candidates', { action: step.action });
-        return { selectors: [], fromCache: false, cacheSource: null };
+        return { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
       }
 
+      const page = context.page as PlaywrightPageLike;
+
+      // ── L2.5: element_embedding similarity search ─────────────────────────
+      // Embed the top word-overlap candidate's semantic identity (role + name)
+      // and search the cache's element_embedding column. This catches cases like
+      // "type 'hello' in username" and "type 'test' in username" — same element,
+      // different value, different targetHash — without an LLM call.
+      const topCandidate = pickTopCandidate(candidates, step.targetDescription);
+      const elementHit = await this.elementEmbeddingLookup(topCandidate, context.tenantId, context.domain);
+      if (elementHit) {
+        const validFromCache = await this.validateSelectors(elementHit.selectors, page);
+        if (validFromCache.length > 0) {
+          this.observability.increment('resolver.cache_hit', { source: 'element_embedding' });
+          return { selectors: validFromCache, fromCache: true, cacheSource: 'tenant', resolutionSource: 'pgvector_element', similarityScore: elementHit.similarity, candidates: toCompactCandidates(candidates) };
+        }
+      }
+
+      // ── L5: LLM resolution ────────────────────────────────────────────────
       const llmResult = await this.llmGateway.resolveElement(step, candidates, context.tenantId);
 
-      // Live DOM validation — discard hallucinated selectors
-      const page = context.page as PlaywrightPageLike;
-      const validSelectors: SelectorEntry[] = [];
+      // Discard any selector the LLM hallucinated or that no longer resolves.
+      let validSelectors = await this.validateSelectors(llmResult.selectors, page, true);
 
-      for (const sel of llmResult.selectors) {
+      // Track whether the winning selector is session-scoped (data-kaizen-id)
+      // and therefore must NOT be cached — it won't exist in the next session.
+      let sessionOnly = false;
+
+      // ── LLM-picked candidate: data-kaizen-id fallback ─────────────────────
+      // The LLM correctly identified the element but the pre-generated selectors
+      // failed validation (e.g. Playwright's AX tree computes a slightly different
+      // accessible name than our DOM pruner). Since data-kaizen-id was injected
+      // in THIS session, use it for execution but never cache it.
+      if (validSelectors.length === 0 && llmResult.llmPickedKaizenId) {
+        const kzSelector = `[data-kaizen-id='${llmResult.llmPickedKaizenId}']`;
         try {
-          const handle = await page.$(sel.selector);
+          const handle = await page.$(kzSelector);
           if (handle !== null) {
-            validSelectors.push(sel);
-          } else {
-            this.observability.increment('resolver.validation_failed', { strategy: sel.strategy });
+            validSelectors = [{ selector: kzSelector, strategy: 'css' as const, confidence: 0.50 }];
+            sessionOnly = true;
+            this.observability.increment('resolver.kaizen_id_fallback_used');
           }
-        } catch {
-          this.observability.increment('resolver.validation_error', { strategy: sel.strategy });
+        } catch { /* fall through */ }
+      }
+
+      // ── Pre-generated selector fallback ──────────────────────────────────
+      // If the LLM returned no valid selectors (e.g. all hallucinated), walk the
+      // DOM-pruner-generated selectorCandidates for each candidate in order.
+      if (validSelectors.length === 0) {
+        this.observability.increment('resolver.llm_output_unusable');
+        const seen = new Set<string>();
+        for (const candidate of candidates) {
+          for (const sel of (candidate.selectorCandidates ?? [])) {
+            if (seen.has(sel.selector)) continue;
+            seen.add(sel.selector);
+            try {
+              const handle = await page.$(sel.selector);
+              if (handle !== null) {
+                validSelectors = [sel];
+                break;
+              }
+            } catch {
+              // keep trying
+            }
+          }
+          if (validSelectors.length > 0) break;
+        }
+        if (validSelectors.length > 0) {
+          this.observability.increment('resolver.fallback_selector_used');
         }
       }
 
@@ -83,10 +162,15 @@ export class LLMElementResolver implements IElementResolver {
         selectors: validSelectors,
         fromCache: false,
         cacheSource: null,
+        resolutionSource: 'llm',
+        similarityScore: null,
+        // Use the exact ranked list the LLM was shown, not the full pruner output
+        candidates: llmResult.llmPromptedCandidates ?? toCompactCandidates(candidates),
+        llmPickedKaizenId: llmResult.llmPickedKaizenId ?? null,
       };
 
-      // Persist to selector_cache + generate step_embedding + element_embedding (fire-and-forget)
-      if (validSelectors.length > 0) {
+      // Only cache stable selectors — session-scoped data-kaizen-id must never be persisted
+      if (validSelectors.length > 0 && !sessionOnly) {
         void this.persistToCache(step, context, selectorSet, candidates);
       }
 
@@ -96,17 +180,80 @@ export class LLMElementResolver implements IElementResolver {
     }
   }
 
-  async recordSuccess(contentHash: string, domain: string, selectorUsed: string): Promise<void> {
+  async recordSuccess(targetHash: string, domain: string, selectorUsed: string): Promise<void> {
     this.observability.increment('resolver.record_success', { domain });
-    await this.updateOutcomeWindow(contentHash, domain, true, selectorUsed);
+    await this.updateOutcomeWindow(targetHash, domain, true, selectorUsed);
   }
 
-  async recordFailure(contentHash: string, domain: string, selectorAttempted: string): Promise<void> {
+  async recordFailure(targetHash: string, domain: string, selectorAttempted: string): Promise<void> {
     this.observability.increment('resolver.record_failure', { domain });
-    await this.updateOutcomeWindow(contentHash, domain, false, selectorAttempted);
+    await this.updateOutcomeWindow(targetHash, domain, false, selectorAttempted);
   }
 
   // ─── Private helpers ───────────────────────────────────────────────────────
+
+  /**
+   * L2.5: search selector_cache by element_embedding cosine similarity.
+   * Embeds the candidate's stable semantic identity (role + accessible name) and
+   * finds the nearest stored element. Returns null on miss or DB error.
+   */
+  private async elementEmbeddingLookup(
+    candidate: CandidateNode,
+    tenantId: string,
+    domain: string,
+  ): Promise<{ selectors: SelectorEntry[]; similarity: number } | null> {
+    try {
+      const text = serializeCandidateForEmbedding(candidate);
+      const embedding = await this.llmGateway.generateEmbedding(text);
+      const embeddingSQL = toVectorSQL(embedding);
+
+      const { rows } = await getPool().query<{ selectors: SelectorEntry[]; similarity: number }>(
+        `SELECT selectors,
+                1 - (element_embedding <=> $1::vector) AS similarity
+         FROM selector_cache
+         WHERE element_embedding IS NOT NULL
+           AND domain = $2
+           AND tenant_id = $3
+           AND confidence_score > 0.4
+           AND 1 - (element_embedding <=> $1::vector) > $4
+         ORDER BY element_embedding <=> $1::vector
+         LIMIT 1`,
+        [embeddingSQL, domain, tenantId, ELEMENT_EMBEDDING_THRESHOLD],
+      );
+
+      return rows.length > 0 ? { selectors: rows[0].selectors, similarity: rows[0].similarity } : null;
+    } catch (e: any) {
+      this.observability.log('warn', 'resolver.element_embedding_lookup_failed', { error: e.message });
+      return null;
+    }
+  }
+
+  /**
+   * Validate selectors against the live DOM and return only those that resolve.
+   * When trackMetrics is true, increments observability counters per-miss.
+   */
+  private async validateSelectors(
+    selectors: SelectorEntry[],
+    page: PlaywrightPageLike,
+    trackMetrics = false,
+  ): Promise<SelectorEntry[]> {
+    const valid: SelectorEntry[] = [];
+    for (const sel of selectors) {
+      try {
+        const handle = await page.$(sel.selector);
+        if (handle !== null) {
+          valid.push(sel);
+        } else if (trackMetrics) {
+          this.observability.increment('resolver.validation_failed', { strategy: sel.strategy });
+        }
+      } catch {
+        if (trackMetrics) {
+          this.observability.increment('resolver.validation_error', { strategy: sel.strategy });
+        }
+      }
+    }
+    return valid;
+  }
 
   private async persistToCache(
     step: StepAST,
@@ -117,20 +264,19 @@ export class LLMElementResolver implements IElementResolver {
     try {
       const winningSelector = selectorSet.selectors[0].selector;
 
-      // step_embedding: semantic intent of the NL step text
-      const stepEmbedding = await this.llmGateway.generateEmbedding(step.rawText);
-
-      // element_embedding: semantic description of the resolved DOM element (AX tree form).
-      // Find the candidate that matches the winning selector; fall back to the top candidate.
       const winningCandidate =
         candidates.find(
           (c) => c.cssSelector === winningSelector || c.xpath === winningSelector,
         ) ?? candidates[0];
-      const elementText = serializeCandidateForEmbedding(winningCandidate);
-      const elementEmbedding = await this.llmGateway.generateEmbedding(elementText);
 
-      const toSQL = (v: number[]) => '[' + v.join(',') + ']';
+      // Run both embedding calls in parallel — they are fully independent.
+      const [stepEmbedding, elementEmbedding] = await Promise.all([
+        this.llmGateway.generateEmbedding(`${step.action} ${step.targetDescription ?? ''}`),
+        this.llmGateway.generateEmbedding(serializeCandidateForEmbedding(winningCandidate)),
+      ]);
 
+
+      // Store under targetHash so every step targeting this element hits the same row
       await getPool().query(
         `INSERT INTO selector_cache
            (tenant_id, content_hash, domain, selectors, step_embedding, element_embedding)
@@ -140,14 +286,15 @@ export class LLMElementResolver implements IElementResolver {
            selectors         = EXCLUDED.selectors,
            step_embedding    = EXCLUDED.step_embedding,
            element_embedding = EXCLUDED.element_embedding,
-           updated_at        = now()`,
+           updated_at        = now()
+         WHERE selector_cache.pinned_at IS NULL`,
         [
           context.tenantId,
-          step.contentHash,
+          step.targetHash,
           context.domain,
           JSON.stringify(selectorSet.selectors),
-          toSQL(stepEmbedding),
-          toSQL(elementEmbedding),
+          toVectorSQL(stepEmbedding),
+          toVectorSQL(elementEmbedding),
         ],
       );
 
@@ -157,12 +304,12 @@ export class LLMElementResolver implements IElementResolver {
       if (this.sharedPool) {
         void this.sharedPool.contribute({
           tenantId: context.tenantId,
-          contentHash: step.contentHash,
+          contentHash: step.targetHash,
           domain: context.domain,
           selectors: selectorSet.selectors,
           stepEmbedding,
           elementEmbedding,
-          confidenceScore: 1.0, // freshly resolved = max confidence
+          confidenceScore: 1.0,
         });
       }
     } catch (e: any) {
@@ -172,7 +319,7 @@ export class LLMElementResolver implements IElementResolver {
   }
 
   private async updateOutcomeWindow(
-    contentHash: string,
+    targetHash: string,
     domain: string,
     success: boolean,
     _selector: string,
@@ -180,12 +327,11 @@ export class LLMElementResolver implements IElementResolver {
     try {
       const pool = getPool();
 
-      // Fetch current window (RLS not required — internal operation using service role)
       const { rows } = await pool.query<{ outcome_window: boolean[] }>(
         `SELECT outcome_window FROM selector_cache
          WHERE content_hash = $1 AND domain = $2
          LIMIT 1`,
-        [contentHash, domain],
+        [targetHash, domain],
       );
 
       if (rows.length === 0) return;
@@ -202,7 +348,7 @@ export class LLMElementResolver implements IElementResolver {
              fail_count_window = CASE WHEN NOT $3 THEN fail_count_window + 1 ELSE fail_count_window END,
              updated_at        = now()
          WHERE content_hash = $4 AND domain = $5`,
-        [JSON.stringify(newWindow), newScore, success, contentHash, domain],
+        [JSON.stringify(newWindow), newScore, success, targetHash, domain],
       );
     } catch (e: any) {
       this.observability.log('warn', 'resolver.outcome_update_failed', { error: e.message });

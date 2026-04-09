@@ -45,7 +45,7 @@ describe('LLMElementResolver', () => {
   afterEach(() => jest.clearAllMocks());
 
   it('exits early if no target description is required by the action', async () => {
-    const step = { action: 'navigate' as const, targetDescription: null, value: null, url: 'https://youtube.com', rawText: 'go to youtube', contentHash: 'abc' };
+    const step = { action: 'navigate' as const, targetDescription: null, value: null, url: 'https://youtube.com', rawText: 'go to youtube', contentHash: 'abc', targetHash: 'test-target-hash' };
     const context = { tenantId: 'tenant-1', domain: 'youtube.com', page: mockPage };
 
     const result = await resolver.resolve(step, context);
@@ -56,7 +56,7 @@ describe('LLMElementResolver', () => {
   });
 
   it('filters out hallucinated selectors during live DOM validation', async () => {
-    const step = { action: 'click' as const, targetDescription: 'submit button', value: null, url: null, rawText: 'click submit', contentHash: 'abc' };
+    const step = { action: 'click' as const, targetDescription: 'submit button', value: null, url: null, rawText: 'click submit', contentHash: 'abc', targetHash: 'test-target-hash' };
     const context = { tenantId: 'tenant-1', domain: 'example.com', page: mockPage };
 
     const candidates: CandidateNode[] = [
@@ -87,7 +87,7 @@ describe('LLMElementResolver', () => {
   });
 
   it('persists resolved selectors and step_embedding to selector_cache', async () => {
-    const step = { action: 'click' as const, targetDescription: 'subscribe', value: null, url: null, rawText: 'click subscribe', contentHash: 'hash-xyz' };
+    const step = { action: 'click' as const, targetDescription: 'subscribe', value: null, url: null, rawText: 'click subscribe', contentHash: 'hash-xyz', targetHash: 'test-target-hash' };
     const context = { tenantId: 'tenant-1', domain: 'youtube.com', page: mockPage };
 
     mockDOMPruner.prune.mockResolvedValueOnce([
@@ -110,7 +110,7 @@ describe('LLMElementResolver', () => {
   });
 
   it('does not persist when all selectors fail live DOM validation', async () => {
-    const step = { action: 'click' as const, targetDescription: 'ghost', value: null, url: null, rawText: 'click ghost', contentHash: 'ghost-hash' };
+    const step = { action: 'click' as const, targetDescription: 'ghost', value: null, url: null, rawText: 'click ghost', contentHash: 'ghost-hash', targetHash: 'test-target-hash' };
     const context = { tenantId: 'tenant-1', domain: 'example.com', page: mockPage };
 
     mockDOMPruner.prune.mockResolvedValueOnce([

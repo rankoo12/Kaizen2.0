@@ -17,6 +17,9 @@ import { getPool } from '../../db/pool';
  * No hardcoded linguistic mappings anywhere in application code.
  * The seed SQL is the canonical list of pre-known patterns.
  */
+/** Billing tenant ID used for LLM calls during compilation (not tied to any user tenant). */
+const SYSTEM_TENANT_ID = 'system_global';
+
 export class LearnedCompiler implements ITestCompiler {
   // L1: process-local hot cache — avoids repeated DB reads within a run
   private readonly cache = new Map<string, StepAST>();
@@ -26,8 +29,33 @@ export class LearnedCompiler implements ITestCompiler {
     private readonly observability: IObservability,
   ) {}
 
+  /**
+   * Normalise raw step text before hashing so surface variants that carry
+   * identical intent share the same contentHash:
+   *   - lowercase + trim
+   *   - strip surrounding and embedded straight/curly quotes from values
+   *     so `type "hello" in username` === `type hello in username`
+   *   - collapse internal whitespace
+   */
+  private normalise(text: string): string {
+    return text
+      .trim()
+      .toLowerCase()
+      .replace(/[""'']/g, '')   // strip curly quotes
+      .replace(/"/g, '')        // strip straight double quotes
+      .replace(/'/g, '')        // strip straight single quotes
+      .replace(/\s+/g, ' ')
+      .trim();
+  }
+
   private hash(text: string): string {
-    return createHash('sha256').update(text.trim().toLowerCase()).digest('hex');
+    return createHash('sha256').update(this.normalise(text)).digest('hex');
+  }
+
+  private targetHash(action: string, targetDescription: string | null): string {
+    return createHash('sha256')
+      .update(`${action}:${(targetDescription ?? '').trim().toLowerCase()}`)
+      .digest('hex');
   }
 
   async compile(rawText: string): Promise<StepAST> {
@@ -46,15 +74,25 @@ export class LearnedCompiler implements ITestCompiler {
       const dbAst = await this.lookupFromDB(contentHash);
       if (dbAst) {
         this.observability.increment('compiler.cache_hit', { source: 'db' });
-        const ast: StepAST = { ...dbAst, rawText, contentHash };
+        const ast: StepAST = {
+          ...dbAst,
+          rawText,
+          contentHash,
+          targetHash: this.targetHash(dbAst.action, dbAst.targetDescription),
+        };
         this.cache.set(contentHash, ast);
         return ast;
       }
 
       // L3 — LLM fallback
       this.observability.increment('compiler.cache_miss');
-      const llmAst = await this.llmGateway.compileStep(rawText, 'system_global');
-      const ast: StepAST = { ...llmAst, rawText, contentHash };
+      const llmAst = await this.llmGateway.compileStep(rawText, SYSTEM_TENANT_ID);
+      const ast: StepAST = {
+        ...llmAst,
+        rawText,
+        contentHash,
+        targetHash: this.targetHash(llmAst.action, llmAst.targetDescription),
+      };
 
       // Write back to L2 and L1
       await this.persistToDB(contentHash, ast);
@@ -67,12 +105,7 @@ export class LearnedCompiler implements ITestCompiler {
   }
 
   async compileMany(steps: string[]): Promise<StepAST[]> {
-    // Phase 1: sequential. Phase 2: batch LLM calls for misses.
-    const results: StepAST[] = [];
-    for (const step of steps) {
-      results.push(await this.compile(step));
-    }
-    return results;
+    return Promise.all(steps.map((s) => this.compile(s)));
   }
 
   // ─── Private DB helpers ────────────────────────────────────────────────────

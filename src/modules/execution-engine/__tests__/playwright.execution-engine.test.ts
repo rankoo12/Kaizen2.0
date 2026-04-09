@@ -40,12 +40,13 @@ describe('PlaywrightExecutionEngine', () => {
       value: null,
       rawText: 'open youtube',
       contentHash: 'abc',
+      targetHash: 'test-target-hash',
     };
 
     it('passes and calls page.goto with the url from the step', async () => {
       mockPage.goto.mockResolvedValueOnce(undefined);
 
-      const result = await engine.executeStep(navigateStep, { selectors: [], fromCache: false, cacheSource: null }, mockPage);
+      const result = await engine.executeStep(navigateStep, { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null }, mockPage);
 
       expect(result.status).toBe('passed');
       expect(mockPage.goto).toHaveBeenCalledWith('https://youtube.com', { timeout: 30_000 });
@@ -55,7 +56,7 @@ describe('PlaywrightExecutionEngine', () => {
     it('fails with NavigationError when page.goto throws', async () => {
       mockPage.goto.mockRejectedValueOnce(new Error('net::ERR_NAME_NOT_RESOLVED'));
 
-      const result = await engine.executeStep(navigateStep, { selectors: [], fromCache: false, cacheSource: null }, mockPage);
+      const result = await engine.executeStep(navigateStep, { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null }, mockPage);
 
       expect(result.status).toBe('failed');
       expect(result.errorType).toBe('NavigationError');
@@ -64,7 +65,7 @@ describe('PlaywrightExecutionEngine', () => {
 
     it('fails with MissingUrlError when step.url is null', async () => {
       const step = { ...navigateStep, url: null };
-      const result = await engine.executeStep(step, { selectors: [], fromCache: false, cacheSource: null }, mockPage);
+      const result = await engine.executeStep(step, { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null }, mockPage);
 
       expect(result.status).toBe('failed');
       expect(result.errorType).toBe('MissingUrlError');
@@ -82,12 +83,13 @@ describe('PlaywrightExecutionEngine', () => {
       url: null,
       rawText: 'press enter',
       contentHash: 'def',
+      targetHash: 'test-target-hash',
     };
 
     it('passes and calls keyboard.press with the key value', async () => {
       mockPage.keyboard.press.mockResolvedValueOnce(undefined);
 
-      const result = await engine.executeStep(pressKeyStep, { selectors: [], fromCache: false, cacheSource: null }, mockPage);
+      const result = await engine.executeStep(pressKeyStep, { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null }, mockPage);
 
       expect(result.status).toBe('passed');
       expect(mockPage.keyboard.press).toHaveBeenCalledWith('Enter');
@@ -95,7 +97,7 @@ describe('PlaywrightExecutionEngine', () => {
 
     it('fails with MissingValueError when step.value is null', async () => {
       const step = { ...pressKeyStep, value: null };
-      const result = await engine.executeStep(step, { selectors: [], fromCache: false, cacheSource: null }, mockPage);
+      const result = await engine.executeStep(step, { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null }, mockPage);
 
       expect(result.status).toBe('failed');
       expect(result.errorType).toBe('MissingValueError');
@@ -113,6 +115,7 @@ describe('PlaywrightExecutionEngine', () => {
       url: null,
       rawText: 'click the search button',
       contentHash: 'ghi',
+      targetHash: 'test-target-hash',
     };
 
     const twoSelectors: SelectorSet = {
@@ -122,6 +125,8 @@ describe('PlaywrightExecutionEngine', () => {
       ],
       fromCache: false,
       cacheSource: null,
+      resolutionSource: null,
+      similarityScore: null,
     };
 
     it('passes on the first selector and does not try the second', async () => {
@@ -159,7 +164,7 @@ describe('PlaywrightExecutionEngine', () => {
     });
 
     it('returns NoSelectorsError immediately when selectorSet is empty', async () => {
-      const emptySet: SelectorSet = { selectors: [], fromCache: false, cacheSource: null };
+      const emptySet: SelectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
 
       const result = await engine.executeStep(clickStep, emptySet, mockPage);
 
@@ -180,11 +185,14 @@ describe('PlaywrightExecutionEngine', () => {
         url: null,
         rawText: 'type cats in search box',
         contentHash: 'jkl',
+      targetHash: 'test-target-hash',
       };
       const selectorSet: SelectorSet = {
         selectors: [{ selector: 'input[name="q"]', strategy: 'css', confidence: 0.9 }],
         fromCache: false,
         cacheSource: null,
+      resolutionSource: null,
+      similarityScore: null,
       };
       mockPage.fill.mockResolvedValueOnce(undefined);
 
@@ -205,11 +213,14 @@ describe('PlaywrightExecutionEngine', () => {
       url: null,
       rawText: 'check success message is visible',
       contentHash: 'mno',
+      targetHash: 'test-target-hash',
     };
     const selectorSet: SelectorSet = {
       selectors: [{ selector: '.success-msg', strategy: 'css', confidence: 0.85 }],
       fromCache: false,
       cacheSource: null,
+      resolutionSource: null,
+      similarityScore: null,
     };
 
     it('passes when the element is visible', async () => {
@@ -241,9 +252,10 @@ describe('PlaywrightExecutionEngine', () => {
       value: null,
       rawText: 'go to example',
       contentHash: 'pqr',
+      targetHash: 'test-target-hash',
     };
 
-    const result = await engine.executeStep(step, { selectors: [], fromCache: false, cacheSource: null }, mockPage);
+    const result = await engine.executeStep(step, { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null }, mockPage);
 
     expect(result.screenshotKey).toBeNull();
     expect(result.domSnapshotKey).toBeNull();
