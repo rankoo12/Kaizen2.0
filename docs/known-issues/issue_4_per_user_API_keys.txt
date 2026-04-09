@@ -1,0 +1,9 @@
+3. Per-user API keys
+
+Right now the spec gives one key to the whole tenant. Every CI pipeline at that company uses the same key.
+
+A per-user key means each developer (or each CI service account) gets their own key. Example: GitHub Actions uses key A, Jenkins uses key B, a developer's local machine uses key C.
+
+The "more complex" part: you need a UI to manage multiple keys per tenant (list them, name them, revoke individual ones). It's not technically hard but it's more surface area.
+
+My recommendation: per-tenant key for now. You're a one-person operation, the complexity isn't justified yet. When a customer says "we need to know which pipeline triggered this run" — that's the moment to add per-user/per-service keys. I'll keep the spec as-is on this one.
