@@ -15,10 +15,26 @@ interface HealingEvent {
   duration_ms: number;
 }
 
+type ResolutionSource = 'redis' | 'db_exact' | 'pgvector_step' | 'pgvector_element' | 'llm' | null;
+
+const RESOLUTION_LABELS: Record<NonNullable<ResolutionSource>, string> = {
+  redis:            'L1 Redis',
+  db_exact:         'L2 DB Exact',
+  pgvector_step:    'L3 Vector (step)',
+  pgvector_element: 'L2.5 Vector (element)',
+  llm:              'L5 LLM',
+};
+
+interface CompactCandidate {
+  kaizenId: string;
+  role: string;
+  name: string;
+  selector: string;
+}
+
 interface StepResult {
   id: string;
   status: 'pending' | 'running' | 'passed' | 'failed' | 'skipped';
-  raw_text?: string;
   cache_hit: boolean;
   duration_ms?: number;
   error_type?: string;
@@ -27,6 +43,11 @@ interface StepResult {
   selector_used?: string;
   healingEvents: HealingEvent[];
   tokens?: number;
+  user_verdict?: 'passed' | 'failed' | null;
+  resolution_source?: ResolutionSource;
+  similarity_score?: number | null;
+  dom_candidates?: CompactCandidate[] | null;
+  llm_picked_kaizen_id?: string | null;
 }
 
 interface RunData {
@@ -39,18 +60,49 @@ interface RunData {
   total_tokens?: number;
 }
 
-function StepCard({ step, idx, stepText, apiEndpoint, onImageClick }: { step: StepResult, idx: number, stepText: string, apiEndpoint: string, onImageClick: (url: string) => void }) {
+function StepCard({ step, idx, stepText, apiEndpoint, runId, onImageClick, onVerdictChange }: {
+  step: StepResult;
+  idx: number;
+  stepText: string;
+  apiEndpoint: string;
+  runId: string;
+  onImageClick: (url: string) => void;
+  onVerdictChange: (stepId: string, verdict: 'passed' | 'failed') => void;
+}) {
   const [traceOpen, setTraceOpen] = useState(false);
+  const [verdictLoading, setVerdictLoading] = useState(false);
+
+  const handleVerdict = async (verdict: 'passed' | 'failed') => {
+    if (verdictLoading || step.user_verdict === verdict) return;
+    setVerdictLoading(true);
+    try {
+      const res = await fetch(`${apiEndpoint}/runs/${runId}/steps/${step.id}/verdict`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ verdict }),
+      });
+      if (res.ok) onVerdictChange(step.id, verdict);
+    } finally {
+      setVerdictLoading(false);
+    }
+  };
+
+  const isPinned = step.user_verdict === 'passed';
 
   return (
-    <div className={`step-card ${step.status}`}>
+    <div className={`step-card ${step.status}${isPinned ? ' pinned' : ''}`}>
       <div className="step-header">
         <span className="step-text">
           {idx + 1}. {stepText || 'Unknown Step'}
         </span>
-        <span className={`status-badge ${step.status}`} style={{ fontSize: '0.7em', padding: '0.1rem 0.5rem' }}>
-          {step.status}
-        </span>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+          {isPinned && (
+            <span className="verdict-locked-badge">🔒 Pinned</span>
+          )}
+          <span className={`status-badge ${step.status}`} style={{ fontSize: '0.7em', padding: '0.1rem 0.5rem' }}>
+            {step.status}
+          </span>
+        </div>
       </div>
 
       {(step.duration_ms || step.cache_hit || step.tokens !== undefined) && (
@@ -61,11 +113,11 @@ function StepCard({ step, idx, stepText, apiEndpoint, onImageClick }: { step: St
           {step.tokens !== undefined && step.tokens > 0 && (
             <span className="meta-item">🪙 {step.tokens} tokens</span>
           )}
-          {step.cache_hit && (
-            <span className="meta-item cache-hit">⚡ Cache Hit</span>
-          )}
-          {!step.cache_hit && step.status !== 'pending' && step.status !== 'skipped' && (
-            <span className="meta-item">🤖 LLM Resolved</span>
+          {step.resolution_source && (
+            <span className={`meta-item resolution-source ${step.resolution_source}`}>
+              {step.resolution_source === 'llm' ? '🤖' : '⚡'} {RESOLUTION_LABELS[step.resolution_source]}
+              {step.similarity_score != null && ` · ${(step.similarity_score * 100).toFixed(1)}%`}
+            </span>
           )}
         </div>
       )}
@@ -97,7 +149,26 @@ function StepCard({ step, idx, stepText, apiEndpoint, onImageClick }: { step: St
         </div>
       )}
 
-      <div style={{ marginTop: '1rem' }}>
+      <div className="verdict-row">
+        <button
+          className={`btn-verdict pass${step.user_verdict === 'passed' ? ' active' : ''}`}
+          onClick={() => handleVerdict('passed')}
+          disabled={verdictLoading || step.user_verdict === 'passed'}
+          title={isPinned ? 'Selector is pinned — will not be changed by healing' : 'Mark as passed and pin this selector'}
+        >
+          ✓ Pass{isPinned ? ' (Pinned)' : ''}
+        </button>
+        <button
+          className={`btn-verdict fail${step.user_verdict === 'failed' ? ' active' : ''}`}
+          onClick={() => handleVerdict('failed')}
+          disabled={verdictLoading || step.user_verdict === 'failed'}
+          title="Mark as failed"
+        >
+          ✕ Fail
+        </button>
+      </div>
+
+      <div style={{ marginTop: '0.5rem' }}>
         <button className="btn-trace-toggle" onClick={() => setTraceOpen(!traceOpen)}>
           {traceOpen ? '▼ Hide Execution Trace' : '▶ View Execution Trace'}
         </button>
@@ -105,7 +176,14 @@ function StepCard({ step, idx, stepText, apiEndpoint, onImageClick }: { step: St
           <div className="trace-terminal">
             <div className="trace-line">
               <span className="trace-label">Resolution Origin:</span>
-              <span className="trace-value">{step.cache_hit ? 'O(1) Hash Cache Semantic Hit' : 'OpenAI Model Interpretation'}</span>
+              <span className="trace-value">
+                {step.resolution_source ? RESOLUTION_LABELS[step.resolution_source] : 'Unknown'}
+                {step.similarity_score != null && (
+                  <span style={{ marginLeft: '0.5rem', color: 'var(--success)' }}>
+                    (cosine {(step.similarity_score * 100).toFixed(2)}%)
+                  </span>
+                )}
+              </span>
             </div>
             {step.selector_used && (
               <div className="trace-line">
@@ -137,6 +215,37 @@ function StepCard({ step, idx, stepText, apiEndpoint, onImageClick }: { step: St
               <div className="trace-line">
                 <span className="trace-label">Crash Telemetry:</span>
                 <span className="trace-value" style={{ color: '#ef4444' }}>[{step.failure_class}] {step.error_type}</span>
+              </div>
+            )}
+            {step.dom_candidates && step.dom_candidates.length > 0 && (
+              <div className="trace-line" style={{ marginTop: '0.75rem' }}>
+                <span className="trace-label">DOM Candidates ({step.dom_candidates.length} presented to LLM):</span>
+                <table className="dom-candidates-table">
+                  <thead>
+                    <tr>
+                      <th>Kaizen ID</th>
+                      <th>Role</th>
+                      <th>Name</th>
+                      <th>Selector</th>
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {step.dom_candidates.map((c, i) => {
+                      const isChosen = step.llm_picked_kaizen_id != null && c.kaizenId === step.llm_picked_kaizen_id;
+                      return (
+                        <tr key={c.kaizenId || i} className={isChosen ? 'chosen-row' : ''}>
+                          <td>
+                            {c.kaizenId}
+                            {isChosen && <span className="llm-pick-badge">LLM pick</span>}
+                          </td>
+                          <td>{c.role}</td>
+                          <td>{c.name}</td>
+                          <td className="selector-cell">{c.selector}</td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
               </div>
             )}
           </div>
@@ -359,13 +468,22 @@ function App() {
                 <p>Waiting for steps to begin execution...</p>
               ) : (
                 runData.stepResults.map((step, idx) => (
-                  <StepCard 
-                    key={step.id} 
-                    step={step} 
-                    idx={idx} 
-                    stepText={steps[idx]} 
-                    apiEndpoint={apiEndpoint} 
-                    onImageClick={setActiveScreenshot} 
+                  <StepCard
+                    key={step.id}
+                    step={step}
+                    idx={idx}
+                    stepText={steps[idx]}
+                    apiEndpoint={apiEndpoint}
+                    runId={runData.id}
+                    onImageClick={setActiveScreenshot}
+                    onVerdictChange={(stepId, verdict) => {
+                      setRunData(prev => prev ? {
+                        ...prev,
+                        stepResults: prev.stepResults?.map(s =>
+                          s.id === stepId ? { ...s, user_verdict: verdict } : s
+                        ),
+                      } : prev);
+                    }}
                   />
                 ))
               )}
