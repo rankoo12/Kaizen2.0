@@ -4,6 +4,7 @@ import type { ILLMGateway } from '../../llm-gateway/interfaces';
 import type { IDOMPruner } from '../../dom-pruner/interfaces';
 import type { IObservability } from '../../observability/interfaces';
 import { getPool } from '../../../db/pool';
+import { toVectorSQL } from '../../../utils/vector';
 import type { Redis } from 'ioredis';
 
 type PageLike = {
@@ -107,7 +108,6 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
       const elementText = `${winner.role}: ${winner.textContent || winner.name}`.trim();
       const elementEmbedding = await this.llmGateway.generateEmbedding(elementText);
 
-      const toSQL = (v: number[]) => '[' + v.join(',') + ']';
 
       await getPool().query(
         `UPDATE selector_cache
@@ -115,7 +115,7 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
              element_embedding = $2::vector,
              updated_at        = now()
          WHERE content_hash = $3 AND tenant_id = $4`,
-        [toSQL(stepEmbedding), toSQL(elementEmbedding), contentHash, context.tenantId],
+        [toVectorSQL(stepEmbedding), toVectorSQL(elementEmbedding), contentHash, context.tenantId],
       );
     } catch (e: any) {
       this.observability.log('warn', 'healing.embedding_update_failed', { error: e.message });

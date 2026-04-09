@@ -1,8 +1,9 @@
 import type { IHealingStrategy } from '../interfaces';
-import type { ClassifiedFailure, HealingContext, HealingAttempt } from '../../../types';
+import type { ClassifiedFailure, HealingContext, HealingAttempt, AXNode } from '../../../types';
 import type { ILLMGateway } from '../../llm-gateway/interfaces';
 import type { IObservability } from '../../observability/interfaces';
 import { getPool } from '../../../db/pool';
+import { toVectorSQL } from '../../../utils/vector';
 
 type PageLike = {
   $(selector: string): Promise<unknown | null>;
@@ -11,11 +12,6 @@ type PageLike = {
   };
 };
 
-type AXNode = {
-  role: string;
-  name?: string;
-  children?: AXNode[];
-};
 
 const COSINE_THRESHOLD = 0.85;
 
@@ -63,7 +59,7 @@ export class ElementSimilarityStrategy implements IHealingStrategy {
         if (!text || text === `${leaf.role}:`) continue;
 
         const embedding = await this.llmGateway.generateEmbedding(text);
-        const embeddingSQL = '[' + embedding.join(',') + ']';
+        const embeddingSQL = toVectorSQL(embedding);
 
         const { rows } = await getPool().query<{
           selectors: string;

@@ -1,4 +1,4 @@
-import type { FailureClass } from '../../types';
+import type { FailureClass, AXNode } from '../../types';
 import pixelmatch from 'pixelmatch';
 import { PNG } from 'pngjs';
 
@@ -47,11 +47,6 @@ export type DOMSignal =
   | 'SelectorPresent'
   | 'SparsePage';
 
-export type AXNode = {
-  role: string;
-  name?: string;
-  children?: AXNode[];
-};
 
 /**
  * Compares AX tree snapshots taken before the step and immediately after failure.
@@ -62,8 +57,12 @@ export function classifyDOMSignal(
   axAfter: AXNode | null,
   previousSelector: string,
 ): DOMSignal {
-  // Sparse tree = page not loaded
-  if (!axAfter || countNodes(axAfter) < 5) return 'SparsePage';
+  // page.accessibility.snapshot() is deprecated in Playwright 1.44+ and can
+  // return null even on fully loaded pages. Only treat a null/sparse axAfter as
+  // SparsePage when axBefore was also populated — meaning the tree was readable
+  // before the step but vanished after, which is a genuine page-unload signal.
+  // If both are null the AX API is simply unavailable; fall through to other signals.
+  if (axBefore !== null && (!axAfter || countNodes(axAfter) < 5)) return 'SparsePage';
 
   const beforeNames = collectNames(axBefore);
   const afterNames = collectNames(axAfter);
