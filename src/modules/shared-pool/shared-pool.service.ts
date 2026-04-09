@@ -10,6 +10,7 @@ import type { Redis } from 'ioredis';
 import type { IObservability } from '../observability/interfaces';
 import type { ISharedPoolService, ContributeParams } from './interfaces';
 import { getPool } from '../../db/pool';
+import { toVectorSQL } from '../../utils/vector';
 
 const QUALITY_THRESHOLD = 0.8;  // minimum confidence_score to contribute to shared pool
 const OPT_IN_CACHE_TTL = 300;   // Redis TTL seconds for isOptedIn cache
@@ -28,7 +29,6 @@ export class SharedPoolService implements ISharedPoolService {
     // 2. Quality gate
     if (params.confidenceScore < QUALITY_THRESHOLD) return;
 
-    const toSQL = (v: number[]) => '[' + v.join(',') + ']';
 
     try {
       // 3. Check if a shared entry already exists for this (content_hash, domain)
@@ -72,8 +72,8 @@ export class SharedPoolService implements ISharedPoolService {
           params.contentHash,
           params.domain,
           JSON.stringify(params.selectors),
-          toSQL(params.stepEmbedding),
-          params.elementEmbedding ? toSQL(params.elementEmbedding) : null,
+          toVectorSQL(params.stepEmbedding),
+          params.elementEmbedding ? toVectorSQL(params.elementEmbedding) : null,
           params.confidenceScore,
           JSON.stringify(attribution),
         ],

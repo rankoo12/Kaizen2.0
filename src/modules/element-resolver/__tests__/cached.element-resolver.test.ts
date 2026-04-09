@@ -15,6 +15,7 @@ const makeStep = (overrides = {}) => ({
   url: null,
   rawText: 'click submit',
   contentHash: 'hash-abc',
+      targetHash: 'test-target-hash',
   ...overrides,
 });
 

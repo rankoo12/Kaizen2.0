@@ -10,6 +10,7 @@ const makeStep = () => ({
   url: null,
   rawText: 'click submit',
   contentHash: 'hash-abc',
+      targetHash: 'test-target-hash',
 });
 
 const makeContext = () => ({
@@ -22,9 +23,11 @@ const hitSet = (source: 'tenant' | 'shared' = 'tenant'): SelectorSet => ({
   selectors: [{ selector: '#btn', strategy: 'css', confidence: 0.9 }],
   fromCache: true,
   cacheSource: source,
+  resolutionSource: null,
+  similarityScore: null,
 });
 
-const missSet: SelectorSet = { selectors: [], fromCache: false, cacheSource: null };
+const missSet: SelectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
 
 describe('CompositeElementResolver', () => {
   let composite: CompositeElementResolver;
@@ -73,6 +76,8 @@ describe('CompositeElementResolver', () => {
       selectors: [{ selector: "[data-kaizen-id='kz-1']", strategy: 'data-testid', confidence: 0.99 }],
       fromCache: false,
       cacheSource: null,
+      resolutionSource: 'llm',
+      similarityScore: null,
     });
 
     const result = await composite.resolve(makeStep(), makeContext());
