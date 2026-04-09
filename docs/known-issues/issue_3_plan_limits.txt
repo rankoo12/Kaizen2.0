@@ -1,0 +1,5 @@
+Since you're the only tenant right now and don't have a business model yet, the right move is: one plan, no limits, keep the column for later.
+
+Keep plan on the tenants table as a text field (you'll need it eventually), but don't implement any enforcement logic yet. Remove PlanLimits from IPlatformAdminService for now — adding it later is a one-sprint task. Adding it now without a business model means you're building enforcement for rules you haven't decided yet, which is waste.
+
+I'll simplify the spec accordingly.
