@@ -87,6 +87,7 @@ describe('LearnedCompiler', () => {
       url: null,
       rawText,
       contentHash: 'stub',
+      targetHash: 'test-target-hash',
     };
 
     // DB returns empty (cache miss)
@@ -120,6 +121,7 @@ describe('LearnedCompiler', () => {
       url: null,
       rawText,
       contentHash: 'stub',
+      targetHash: 'test-target-hash',
     };
 
     // DB throws (connection refused)
