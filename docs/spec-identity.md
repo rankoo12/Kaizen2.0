@@ -1,5 +1,5 @@
 # Kaizen — Identity & Multi-Tenancy Specification
-### Version 1.0 | Tenants, Users, Memberships, and Platform Administration
+### Version 1.1 | Tenants, Users, Memberships, and Platform Administration
 
 *This spec governs how identities are created, authenticated, and authorized within Kaizen. It defines the full surface of the identity domain: the platform admin layer (Kaizen itself), tenant organizations, individual users, and the membership relationship that connects them. All other specs reference this document for auth and tenant-scoping contracts.*
 
@@ -82,6 +82,7 @@ These are hard constraints the system must enforce at all times. Any code path t
 | I-7 | A `platform_admin` identity cannot hold a tenant membership (no cross-layer contamination). |
 | I-8 | Deleted users have their memberships soft-deleted; tenant data is not affected. |
 | I-9 | Deleted tenants have their memberships soft-deleted and their product data archived, not hard-deleted. |
+| I-10 | A tenant cannot be deleted if doing so would leave any of its members with zero active memberships. The caller must ensure those users join another tenant first. |
 
 ---
 
@@ -176,7 +177,7 @@ CREATE TABLE tenants (
   slug         TEXT NOT NULL UNIQUE,              -- url-safe, e.g. "acme-corp"
   display_name TEXT NOT NULL,
   plan         TEXT NOT NULL DEFAULT 'free'
-                 CHECK (plan IN ('free', 'pro', 'enterprise')),
+                 CHECK (plan IN ('free', 'pro', 'enterprise')), -- stored for future use; no limits enforced in v1
   is_personal  BOOLEAN NOT NULL DEFAULT false,    -- display hint only; no logic branches on this
   brain_opt_in BOOLEAN NOT NULL DEFAULT false,
   suspended_at TIMESTAMPTZ,
@@ -287,12 +288,23 @@ All interfaces follow the SDD contract: the interface is the source of truth. Im
 ```typescript
 interface IAuthService {
   /**
-   * Validates credentials and issues an access + refresh token pair for the
-   * given (user, tenant) context. Returns null on invalid credentials.
-   * Tenant context is required — a user must select which workspace they are
-   * logging into (defaults to their personal tenant if only one exists).
+   * Step 1 of login: validates credentials only.
+   * Returns null on invalid credentials.
+   * On success, returns the user's tenant list and a short-lived session token
+   * used to complete login via issueToken(). The session token is NOT an access
+   * token — it cannot authenticate any product request.
+   * If the user has exactly one tenant, the client should call issueToken() immediately
+   * without prompting for workspace selection.
    */
-  login(email: string, password: string, tenantId: string): Promise<TokenPair | null>;
+  login(email: string, password: string): Promise<LoginResult | null>;
+
+  /**
+   * Step 2 of login: exchanges a session token + tenant selection for a full JWT pair.
+   * The session token is single-use and expires after 5 minutes.
+   * Returns null if the session token is invalid, expired, or the user has no
+   * active membership in the given tenant.
+   */
+  issueToken(sessionToken: string, tenantId: string): Promise<TokenPair | null>;
 
   /**
    * Issues a new access token from a valid, unexpired refresh token.
@@ -316,13 +328,12 @@ interface IAuthService {
    * Does NOT hit the database — JWT verification only.
    */
   verifyAccessToken(token: string): Promise<AccessTokenClaims | null>;
-
-  /**
-   * Returns the list of tenants the user has active memberships in.
-   * Used to populate the workspace switcher on login when user belongs to multiple tenants.
-   */
-  listUserTenants(userId: string): Promise<TenantSummary[]>;
 }
+
+type LoginResult = {
+  sessionToken: string;       // short-lived (5 min), single-use — used only for issueToken()
+  tenants: TenantSummary[];   // list of workspaces the user belongs to
+};
 
 type TokenPair = {
   accessToken: string;    // JWT, TTL: 15 minutes
@@ -362,6 +373,8 @@ interface ITenantService {
    * Soft-deletes the tenant and all its memberships.
    * Product data (runs, selector cache) is archived, not deleted.
    * Only callable by owner.
+   * Throws if any member would be left with zero active memberships after deletion (invariant I-10).
+   * The error response includes the list of affected users so the client can inform the owner.
    */
   delete(tenantId: string, requestingUserId: string): Promise<void>;
 
@@ -492,7 +505,11 @@ interface IPlatformAdminService {
 
   unsuspendTenant(tenantId: string, adminId: string): Promise<void>;
 
-  overridePlan(tenantId: string, adminId: string, plan: string, limits: PlanLimits): Promise<void>;
+  /**
+   * Updates the tenant's plan label. No limit enforcement is implemented in v1 —
+   * the plan field is stored for future use when a billing model is defined.
+   */
+  overridePlan(tenantId: string, adminId: string, plan: string): Promise<void>;
 
   /**
    * Issues a time-limited (1 hour) impersonation JWT for the given user.
@@ -515,12 +532,12 @@ All routes are under `/api/v1`. Routes marked 🔒 require a valid access token.
 
 | Method | Route | Auth | Description |
 |---|---|---|---|
-| POST | `/auth/register` | — | Register + create personal tenant |
-| POST | `/auth/login` | — | Login; returns token pair |
+| POST | `/auth/register` | — | Register + create personal tenant; returns token pair directly (single tenant, no picker needed) |
+| POST | `/auth/login` | — | Step 1: validate credentials; returns session token + tenant list |
+| POST | `/auth/token` | — | Step 2: exchange session token + tenantId for full JWT pair |
 | POST | `/auth/refresh` | — | Rotate refresh token |
 | POST | `/auth/logout` | 🔒 | Revoke current refresh token |
 | POST | `/auth/logout-all` | 🔒 | Revoke all refresh tokens |
-| GET  | `/auth/tenants` | 🔒 | List tenants the user belongs to (for workspace switcher) |
 | POST | `/auth/password-reset/request` | — | Request reset email |
 | POST | `/auth/password-reset/confirm` | — | Confirm reset with token |
 | POST | `/auth/verify-email` | — | Confirm email with token |
@@ -575,10 +592,21 @@ All routes are under `/api/v1`. Routes marked 🔒 require a valid access token.
 ## 8. Auth Flow
 
 ```
-User submits email + password + tenantId
+Step 1 — POST /auth/login { email, password }
   → IAuthService.login()
     → Fetch user by email WHERE deleted_at IS NULL
-    → Compare password against bcrypt hash
+    → Compare password against bcrypt hash (returns null on mismatch)
+    → Fetch active memberships for user → build TenantSummary list
+    → Generate session token (random 32 bytes → hex, TTL: 5 min, stored in Redis)
+    → Return { sessionToken, tenants: [...] }
+
+Client logic:
+  → If tenants.length === 1 → proceed directly to Step 2 with that tenantId
+  → If tenants.length  > 1 → show workspace picker → user selects tenantId → Step 2
+
+Step 2 — POST /auth/token { sessionToken, tenantId }
+  → IAuthService.issueToken()
+    → Validate session token from Redis (single-use: delete on read)
     → Fetch membership WHERE user_id = $1 AND tenant_id = $2 AND deleted_at IS NULL
     → If tenant is suspended → reject with 403 TENANT_SUSPENDED
     → If membership.accepted_at IS NULL → reject with 403 INVITE_NOT_ACCEPTED
