@@ -1,0 +1,75 @@
+@import "tailwindcss";
+
+@theme {
+  /* Colors */
+  --color-app-bg: #18121d;
+  --color-welcome-bg: #130d17;
+  --color-card-bg: #231b29;
+  --color-input-bg: #18121d;
+  --color-border-subtle: rgba(255, 255, 255, 0.0625);
+  --color-brand-orange: #d5601c;
+  --color-brand-orange-light: #e59365;
+  --color-brand-pink: #db87af;
+  --color-brand-pink-light: #ebd1de;
+  --color-brand-pink-mid: #d498b6;
+  --color-brand-yellow: #f59e0b;
+  --color-brand-accent: #c17741;
+  --color-brand-red: #ef4444;
+
+  /* Fonts */
+  --font-sans: var(--font-inter), Inter, sans-serif;
+  --font-space: var(--font-space-grotesk), 'Space Grotesk', sans-serif;
+  --font-manrope: var(--font-manrope), Manrope, sans-serif;
+}
+
+/* Custom thin scrollbar */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #332640;
+  border-radius: 10px;
+}
+
+/* Animation: toast drop from top */
+@keyframes toastDrop {
+  0% { opacity: 0; transform: translate(-50%, -20px); }
+  10%, 90% { opacity: 1; transform: translate(-50%, 0); }
+  100% { opacity: 0; transform: translate(-50%, -20px); }
+}
+.animate-toast-drop { animation: toastDrop 3.5s forwards; }
+
+/* Animation: modal scale-in */
+@keyframes modalPop {
+  from { opacity: 0; transform: scale(0.95); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.animate-modal-pop { animation: modalPop 0.2s ease-out forwards; }
+
+/* Animation: pulsing red border (regressions) */
+@keyframes pulseRed {
+  0%, 100% { border-color: rgba(239, 68, 68, 1); }
+  50%       { border-color: rgba(239, 68, 68, 0.2); box-shadow: 0 0 5px rgba(239, 68, 68, 0.2); }
+}
+.animate-pulse-red { animation: pulseRed 1.5s infinite; }
+
+/* Animation: glowing green border (improvements) */
+@keyframes glowGreen {
+  0%, 100% { box-shadow: 0 0 5px rgba(34, 197, 94, 0.4); }
+  50%       { box-shadow: 0 0 20px rgba(34, 197, 94, 0.8); }
+}
+.animate-glow-green { animation: glowGreen 2s infinite; }
+
+/* Step textarea line-rule background */
+.code-input {
+  background-image: repeating-linear-gradient(
+    transparent,
+    transparent 23px,
+    rgba(255, 255, 255, 0.03) 24px
+  );
+  line-height: 24px;
+}

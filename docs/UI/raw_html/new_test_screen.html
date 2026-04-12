@@ -1,0 +1,290 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kaizen - Create New Test</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts -->
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Space+Grotesk:wght@500;600;700&display=swap" rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        space: ['Space Grotesk', 'sans-serif'],
+                    },
+                    colors: {
+                        appBg: '#18121d',
+                        panelBg: '#231b29',
+                        cardBg: '#231b29',
+                        inputBg: '#18121d',
+                        borderSubtle: '#ffffff10',
+                        brandOrange: '#d5601c',
+                        brandYellow: '#f59e0b',
+                        brandPink: '#db87af',
+                        brandGreen: '#22c55e',
+                        brandRed: '#ef4444',
+                        brandAccent: '#c17741',
+                        textMuted: '#9ca3af'
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        ::-webkit-scrollbar { width: 6px; height: 6px; }
+        ::-webkit-scrollbar-track { background: transparent; }
+        ::-webkit-scrollbar-thumb { background: #332640; border-radius: 10px; }
+        
+        /* סגנון לתיבת הטקסט שתראה כמו קוד */
+        .code-input {
+            background-image: repeating-linear-gradient(transparent, transparent 23px, rgba(255,255,255,0.03) 24px);
+            line-height: 24px;
+        }
+
+        /* הוספת אנימציית Fade in שהייתה חסרה */
+        @keyframes fadeIn {
+            from { opacity: 0; transform: translateY(5px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        .animate-fade-in {
+            animation: fadeIn 0.3s ease-out forwards;
+        }
+    </style>
+</head>
+<body class="bg-appBg text-white font-sans min-h-screen flex flex-col">
+
+    <!-- Top Navigation -->
+    <nav class="flex items-center justify-between px-8 py-4 border-b border-borderSubtle bg-appBg/80 backdrop-blur-sm sticky top-0 z-50">
+        <div class="flex items-center space-x-8">
+            <div class="text-2xl font-bold tracking-wider cursor-pointer font-space flex items-center">
+                <span>KAI</span><span class="text-brandOrange">ZEN</span>
+            </div>
+            <div class="h-6 w-px bg-borderSubtle"></div>
+            <span class="text-xs font-semibold tracking-[0.15em] text-gray-500 uppercase">Kaizen QA</span>
+        </div>
+
+        <div class="flex items-center space-x-6">
+             <button class="flex items-center space-x-2 text-brandPink/80 hover:text-brandPink transition-colors bg-panelBg px-4 py-2 rounded-lg border border-borderSubtle">
+                <i data-lucide="arrow-left" class="w-4 h-4"></i>
+                <span class="text-xs font-bold uppercase tracking-wider">Back to Suite</span>
+            </button>
+            
+            <!-- Interactive Profile Menu -->
+            <div class="relative">
+                <div onclick="toggleProfileMenu(event)" class="w-8 h-8 rounded-full bg-gradient-to-tr from-brandPink to-brandOrange p-[1px] cursor-pointer hover:scale-105 hover:shadow-[0_0_10px_rgba(219,135,175,0.4)] transition-all">
+                    <div class="w-full h-full bg-cardBg rounded-full flex items-center justify-center overflow-hidden">
+                        <i data-lucide="user" class="w-4 h-4 text-white/80"></i>
+                    </div>
+                </div>
+                <!-- Dropdown (Hidden by default) -->
+                <div id="profile-menu" class="hidden absolute top-12 right-0 w-48 bg-panelBg border border-borderSubtle rounded-xl shadow-2xl py-2 z-50 animate-fade-in origin-top-right">
+                    <a href="#" class="flex items-center space-x-2 px-4 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/5 transition-colors"><i data-lucide="settings" class="w-4 h-4"></i><span>Settings</span></a>
+                    <hr class="border-borderSubtle my-1">
+                    <a href="#" class="flex items-center space-x-2 px-4 py-2.5 text-sm text-brandRed/80 hover:text-brandRed hover:bg-brandRed/10 transition-colors"><i data-lucide="log-out" class="w-4 h-4"></i><span>Logout</span></a>
+                </div>
+            </div>
+        </div>
+    </nav>
+
+    <!-- Main Layout -->
+    <main class="flex-1 p-4 md:p-8 max-w-[1200px] mx-auto w-full flex flex-col gap-6 md:gap-8">
+        
+        <!-- Header -->
+        <div class="flex flex-col md:flex-row justify-between items-start md:items-end gap-4 border-b border-borderSubtle pb-6">
+            <div>
+                <h1 class="text-4xl md:text-5xl font-bold tracking-tight mb-2">Design Test</h1>
+                <p class="text-brandPink/80 text-lg">Define semantic logic, execution steps, and validation criteria.</p>
+            </div>
+        </div>
+
+        <!-- Form Layout -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8">
+            
+            <!-- Left Column: Test Details (Spans 8 cols) -->
+            <div class="lg:col-span-8 space-y-6">
+                
+                <!-- Test Name & Description -->
+                <div class="bg-panelBg p-6 rounded-2xl border border-borderSubtle space-y-5 shadow-lg">
+                     <div class="space-y-2">
+                        <label class="block text-[11px] font-bold text-gray-400 tracking-wider uppercase flex items-center justify-between">
+                            New Test Name
+                            <span id="test-id-display" class="text-brandPink opacity-70 hover:opacity-100 cursor-pointer transition-opacity" title="Click to assign next available ID" onclick="incrementTestId()">#1001</span>
+                        </label>
+                        <input type="text" placeholder="e.g., Validate checkout flow with empty cart" 
+                            class="w-full bg-inputBg text-sm text-white rounded-xl px-4 py-3 outline-none border border-borderSubtle focus:border-brandAccent/50 transition-colors placeholder:text-gray-600 font-medium">
+                    </div>
+
+                    <div class="space-y-2">
+                        <label class="block text-[11px] font-bold text-gray-400 tracking-wider uppercase">New Test Description</label>
+                        <textarea placeholder="Describe what this test is supposed to achieve..." rows="3"
+                            class="w-full bg-inputBg text-sm text-white rounded-xl px-4 py-3 outline-none border border-borderSubtle focus:border-brandAccent/50 transition-colors placeholder:text-gray-600 resize-none"></textarea>
+                    </div>
+                </div>
+
+                <!-- Execution Steps -->
+                <div class="bg-panelBg p-6 rounded-2xl border border-borderSubtle shadow-lg">
+                    <div class="flex items-center justify-between mb-4">
+                        <h2 class="text-sm font-bold tracking-widest text-brandAccent uppercase flex items-center space-x-2">
+                            <i data-lucide="list-ordered" class="w-4 h-4"></i>
+                            <span>Execution Steps</span>
+                        </h2>
+                        <span id="step-count" class="text-xs font-semibold text-gray-400 bg-[#1e1525] px-3 py-1.5 rounded-lg border border-borderSubtle transition-all">3 Steps</span>
+                    </div>
+
+                    <div id="steps-container" class="space-y-3">
+                        <!-- Step 1 -->
+                        <div class="step-item flex items-start space-x-3 group animate-fade-in">
+                            <div class="step-number w-8 h-8 rounded-lg bg-inputBg border border-borderSubtle flex items-center justify-center text-xs font-bold text-brandPink shrink-0 mt-1">01</div>
+                            <input type="text" value="Navigate to the application homepage" class="flex-1 bg-inputBg/50 hover:bg-inputBg text-sm text-gray-200 rounded-lg px-4 py-2.5 outline-none border border-transparent focus:border-brandAccent/30 transition-colors">
+                            <button class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-brandRed transition-all p-2 mt-0.5" onclick="removeStep(this)"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                        </div>
+                        <!-- Step 2 -->
+                        <div class="step-item flex items-start space-x-3 group animate-fade-in">
+                            <div class="step-number w-8 h-8 rounded-lg bg-inputBg border border-borderSubtle flex items-center justify-center text-xs font-bold text-brandPink shrink-0 mt-1">02</div>
+                            <input type="text" value="Locate the main navigation menu" class="flex-1 bg-inputBg/50 hover:bg-inputBg text-sm text-gray-200 rounded-lg px-4 py-2.5 outline-none border border-transparent focus:border-brandAccent/30 transition-colors">
+                            <button class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-brandRed transition-all p-2 mt-0.5" onclick="removeStep(this)"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                        </div>
+                        <!-- Step 3 -->
+                        <div class="step-item flex items-start space-x-3 group animate-fade-in">
+                            <div class="step-number w-8 h-8 rounded-lg bg-inputBg border border-borderSubtle flex items-center justify-center text-xs font-bold text-brandPink shrink-0 mt-1">03</div>
+                            <input type="text" placeholder="Describe the next action..." class="flex-1 bg-inputBg/50 hover:bg-inputBg text-sm text-gray-200 rounded-lg px-4 py-2.5 outline-none border border-borderSubtle border-dashed focus:border-brandAccent/30 transition-colors focus:border-solid">
+                            <button class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-brandRed transition-all p-2 mt-0.5" onclick="removeStep(this)"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                        </div>
+                    </div>
+
+                    <div class="mt-4 flex gap-3">
+                        <button onclick="addStep()" class="flex-[2] py-3 border border-dashed border-borderSubtle text-gray-400 text-xs font-bold tracking-widest uppercase rounded-xl hover:bg-white/5 hover:text-white transition-colors flex items-center justify-center space-x-2">
+                            <i data-lucide="plus" class="w-4 h-4"></i>
+                            <span>Add Neural Step</span>
+                        </button>
+                        <button class="flex-1 py-3 border border-borderSubtle bg-panelBg text-brandPink/80 text-xs font-bold tracking-widest uppercase rounded-xl hover:text-brandPink hover:bg-white/5 transition-colors flex items-center justify-center space-x-2">
+                            <i data-lucide="save" class="w-4 h-4"></i>
+                            <span>Save Test</span>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Right Column: Settings & Highlights (Spans 4 cols) -->
+            <div class="lg:col-span-4 space-y-6">
+                
+                <!-- Highlights / Assertions -->
+                <div class="bg-panelBg p-6 rounded-2xl border border-borderSubtle shadow-lg flex flex-col h-full max-h-[350px]">
+                     <h2 class="text-sm font-bold tracking-widest text-brandPink uppercase flex items-center space-x-2 mb-4">
+                        <i data-lucide="zap" class="w-4 h-4"></i>
+                        <span>Expected Results</span>
+                    </h2>
+                    <p class="text-base text-gray-400 mb-3 leading-relaxed">Define the expected outcomes or elements the engine must focus on during execution.</p>
+                    
+                    <textarea placeholder="1. Ensure 'Login' button is visible.&#10;2. Verify cart counter is 0.&#10;3. Check for error message on invalid input..." 
+                        class="flex-1 w-full bg-inputBg text-sm text-brandAccent rounded-xl px-4 py-3 outline-none border border-borderSubtle focus:border-brandAccent/50 transition-colors placeholder:text-gray-700 resize-none code-input font-mono"></textarea>
+                </div>
+
+                <!-- Environment Settings (Visual only) -->
+                 <div class="bg-panelBg p-5 rounded-2xl border border-borderSubtle shadow-lg">
+                     <h2 class="text-[10px] font-bold tracking-widest text-gray-500 uppercase mb-3">Suite</h2>
+                     <div class="flex items-center justify-between bg-inputBg px-4 py-2.5 rounded-lg border border-borderSubtle cursor-pointer hover:border-gray-500 transition-colors">
+                         <div class="flex items-center space-x-2">
+                             <i data-lucide="monitor" class="w-4 h-4 text-gray-400"></i>
+                             <span class="text-sm font-medium text-gray-200">Production UI</span>
+                         </div>
+                         <i data-lucide="chevron-down" class="w-4 h-4 text-gray-500"></i>
+                     </div>
+                 </div>
+            </div>
+        </div>
+
+        <!-- FULL WIDTH ACTION BUTTON -->
+        <div class="mt-2 bg-panelBg p-6 lg:p-8 rounded-2xl border border-borderSubtle flex shadow-2xl relative overflow-hidden group">
+            <!-- Background glow effect -->
+            <div class="absolute inset-0 bg-gradient-to-r from-brandOrange/10 to-brandYellow/10 opacity-0 group-hover:opacity-100 transition-opacity duration-500 pointer-events-none"></div>
+            
+            <button class="w-full py-5 bg-gradient-to-r from-brandOrange to-brandYellow text-black text-base font-bold tracking-widest uppercase rounded-xl hover:opacity-90 transition-all flex items-center justify-center space-x-3 shadow-[0_0_20px_rgba(213,96,28,0.2)] hover:shadow-[0_0_30px_rgba(213,96,28,0.4)] relative z-10">
+                <i data-lucide="play" class="w-5 h-5 fill-current"></i>
+                <span>Run Test</span>
+            </button>
+        </div>
+    </main>
+
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+
+        let currentTestId = 1001;
+
+        // Profile Menu Logic
+        function toggleProfileMenu(event) {
+            event.stopPropagation();
+            const menu = document.getElementById('profile-menu');
+            menu.classList.toggle('hidden');
+        }
+
+        // Close menu when clicking outside
+        document.addEventListener('click', () => {
+            const menu = document.getElementById('profile-menu');
+            if (menu && !menu.classList.contains('hidden')) {
+                menu.classList.add('hidden');
+            }
+        });
+
+        // Logic for incrementing Test ID interactively
+        function incrementTestId() {
+            currentTestId++;
+            document.getElementById('test-id-display').innerText = '#' + currentTestId;
+        }
+
+        // פונקציה לעדכון המספרים של הצעדים והמונה הכולל
+        function updateSteps() {
+            const container = document.getElementById('steps-container');
+            const steps = container.querySelectorAll('.step-item');
+            const countDisplay = document.getElementById('step-count');
+            
+            // עדכון המונה למעלה
+            countDisplay.innerText = `${steps.length} Step${steps.length !== 1 ? 's' : ''}`;
+            
+            // אפקט הבהוב קל כשמתעדכן
+            countDisplay.classList.add('bg-white/10', 'text-white');
+            setTimeout(() => {
+                countDisplay.classList.remove('bg-white/10', 'text-white');
+            }, 200);
+
+            // מסדור מחדש של הריבועים (01, 02...)
+            steps.forEach((step, index) => {
+                const numberDiv = step.querySelector('.step-number');
+                numberDiv.innerText = (index + 1).toString().padStart(2, '0');
+            });
+        }
+
+        // Logic for adding new steps dynamically
+        function addStep() {
+            const container = document.getElementById('steps-container');
+            const stepCount = container.querySelectorAll('.step-item').length + 1;
+            
+            const stepHtml = `
+                <div class="step-item flex items-start space-x-3 group animate-fade-in">
+                    <div class="step-number w-8 h-8 rounded-lg bg-inputBg border border-borderSubtle flex items-center justify-center text-xs font-bold text-brandPink shrink-0 mt-1">${stepCount.toString().padStart(2, '0')}</div>
+                    <input type="text" placeholder="Describe the next action..." class="flex-1 bg-inputBg/50 hover:bg-inputBg text-sm text-gray-200 rounded-lg px-4 py-2.5 outline-none border border-borderSubtle border-dashed focus:border-brandAccent/30 transition-colors focus:border-solid">
+                    <button class="opacity-0 group-hover:opacity-100 text-gray-500 hover:text-brandRed transition-all p-2 mt-0.5" onclick="removeStep(this)"><i data-lucide="trash-2" class="w-4 h-4"></i></button>
+                </div>
+            `;
+            container.insertAdjacentHTML('beforeend', stepHtml);
+            lucide.createIcons();
+            updateSteps(); // עדכון אחרי הוספה
+        }
+
+        // Logic for removing a step
+        function removeStep(button) {
+            const stepItem = button.closest('.step-item');
+            stepItem.remove();
+            updateSteps(); // עדכון אחרי מחיקה
+        }
+    </script>
+</body>
+</html>
