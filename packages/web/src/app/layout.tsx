@@ -1,5 +1,6 @@
 import type { Metadata } from 'next';
 import { Inter, Space_Grotesk, Manrope } from 'next/font/google';
+import { Providers } from '@/components/providers';
 import './globals.css';
 
 const inter = Inter({
@@ -28,7 +29,9 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       lang="en"
       className={`${inter.variable} ${spaceGrotesk.variable} ${manrope.variable}`}
     >
-      <body className="bg-app-bg text-white font-sans min-h-screen">{children}</body>
+      <body className="bg-app-bg text-white font-sans min-h-screen">
+        <Providers>{children}</Providers>
+      </body>
     </html>
   );
 }

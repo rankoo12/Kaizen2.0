@@ -1,27 +1,46 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter } from 'next/navigation';
 import { Lock } from 'lucide-react';
+import { useAuth } from '@/context/auth-context';
 import { AuthCard } from './auth-card';
 import { FormField } from '@/components/molecules/form-field';
 import { SocialAuthRow } from '@/components/molecules/social-auth-row';
 import { Button } from '@/components/atoms/button';
 
-type SignupFormProps = {
-  onSubmit?: (data: { email: string; password: string; confirmPassword: string }) => void;
-  onLogin?: () => void;
-  onGoogle?: () => void;
-  onFacebook?: () => void;
-};
+export function SignupForm() {
+  const { register } = useAuth();
+  const router = useRouter();
 
-export function SignupForm({ onSubmit, onLogin, onGoogle, onFacebook }: SignupFormProps) {
-  const [email, setEmail] = useState('');
-  const [password, setPassword] = useState('');
-  const [confirmPassword, setConfirmPassword] = useState('');
+  const [email, setEmail]                 = useState('');
+  const [password, setPassword]           = useState('');
+  const [confirmPassword, setConfirm]     = useState('');
+  const [error, setError]                 = useState('');
+  const [loading, setLoading]             = useState(false);
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
-    onSubmit?.({ email, password, confirmPassword });
+    setError('');
+
+    if (password !== confirmPassword) {
+      setError('Passwords do not match');
+      return;
+    }
+    if (password.length < 8) {
+      setError('Password must be at least 8 characters');
+      return;
+    }
+
+    setLoading(true);
+    try {
+      await register(email, password);
+      router.push('/tests');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -55,23 +74,33 @@ export function SignupForm({ onSubmit, onLogin, onGoogle, onFacebook }: SignupFo
           inputProps={{
             type: 'password',
             value: confirmPassword,
-            onChange: (e) => setConfirmPassword(e.target.value),
+            onChange: (e) => setConfirm(e.target.value),
             rightElement: <Lock className="w-4 h-4" />,
             focusVariant: 'pink',
           }}
         />
 
-        <Button variant="primary-pink" size="md" fullWidth type="submit">
-          Sign Up
+        {error && (
+          <p className="text-brand-red text-sm text-center -mt-1">{error}</p>
+        )}
+
+        <Button
+          variant="primary-pink"
+          size="md"
+          fullWidth
+          type="submit"
+          disabled={loading}
+        >
+          {loading ? 'Creating account…' : 'Sign Up'}
         </Button>
 
-        <SocialAuthRow label="Or Sign Up with" onGoogle={onGoogle} onFacebook={onFacebook} />
+        <SocialAuthRow label="Or Sign Up with" />
 
         <div className="text-center mt-8 text-sm">
           <span className="text-brand-pink/80 font-medium">Already Have An Account?</span>
           <button
             type="button"
-            onClick={onLogin}
+            onClick={() => router.push('/login')}
             className="text-white font-semibold hover:underline ml-1"
           >
             Login Now

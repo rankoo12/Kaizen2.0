@@ -2,13 +2,10 @@
 
 import { useState, useEffect, useRef } from 'react';
 import { User, Settings, LogOut } from 'lucide-react';
+import { useAuth } from '@/context/auth-context';
 
-type ProfileDropdownProps = {
-  onSettings?: () => void;
-  onLogout?: () => void;
-};
-
-export function ProfileDropdown({ onSettings, onLogout }: ProfileDropdownProps) {
+export function ProfileDropdown() {
+  const { user, logout } = useAuth();
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -36,11 +33,19 @@ export function ProfileDropdown({ onSettings, onLogout }: ProfileDropdownProps) 
       </button>
 
       {open && (
-        <div className="absolute top-12 right-0 w-48 bg-card-bg border border-border-subtle rounded-xl shadow-2xl py-2 z-50 origin-top-right">
+        <div className="absolute top-12 right-0 w-56 bg-card-bg border border-border-subtle rounded-xl shadow-2xl py-2 z-50 origin-top-right">
+          {user && (
+            <>
+              <div className="px-4 py-2.5 border-b border-border-subtle">
+                <p className="text-sm font-semibold text-white truncate">{user.displayName}</p>
+                <p className="text-xs text-gray-400 truncate">{user.email}</p>
+              </div>
+            </>
+          )}
           <button
             type="button"
-            onClick={onSettings}
-            className="flex items-center space-x-2 w-full px-4 py-2.5 text-sm text-gray-300 hover:text-white hover:bg-white/5 transition-colors"
+            disabled
+            className="flex items-center space-x-2 w-full px-4 py-2.5 text-sm text-gray-500 cursor-not-allowed"
           >
             <Settings className="w-4 h-4" />
             <span>Settings</span>
@@ -48,7 +53,7 @@ export function ProfileDropdown({ onSettings, onLogout }: ProfileDropdownProps) 
           <hr className="border-border-subtle my-1" />
           <button
             type="button"
-            onClick={onLogout}
+            onClick={() => { setOpen(false); logout(); }}
             className="flex items-center space-x-2 w-full px-4 py-2.5 text-sm text-brand-red/80 hover:text-brand-red hover:bg-brand-red/10 transition-colors"
           >
             <LogOut className="w-4 h-4" />
