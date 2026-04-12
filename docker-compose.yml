@@ -82,20 +82,20 @@ services:
       redis:
         condition: service_healthy
 
-  dashboard:
+  web:
     build:
-      context: ./packages/temp-dashboard
-      dockerfile: Dockerfile.dashboard
+      context: ./packages/web
+      dockerfile: Dockerfile.web
     ports:
-      - "5173:5173"
+      - "3001:3000"
     environment:
       - NODE_ENV=development
-      - VITE_API_URL=http://localhost:3000
+      - CHOKIDAR_USEPOLLING=true
+      - NEXT_TELEMETRY_DISABLED=1
     volumes:
-      - ./packages/temp-dashboard:/app
+      - ./packages/web:/app
       - /app/node_modules
-    # Force bindings
-    command: npm run dev -- --host
+      - /app/.next
     depends_on:
       api:
         condition: service_started
