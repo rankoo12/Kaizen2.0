@@ -209,7 +209,7 @@ All auth errors should surface in the form as a simple inline error message (not
 
 ## 3. Branch 2 — Tests Integration (`feat/tests/integration`)
 
-Depends on Branch 1 being merged. All frontend API calls go through `/api/proxy/...` (the Route Handler proxy from §2), so JWT handling is already solved.
+Depends on Branch 1 being merged. All frontend API calls go thr ough `/api/proxy/...` (the Route Handler proxy from §2), so JWT handling is already solved.
 
 ### 3.1 Backend: Missing Test-Case/Suite Routes
 

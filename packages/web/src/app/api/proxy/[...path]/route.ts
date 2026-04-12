@@ -44,14 +44,24 @@ async function buildResponse(res: Response, cookieUpdates?: {
   refresh: string;
 }): Promise<NextResponse> {
   const contentType = res.headers.get('content-type') ?? '';
-  const hasBody = res.status !== 204 && contentType.includes('application/json');
+  const isJson = contentType.includes('application/json');
 
   let response: NextResponse;
-  if (hasBody) {
+  
+  if (res.status === 204) {
+    response = new NextResponse(null, { status: 204 });
+  } else if (isJson) {
     const data = await res.json();
     response = NextResponse.json(data, { status: res.status });
   } else {
-    response = new NextResponse(null, { status: res.status });
+    // Handle binary data (images, etc)
+    const buffer = await res.arrayBuffer();
+    response = new NextResponse(buffer, {
+      status: res.status,
+      headers: {
+        'Content-Type': contentType,
+      },
+    });
   }
 
   if (cookieUpdates) {

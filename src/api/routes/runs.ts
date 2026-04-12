@@ -64,6 +64,77 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
     return reply.status(202).send({ runId, status: 'queued' });
   });
 
+  /**
+   * GET /runs
+   *
+   * Lists runs for the authenticated tenant with optional filters.
+   * Requires JWT auth — tenantId resolved from token.
+   *
+   * Query params: suiteId?, caseId?, status?, page? (default 1), limit? (default 20, max 100)
+   */
+  const { requireAuth } = await import('../middleware/auth');
+
+  app.get('/runs', { preHandler: [requireAuth] }, async (request, reply) => {
+    const query = request.query as {
+      suiteId?: string; caseId?: string; status?: string;
+      page?: string; limit?: string;
+    };
+    const { tenantId } = request;
+
+    const page  = Math.max(1, parseInt(query.page  ?? '1',  10));
+    const limit = Math.min(100, Math.max(1, parseInt(query.limit ?? '20', 10)));
+    const offset = (page - 1) * limit;
+
+    const conditions: string[] = ['r.tenant_id = $1'];
+    const values: unknown[]    = [tenantId];
+    let vi = 2;
+
+    if (query.suiteId) { conditions.push(`r.suite_id = $${vi++}`); values.push(query.suiteId); }
+    if (query.caseId)  { conditions.push(`r.case_id  = $${vi++}`); values.push(query.caseId); }
+    if (query.status)  { conditions.push(`r.status   = $${vi++}`); values.push(query.status); }
+
+    const where = conditions.join(' AND ');
+    values.push(limit, offset);
+
+    const pool = getPool();
+    const { rows } = await pool.query(
+      `SELECT r.id, r.case_id, r.suite_id, r.status, r.triggered_by,
+              r.created_at, r.completed_at,
+              tc.name AS case_name,
+              ts.name AS suite_name
+       FROM runs r
+       LEFT JOIN test_cases  tc ON tc.id = r.case_id
+       LEFT JOIN test_suites ts ON ts.id = r.suite_id
+       WHERE ${where}
+       ORDER BY r.created_at DESC
+       LIMIT $${vi++} OFFSET $${vi}`,
+      values,
+    );
+
+    const { rows: countRows } = await pool.query(
+      `SELECT COUNT(*)::int AS total FROM runs r WHERE ${where}`,
+      values.slice(0, -2), // exclude limit/offset
+    );
+
+    const total = countRows[0].total;
+    return reply.send({
+      runs: rows.map((r) => ({
+        id:          r.id,
+        caseId:      r.case_id,
+        caseName:    r.case_name,
+        suiteId:     r.suite_id,
+        suiteName:   r.suite_name,
+        status:      r.status,
+        triggeredBy: r.triggered_by,
+        createdAt:   r.created_at,
+        completedAt: r.completed_at,
+      })),
+      total,
+      page,
+      totalPages: Math.ceil(total / limit),
+    });
+  });
+
   app.get<{ Params: { id: string } }>('/runs/:id', async (request, reply) => {
     const pool = getPool();
     const { rows } = await pool.query(
