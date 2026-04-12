@@ -92,6 +92,7 @@ services:
       - NODE_ENV=development
       - CHOKIDAR_USEPOLLING=true
       - NEXT_TELEMETRY_DISABLED=1
+      - KAIZEN_API_URL=http://api:3000
     volumes:
       - ./packages/web:/app
       - /app/node_modules

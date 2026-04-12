@@ -1,27 +1,37 @@
 'use client';
 
 import { useState } from 'react';
+import { useRouter, useSearchParams } from 'next/navigation';
 import { Lock } from 'lucide-react';
+import { useAuth } from '@/context/auth-context';
 import { AuthCard } from './auth-card';
 import { FormField } from '@/components/molecules/form-field';
 import { SocialAuthRow } from '@/components/molecules/social-auth-row';
 import { Button } from '@/components/atoms/button';
 
-type LoginFormProps = {
-  onSubmit?: (data: { email: string; password: string }) => void;
-  onForgotPassword?: () => void;
-  onSignUp?: () => void;
-  onGoogle?: () => void;
-  onFacebook?: () => void;
-};
+export function LoginForm() {
+  const { login } = useAuth();
+  const router = useRouter();
+  const searchParams = useSearchParams();
 
-export function LoginForm({ onSubmit, onForgotPassword, onSignUp, onGoogle, onFacebook }: LoginFormProps) {
-  const [email, setEmail] = useState('');
+  const [email, setEmail]       = useState('');
   const [password, setPassword] = useState('');
+  const [error, setError]       = useState('');
+  const [loading, setLoading]   = useState(false);
 
-  function handleSubmit(e: React.FormEvent) {
+  async function handleSubmit(e: React.SyntheticEvent<HTMLFormElement>) {
     e.preventDefault();
-    onSubmit?.({ email, password });
+    setError('');
+    setLoading(true);
+    try {
+      await login(email, password);
+      const next = searchParams.get('next') ?? '/tests';
+      router.push(next);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Something went wrong. Please try again.');
+    } finally {
+      setLoading(false);
+    }
   }
 
   return (
@@ -50,27 +60,36 @@ export function LoginForm({ onSubmit, onForgotPassword, onSignUp, onGoogle, onFa
           }}
         />
 
-        <Button variant="primary-orange" size="md" fullWidth type="submit">
-          Login
+        {error && (
+          <p className="text-brand-red text-sm text-center -mt-2">{error}</p>
+        )}
+
+        <Button
+          variant="primary-orange"
+          size="md"
+          fullWidth
+          type="submit"
+          disabled={loading}
+        >
+          {loading ? 'Logging in…' : 'Login'}
         </Button>
 
         <div className="text-center mt-6">
           <button
             type="button"
-            onClick={onForgotPassword}
             className="text-xs text-gray-400 hover:text-white transition-colors uppercase tracking-wider font-medium"
           >
             Forgot Password?
           </button>
         </div>
 
-        <SocialAuthRow label="Or Login with" onGoogle={onGoogle} onFacebook={onFacebook} />
+        <SocialAuthRow label="Or Login with" />
 
         <div className="text-center mt-8 text-sm">
           <span className="text-brand-orange-light font-medium">Don&apos;t Have An Account?</span>
           <button
             type="button"
-            onClick={onSignUp}
+            onClick={() => router.push('/signup')}
             className="text-white font-semibold hover:underline ml-1"
           >
             Sign Up Now
