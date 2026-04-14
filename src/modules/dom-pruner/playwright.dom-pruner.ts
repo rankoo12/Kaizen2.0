@@ -37,6 +37,7 @@ export class PlaywrightDOMPruner implements IDOMPruner {
       centerPoint: { x: number; y: number };
       // Raw ingredients for selector generation
       tagName: string;
+      parentContext: string;
     }> = await pwPage.evaluate(() => {
       // ── 1. Query semantic interactive elements ────────────────────────────
       const elements = Array.from(document.querySelectorAll(
@@ -68,7 +69,7 @@ export class PlaywrightDOMPruner implements IDOMPruner {
         const attributes: Record<string, string> = {};
         for (const attr of [
           'id', 'name', 'placeholder', 'aria-label', 'aria-labelledby',
-          'type', 'href', 'title', 'data-testid', 'role',
+          'type', 'href', 'title', 'data-testid', 'data-qa', 'data-test', 'role',
         ]) {
           const val = el.getAttribute(attr);
           if (val) attributes[attr] = val;
@@ -140,6 +141,39 @@ export class PlaywrightDOMPruner implements IDOMPruner {
           accessibleName = textContent.substring(0, 80);
         }
 
+        // ── 8. Parent context for disambiguation ──────────────────────────
+        // Walk up the DOM to find the nearest semantic ancestor label so the
+        // LLM can tell apart elements that share an identical accessible name
+        // (e.g. two "Email" inputs — one for login, one for newsletter).
+        let parentContext = '';
+        let node: HTMLElement | null = el.parentElement;
+        while (node && node !== document.body) {
+          const nodeTag = node.tagName.toLowerCase();
+          if (nodeTag === 'form') {
+            parentContext = node.getAttribute('aria-label') || node.getAttribute('title') || '';
+            if (parentContext) break;
+          }
+          if (nodeTag === 'fieldset') {
+            const legend = node.querySelector(':scope > legend');
+            if (legend) { parentContext = (legend.textContent || '').trim(); break; }
+          }
+          if (['section', 'main', 'aside', 'article'].includes(nodeTag)) {
+            parentContext = node.getAttribute('aria-label') || '';
+            if (parentContext) break;
+          }
+          // Nearest preceding sibling heading
+          let prev = node.previousElementSibling as HTMLElement | null;
+          while (prev) {
+            if (/^h[1-3]$/i.test(prev.tagName)) {
+              parentContext = (prev.textContent || '').trim().substring(0, 60);
+              break;
+            }
+            prev = prev.previousElementSibling as HTMLElement | null;
+          }
+          if (parentContext) break;
+          node = node.parentElement;
+        }
+
         results.push({
           kaizenId,
           role,
@@ -147,6 +181,7 @@ export class PlaywrightDOMPruner implements IDOMPruner {
           attributes,
           textContent,
           tagName,
+          parentContext,
           centerPoint: {
             x: Math.round(rect.x + rect.width / 2),
             y: Math.round(rect.y + rect.height / 2),
@@ -185,6 +220,8 @@ export class PlaywrightDOMPruner implements IDOMPruner {
       const id = attributes['id'];
       const name = attributes['name'];
       const testId = attributes['data-testid'];
+      const qaId = attributes['data-qa'];
+      const testAttr = attributes['data-test'];
       const ariaLabel = attributes['aria-label'];
       const placeholder = attributes['placeholder'];
 
@@ -210,10 +247,26 @@ export class PlaywrightDOMPruner implements IDOMPruner {
         });
       }
 
-      // ── Priority 3: data-testid ────────────────────────────────────────────
+      // ── Priority 3: data-testid / data-qa / data-test ────────────────────
+      // All three are purpose-built test identifiers: unique, stable, and not
+      // affected by label/accessible-name mismatches in the surrounding HTML.
       if (testId) {
         selectors.push({
           selector: `[data-testid="${escapeAttr(testId)}"]`,
+          strategy: 'data-testid',
+          confidence: 0.91,
+        });
+      }
+      if (qaId) {
+        selectors.push({
+          selector: `[data-qa="${escapeAttr(qaId)}"]`,
+          strategy: 'data-testid',   // same stability class as data-testid
+          confidence: 0.91,
+        });
+      }
+      if (testAttr) {
+        selectors.push({
+          selector: `[data-test="${escapeAttr(testAttr)}"]`,
           strategy: 'data-testid',
           confidence: 0.91,
         });
@@ -272,6 +325,7 @@ export class PlaywrightDOMPruner implements IDOMPruner {
         similarityScore: 1.0,
         centerPoint: raw.centerPoint,
         selectorCandidates: selectors,
+        parentContext: raw.parentContext || undefined,
       } satisfies CandidateNode;
     });
   }

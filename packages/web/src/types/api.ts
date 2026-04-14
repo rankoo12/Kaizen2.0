@@ -61,6 +61,14 @@ export type RunSummary = {
   totalTokens: number | null;
 };
 
+export type DomCandidate = {
+  kaizenId: string;
+  role: string;
+  name: string;
+  selector: string;
+  parentContext?: string;
+};
+
 export type StepResult = {
   id: string;
   stepId: string;
@@ -71,7 +79,10 @@ export type StepResult = {
   errorType: string | null;
   failureClass: string | null;
   resolutionSource: string | null;
+  selectorUsed: string | null;
   createdAt: string;
+  domCandidates: DomCandidate[] | null;
+  llmPickedKaizenId: string | null;
 };
 
 export type RunDetail = RunSummary & {

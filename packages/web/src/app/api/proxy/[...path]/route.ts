@@ -32,7 +32,7 @@ async function forwardRequest(
     Authorization: `Bearer ${accessToken}`,
     'Content-Type': 'application/json',
   };
-  return fetch(url, { method, headers, body });
+  return fetch(url, { method, headers, body, cache: 'no-store' });
 }
 
 function buildUpstreamUrl(pathSegments: string[], search: string): string {

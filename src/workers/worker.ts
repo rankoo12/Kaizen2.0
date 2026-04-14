@@ -87,7 +87,7 @@ async function markRunRunning(runId: string): Promise<void> {
   );
 }
 
-async function markRunComplete(runId: string, status: 'passed' | 'failed' | 'healed'): Promise<void> {
+async function markRunComplete(runId: string, status: 'passed' | 'failed' | 'healed' | 'cancelled'): Promise<void> {
   await getPool().query(
     `UPDATE runs SET status = $1, completed_at = now() WHERE id = $2`,
     [status, runId],
@@ -95,6 +95,18 @@ async function markRunComplete(runId: string, status: 'passed' | 'failed' | 'hea
 }
 
 // ─── Job Processor ────────────────────────────────────────────────────────────
+
+export function cancelKey(runId: string): string {
+  return `cancel:${runId}`;
+}
+
+async function isCancelled(runId: string): Promise<boolean> {
+  try {
+    return (await cacheRedis.get(cancelKey(runId))) !== null;
+  } catch {
+    return false;
+  }
+}
 
 async function processRun(payload: RunJobPayload): Promise<void> {
   const { runId, tenantId, compiledSteps, baseUrl } = payload;
@@ -112,11 +124,21 @@ async function processRun(payload: RunJobPayload): Promise<void> {
 
   let runPassed = true;
   let anyHealed = false;
+  let cancelled = false;
   const domain = new URL(baseUrl).hostname;
   let previousAfterPng: Buffer | null = null;
 
   try {
     for (let i = 0; i < compiledSteps.length; i++) {
+      // Check for a cancellation signal set via POST /runs/:id/cancel before
+      // starting each step. The current step is allowed to finish; we never
+      // interrupt mid-action to avoid leaving the browser in a broken state.
+      if (await isCancelled(runId)) {
+        cancelled = true;
+        logger.info({ event: 'run_cancelled', runId, stepsCompleted: i });
+        break;
+      }
+
       const step = compiledSteps[i];
       const { status, healed, afterPng } = await executeStep(step, page, tenantId, runId, domain, i, previousAfterPng);
       previousAfterPng = afterPng;
@@ -131,9 +153,11 @@ async function processRun(payload: RunJobPayload): Promise<void> {
   } finally {
     await context.close();
     await browser.close();
+    // Always clean up the cancellation key so it doesn't linger in Redis.
+    await cacheRedis.del(cancelKey(runId)).catch(() => {});
   }
 
-  const finalStatus = runPassed ? (anyHealed ? 'healed' : 'passed') : 'failed';
+  const finalStatus = cancelled ? 'cancelled' : runPassed ? (anyHealed ? 'healed' : 'passed') : 'failed';
   await markRunComplete(runId, finalStatus);
 
   obs.increment('worker.run_completed', { status: finalStatus });
@@ -153,18 +177,19 @@ async function insertStepResult(
   similarityScore: number | null,
   domCandidates: SelectorSet['candidates'] | null,
   llmPickedKaizenId: string | null,
+  tokensUsed: number,
 ): Promise<string | null> {
   try {
     const { rows } = await getPool().query<{ id: string }>(
       `INSERT INTO step_results
          (tenant_id, run_id, content_hash, target_hash, status, selector_used,
-          screenshot_key, duration_ms, resolution_source, similarity_score, dom_candidates, llm_picked_kaizen_id)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+          screenshot_key, duration_ms, resolution_source, similarity_score, dom_candidates, llm_picked_kaizen_id, tokens_used)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
        RETURNING id`,
       [tenantId, runId, step.contentHash, step.targetHash, status, selectorUsed,
        screenshotKey, durationMs, resolutionSource, similarityScore,
        domCandidates ? JSON.stringify(domCandidates) : null,
-       llmPickedKaizenId],
+       llmPickedKaizenId, tokensUsed],
     );
     return rows[0]?.id ?? null;
   } catch (e: any) {
@@ -202,7 +227,7 @@ async function executeStep(
   stepIndex: number,
   previousAfterPng?: Buffer | null,
 ): Promise<{ status: 'passed' | 'failed'; healed: boolean; afterPng: Buffer | null }> {
-  const resolutionContext = { tenantId, domain, page };
+  const resolutionContext = { tenantId, domain, page, pageUrl: page.url() };
   const stepStart = Date.now();
 
   // ── AX snapshot + before screenshot ──────────────────────────────────────
@@ -245,7 +270,7 @@ async function executeStep(
     if (result.selectorUsed) {
       void resolver.recordSuccess(step.targetHash, domain, result.selectorUsed);
     }
-    void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart, selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null, selectorSet.llmPickedKaizenId ?? null);
+    void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart, selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null, selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0);
     return { status: 'passed', healed: false, afterPng };
   }
 
@@ -264,7 +289,7 @@ async function executeStep(
     tenantId, runId, step, 'failed',
     selectorSet.selectors[0]?.selector ?? null, afterKey, Date.now() - stepStart,
     selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null,
-    selectorSet.llmPickedKaizenId ?? null,
+    selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0,
   );
 
   const classifiedFailure: ClassifiedFailure = {

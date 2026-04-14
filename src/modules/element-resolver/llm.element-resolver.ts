@@ -10,13 +10,21 @@ import { toVectorSQL } from '../../utils/vector';
 
 /**
  * Converts a CandidateNode into a compact semantic string for element_embedding.
- * Uses ONLY role + accessible name — both are AX-tree stable and survive DOM restructuring,
- * class/id/attribute churn, and CSS changes. Deliberately excludes DOM attributes
- * so the same logical element on two different page versions maps to the same vector.
+ * Uses role + accessible name (AX-tree stable) plus an optional URL path suffix.
+ *
+ * The URL path suffix (`@ /login`) is critical for correctness: two elements with
+ * identical role+name on different pages (e.g. "textbox: Email" on /login vs /register)
+ * would otherwise produce identical vectors, making cosine similarity = 1.0 regardless
+ * of threshold — a false positive that cannot be prevented by tuning alone.
+ * Including the pathname makes each page's element embedding distinct.
+ *
+ * urlPath should be the normalized pathname only (no query string, no hash) so that
+ * query-param variation on the same logical page doesn't fragment the cache.
  */
-export function serializeCandidateForEmbedding(candidate: CandidateNode): string {
+export function serializeCandidateForEmbedding(candidate: CandidateNode, urlPath?: string): string {
   const name = candidate.name?.trim() || candidate.textContent?.trim() || '';
-  return name ? `${candidate.role}: ${name}` : candidate.role;
+  const base = name ? `${candidate.role}: ${name}` : candidate.role;
+  return urlPath ? `${base} @ ${urlPath}` : base;
 }
 
 /**
@@ -38,7 +46,7 @@ function pickTopCandidate(candidates: CandidateNode[], target: string): Candidat
   return best;
 }
 
-const ELEMENT_EMBEDDING_THRESHOLD = 0.92;
+const ELEMENT_EMBEDDING_THRESHOLD = 0.95;
 
 function toCompactCandidates(candidates: CandidateNode[]): CompactCandidate[] {
   return candidates.map((c) => ({
@@ -51,6 +59,7 @@ function toCompactCandidates(candidates: CandidateNode[]): CompactCandidate[] {
 
 interface PlaywrightPageLike {
   $(selector: string): Promise<unknown | null>;
+  $$(selector: string): Promise<unknown[]>;
 }
 
 /**
@@ -87,7 +96,7 @@ export class LLMElementResolver implements IElementResolver {
         return { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
       }
 
-      const page = context.page as PlaywrightPageLike;
+      const page = context.page as unknown as PlaywrightPageLike;
 
       // ── L2.5: element_embedding similarity search ─────────────────────────
       // Embed the top word-overlap candidate's semantic identity (role + name)
@@ -95,7 +104,7 @@ export class LLMElementResolver implements IElementResolver {
       // "type 'hello' in username" and "type 'test' in username" — same element,
       // different value, different targetHash — without an LLM call.
       const topCandidate = pickTopCandidate(candidates, step.targetDescription);
-      const elementHit = await this.elementEmbeddingLookup(topCandidate, context.tenantId, context.domain);
+      const elementHit = await this.elementEmbeddingLookup(topCandidate, context.tenantId, context.domain, context.pageUrl);
       if (elementHit) {
         const validFromCache = await this.validateSelectors(elementHit.selectors, page);
         if (validFromCache.length > 0) {
@@ -113,6 +122,27 @@ export class LLMElementResolver implements IElementResolver {
       // Track whether the winning selector is session-scoped (data-kaizen-id)
       // and therefore must NOT be cached — it won't exist in the next session.
       let sessionOnly = false;
+
+      // ── Ambiguity check ───────────────────────────────────────────────────
+      // If the top stable selector matches more than one element (e.g. two inputs
+      // share role=textbox[name="Email Address"]), Playwright picks DOM-first which
+      // may be the wrong element even though the LLM picked the correct candidate.
+      // In that case, swap to the session-scoped data-kaizen-id selector — it is
+      // always unique because we injected it ourselves into the live DOM.
+      if (validSelectors.length > 0 && llmResult.llmPickedKaizenId) {
+        const isUnique = await this.isSelectorUnique(validSelectors[0].selector, page);
+        if (!isUnique) {
+          const kzSelector = `[data-kaizen-id='${llmResult.llmPickedKaizenId}']`;
+          try {
+            const handle = await page.$(kzSelector);
+            if (handle !== null) {
+              this.observability.increment('resolver.ambiguous_selector_kz_fallback');
+              validSelectors = [{ selector: kzSelector, strategy: 'css' as const, confidence: 0.50 }];
+              sessionOnly = true;
+            }
+          } catch { /* keep the ambiguous stable selector — better than nothing */ }
+        }
+      }
 
       // ── LLM-picked candidate: data-kaizen-id fallback ─────────────────────
       // The LLM correctly identified the element but the pre-generated selectors
@@ -167,6 +197,7 @@ export class LLMElementResolver implements IElementResolver {
         // Use the exact ranked list the LLM was shown, not the full pruner output
         candidates: llmResult.llmPromptedCandidates ?? toCompactCandidates(candidates),
         llmPickedKaizenId: llmResult.llmPickedKaizenId ?? null,
+        tokensUsed: (llmResult.promptTokens ?? 0) + (llmResult.completionTokens ?? 0),
       };
 
       // Only cache stable selectors — session-scoped data-kaizen-id must never be persisted
@@ -194,16 +225,22 @@ export class LLMElementResolver implements IElementResolver {
 
   /**
    * L2.5: search selector_cache by element_embedding cosine similarity.
-   * Embeds the candidate's stable semantic identity (role + accessible name) and
-   * finds the nearest stored element. Returns null on miss or DB error.
+   * Embeds the candidate's stable semantic identity (role + accessible name + URL path)
+   * and finds the nearest stored element. Returns null on miss or DB error.
+   *
+   * The URL path is included in the embedding text so that elements with the same
+   * role+name on different pages (e.g. "textbox: Email" on /login vs /register)
+   * produce distinct vectors and cannot false-positive match each other.
    */
   private async elementEmbeddingLookup(
     candidate: CandidateNode,
     tenantId: string,
     domain: string,
+    pageUrl?: string,
   ): Promise<{ selectors: SelectorEntry[]; similarity: number } | null> {
     try {
-      const text = serializeCandidateForEmbedding(candidate);
+      const urlPath = pageUrl ? new URL(pageUrl).pathname : undefined;
+      const text = serializeCandidateForEmbedding(candidate, urlPath);
       const embedding = await this.llmGateway.generateEmbedding(text);
       const embeddingSQL = toVectorSQL(embedding);
 
@@ -225,6 +262,20 @@ export class LLMElementResolver implements IElementResolver {
     } catch (e: any) {
       this.observability.log('warn', 'resolver.element_embedding_lookup_failed', { error: e.message });
       return null;
+    }
+  }
+
+  /**
+   * Returns true if the selector matches exactly one element on the page.
+   * A selector that matches multiple elements is ambiguous — using it would
+   * target the first DOM occurrence, which may not be the intended element.
+   */
+  private async isSelectorUnique(selector: string, page: PlaywrightPageLike): Promise<boolean> {
+    try {
+      const handles = await page.$$(selector);
+      return handles.length <= 1;
+    } catch {
+      return true; // assume unique on error so we don't needlessly fall back
     }
   }
 
@@ -270,9 +321,12 @@ export class LLMElementResolver implements IElementResolver {
         ) ?? candidates[0];
 
       // Run both embedding calls in parallel — they are fully independent.
+      // Element embedding includes the URL pathname so same-name elements on different
+      // pages produce distinct vectors (see serializeCandidateForEmbedding for rationale).
+      const urlPath = context.pageUrl ? new URL(context.pageUrl).pathname : undefined;
       const [stepEmbedding, elementEmbedding] = await Promise.all([
         this.llmGateway.generateEmbedding(`${step.action} ${step.targetDescription ?? ''}`),
-        this.llmGateway.generateEmbedding(serializeCandidateForEmbedding(winningCandidate)),
+        this.llmGateway.generateEmbedding(serializeCandidateForEmbedding(winningCandidate, urlPath)),
       ]);
 
 

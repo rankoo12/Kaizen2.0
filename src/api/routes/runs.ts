@@ -1,7 +1,9 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { Redis } from 'ioredis';
 import { getPool } from '../../db/pool';
 import { createRunQueue } from '../../queue';
+import { cancelKey } from '../../workers/worker';
 import { LearnedCompiler } from '../../modules/test-compiler/learned.compiler';
 import { OpenAIGateway } from '../../modules/llm-gateway/openai.gateway';
 import { PostgresBillingMeter } from '../../modules/billing-meter/postgres.billing-meter';
@@ -21,6 +23,7 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
   const llm = new OpenAIGateway(billing, obs);
   const compiler = new LearnedCompiler(llm, obs);
   const queue = createRunQueue();
+  const redis = new Redis(process.env.REDIS_URL ?? 'redis://localhost:6379');
 
   /**
    * POST /runs
@@ -152,7 +155,7 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
 
     // Fetch granular step results
     const { rows: stepRows } = await pool.query(
-      `SELECT sr.id, sr.step_id, sr.status, sr.cache_hit, sr.selector_used, sr.duration_ms, sr.error_type, sr.failure_class, sr.healing_event_id, sr.screenshot_key, sr.content_hash, sr.target_hash, sr.user_verdict, sr.resolution_source, sr.similarity_score, sr.dom_candidates, sr.llm_picked_kaizen_id, sr.created_at
+      `SELECT sr.id, sr.step_id, sr.status, sr.cache_hit, sr.selector_used, sr.duration_ms, sr.error_type, sr.failure_class, sr.healing_event_id, sr.screenshot_key, sr.content_hash, sr.target_hash, sr.user_verdict, sr.resolution_source, sr.similarity_score, sr.dom_candidates, sr.llm_picked_kaizen_id, sr.tokens_used, sr.created_at
        FROM step_results sr
        WHERE sr.run_id = $1
        ORDER BY sr.created_at ASC`,
@@ -183,23 +186,11 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
       [run.tenant_id, run.started_at, run.completed_at]
     );
 
-    let lastTime = new Date(run.started_at || run.created_at);
-    run.stepResults = stepRows.map((step: any) => {
-      const stepTime = new Date(step.created_at);
-      const stepLlmCalls = llmRows.filter((r: any) => {
-        const t = new Date(r.created_at);
-        return t > lastTime && t <= stepTime;
-      });
-      lastTime = stepTime;
-
-      const tokens = stepLlmCalls.reduce((sum: number, r: any) => sum + Number(r.tokens || 0), 0);
-
-      return {
-        ...step,
-        healingEvents: healingRows.filter((h: any) => h.step_result_id === step.id),
-        tokens
-      };
-    });
+    run.stepResults = stepRows.map((step: any) => ({
+      ...step,
+      healingEvents: healingRows.filter((h: any) => h.step_result_id === step.id),
+      tokens: step.tokens_used ?? 0,
+    }));
 
     // Also attach general total tokens to run itself
     run.total_tokens = llmRows.reduce((sum: number, r: any) => sum + Number(r.tokens || 0), 0);
@@ -233,9 +224,12 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
       const { runId, stepId } = request.params;
       const pool = getPool();
 
-      // Fetch the step result — target_hash links to selector_cache.content_hash
+      // Fetch the step result.
+      // content_hash — links to compiled_ast_cache (cleared on verdict=failed so
+      //   a stale wrong compilation gets evicted and recompiled fresh next run)
+      // target_hash  — links to selector_cache
       const { rows } = await pool.query(
-        `SELECT sr.id, sr.target_hash, sr.selector_used, r.tenant_id
+        `SELECT sr.id, sr.content_hash, sr.target_hash, sr.selector_used, r.tenant_id
          FROM step_results sr
          JOIN runs r ON r.id = sr.run_id
          WHERE sr.id = $1 AND sr.run_id = $2`,
@@ -269,18 +263,142 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
             [stepResult.target_hash, stepResult.tenant_id, stepResult.selector_used],
           );
         } else if (verdict === 'failed') {
-          // Human says this selector is wrong — delete it so the next run resolves fresh via LLM.
+          // Human says this selector is wrong. Purge it from every cache layer so
+          // the next run resolves fresh via LLM.
+
+          // 1. Delete tenant-scoped Postgres row by targetHash.
           await pool.query(
             `DELETE FROM selector_cache
              WHERE content_hash = $1 AND tenant_id = $2 AND pinned_at IS NULL`,
             [stepResult.target_hash, stepResult.tenant_id],
           );
+
+          // 2. Purge the shared-pool row contributed by this entry (tenant_id IS NULL,
+          //    is_shared = true). Without this, other tenants on L4 keep getting the
+          //    wrong selector indefinitely.
+          await pool.query(
+            `DELETE FROM selector_cache
+             WHERE content_hash = $1 AND is_shared = true AND pinned_at IS NULL`,
+            [stepResult.target_hash],
+          );
+
+          // 2b. Evict every other cache row (for this tenant OR shared) whose
+          //     selectors array contains the exact wrong selector.
+          //
+          //     Why this is necessary: the element_embedding (L2.5 vector search)
+          //     is keyed by the DOM element's semantic identity, not the step hash.
+          //     A sibling element that shares a mislabeled accessible name (e.g.
+          //     two inputs where the wrong <label for> points both to "city") can
+          //     have an element_embedding that appears nearly identical to the
+          //     current step's target element.  Deleting only by targetHash leaves
+          //     that sibling row intact, so the vector search keeps returning the
+          //     bad selector on every subsequent run even after the user marks fail.
+          if (stepResult.selector_used) {
+            await pool.query(
+              `DELETE FROM selector_cache
+               WHERE (tenant_id = $1 OR is_shared = true)
+                 AND $2 = ANY(
+                   SELECT s->>'selector'
+                   FROM jsonb_array_elements(selectors::jsonb) AS s
+                 )
+                 AND pinned_at IS NULL`,
+              [stepResult.tenant_id, stepResult.selector_used],
+            );
+          }
+
+          // 3. Delete the compiled_ast_cache entry so the step is recompiled on
+          //    the next run. Without this, a wrong compilation (e.g. action:"click"
+          //    instead of action:"select") persists forever because the cache uses
+          //    ON CONFLICT DO NOTHING and is never rewritten after the first LLM call.
+          if (stepResult.content_hash) {
+            await pool.query(
+              `DELETE FROM compiled_ast_cache WHERE content_hash = $1`,
+              [stepResult.content_hash],
+            );
+          }
+
+          // 4. Evict Redis across all tenant slots for this targetHash.
+          //    Clears two key namespaces:
+          //    a) sel:{tenantId}:{targetHash}:{domain}  — L1 selector cache
+          //    b) llm:dedup:{targetHash}:{sha256}       — LLM prompt dedup cache
+          //    Without (b), the next run hits the 1-hour dedup cache and reuses the
+          //    stale wrong LLM answer, showing "LLM" badge with 0 tokens.
+          try {
+            const selPattern   = `sel:*:${stepResult.target_hash}:*`;
+            const dedupPattern = `llm:dedup:${stepResult.target_hash}:*`;
+            const keysToDelete: string[] = [];
+            for (const pattern of [selPattern, dedupPattern]) {
+              let cursor = '0';
+              do {
+                const [next, batch] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', '100');
+                cursor = next;
+                keysToDelete.push(...batch);
+              } while (cursor !== '0');
+            }
+            if (keysToDelete.length > 0) {
+              await redis.del(...keysToDelete);
+            }
+          } catch {
+            // Best-effort — Postgres rows are already gone; Redis TTL will expire naturally.
+          }
         }
       }
 
       return reply.status(200).send({ ok: true, verdict });
     },
   );
+
+  /**
+   * POST /runs/:id/cancel
+   *
+   * Signals the worker to stop after the current step finishes.
+   * Sets a Redis flag (cancel:{runId}) that the worker polls between steps.
+   * The run status transitions to "cancelled" once the worker acknowledges.
+   *
+   * Only valid for runs in status "queued" or "running".
+   */
+  app.post<{ Params: { id: string } }>('/runs/:id/cancel', async (request, reply) => {
+    const { id: runId } = request.params;
+    const pool = getPool();
+
+    const { rows } = await pool.query(
+      `SELECT id, status FROM runs WHERE id = $1`,
+      [runId],
+    );
+
+    if (rows.length === 0) {
+      return reply.status(404).send({ error: 'NOT_FOUND' });
+    }
+
+    const { status } = rows[0];
+
+    if (status === 'cancelled') {
+      return reply.status(200).send({ ok: true, status: 'cancelled' });
+    }
+
+    if (status !== 'queued' && status !== 'running') {
+      return reply.status(409).send({
+        error: 'CANNOT_CANCEL',
+        message: `Run is already ${status}.`,
+      });
+    }
+
+    // Set the cancellation signal in Redis — the worker polls this between steps.
+    // TTL: 5 minutes. If the worker never picks it up (e.g. it crashed before
+    // reading), the key expires automatically and doesn't pollute future runs.
+    await redis.setex(cancelKey(runId), 300, '1');
+
+    // For queued runs that haven't been picked up yet, also mark them cancelled
+    // immediately in the DB so the UI reflects the change without waiting.
+    if (status === 'queued') {
+      await pool.query(
+        `UPDATE runs SET status = 'cancelled', completed_at = now() WHERE id = $1`,
+        [runId],
+      );
+    }
+
+    return reply.status(202).send({ ok: true, message: 'Cancellation requested.' });
+  });
 
   /**
    * GET /media?key=...

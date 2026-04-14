@@ -89,8 +89,10 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
                 COUNT(tc.id)::int AS case_count
          FROM test_suites ts
          LEFT JOIN test_cases tc ON tc.suite_id = ts.id
+         WHERE ts.tenant_id = $1
          GROUP BY ts.id
          ORDER BY ts.created_at DESC`,
+        [tenantId]
       );
       return rows;
     });
@@ -139,6 +141,7 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
     if (parsed.data.tags        !== undefined) { updates.push(`tags        = $${i++}`); values.push(parsed.data.tags); }
 
     values.push(suiteId);
+    values.push(tenantId);
 
     const suite = await withTenantTransaction(tenantId, async (client) => {
       const { rows } = await client.query<{
@@ -146,7 +149,7 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
         created_at: Date; updated_at: Date;
       }>(
         `UPDATE test_suites SET ${updates.join(', ')}
-         WHERE id = $${i}
+         WHERE id = $${i} AND tenant_id = $${i + 1}
          RETURNING id, name, description, tags, created_at, updated_at`,
         values,
       );
@@ -164,6 +167,9 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
     const { tenantId } = request;
 
     await withTenantTransaction(tenantId, async (client) => {
+      const { rows } = await client.query(`SELECT id FROM test_suites WHERE id = $1 AND tenant_id = $2`, [suiteId, tenantId]);
+      if (rows.length === 0) return;
+
       // Delete join rows and steps before cases (FK order)
       await client.query(
         `DELETE FROM test_case_steps WHERE case_id IN (SELECT id FROM test_cases WHERE suite_id = $1)`,
@@ -218,9 +224,9 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
            ORDER BY r.created_at DESC
            LIMIT 1
          ) lr ON true
-         WHERE tc.suite_id = $1
+         WHERE tc.suite_id = $1 AND tc.tenant_id = $2
          ORDER BY tc.created_at DESC`,
-        [suiteId],
+        [suiteId, tenantId],
       );
       return rows;
     });
@@ -241,8 +247,8 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
     const result = await withTenantTransaction(tenantId, async (client) => {
       // Verify suite belongs to tenant
       const { rows: suiteRows } = await client.query(
-        `SELECT id FROM test_suites WHERE id = $1`,
-        [suiteId],
+        `SELECT id FROM test_suites WHERE id = $1 AND tenant_id = $2`,
+        [suiteId, tenantId],
       );
       if (suiteRows.length === 0) return null;
 
@@ -314,8 +320,8 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
         id: string; name: string; base_url: string; suite_id: string;
         created_at: Date; updated_at: Date;
       }>(
-        `SELECT id, name, base_url, suite_id, created_at, updated_at FROM test_cases WHERE id = $1`,
-        [caseId],
+        `SELECT id, name, base_url, suite_id, created_at, updated_at FROM test_cases WHERE id = $1 AND tenant_id = $2`,
+        [caseId, tenantId],
       );
       if (caseRows.length === 0) return null;
 
@@ -398,13 +404,14 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       if (parsed.data.name    !== undefined) { caseUpdates.push(`name     = $${vi++}`); caseVals.push(parsed.data.name); }
       if (parsed.data.baseUrl !== undefined) { caseUpdates.push(`base_url = $${vi++}`); caseVals.push(parsed.data.baseUrl); }
       caseVals.push(caseId);
+      caseVals.push(tenantId);
 
       const { rows: caseRows } = await client.query<{
         id: string; name: string; base_url: string; suite_id: string;
         created_at: Date; updated_at: Date;
       }>(
         `UPDATE test_cases SET ${caseUpdates.join(', ')}
-         WHERE id = $${vi} RETURNING id, name, base_url, suite_id, created_at, updated_at`,
+         WHERE id = $${vi} AND tenant_id = $${vi + 1} RETURNING id, name, base_url, suite_id, created_at, updated_at`,
         caseVals,
       );
       if (caseRows.length === 0) return null;
@@ -492,6 +499,9 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
     const { tenantId } = request;
 
     await withTenantTransaction(tenantId, async (client) => {
+      const { rows } = await client.query(`SELECT id FROM test_cases WHERE id = $1 AND tenant_id = $2`, [caseId, tenantId]);
+      if (rows.length === 0) return;
+
       await client.query(`DELETE FROM test_case_steps WHERE case_id = $1`, [caseId]);
       await client.query(`DELETE FROM test_steps WHERE case_id = $1`,      [caseId]);
       await client.query(`UPDATE runs SET case_id = NULL WHERE case_id = $1`, [caseId]);
@@ -515,8 +525,8 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       const { rows: caseRows } = await client.query<{
         id: string; suite_id: string; base_url: string;
       }>(
-        `SELECT id, suite_id, base_url FROM test_cases WHERE id = $1`,
-        [caseId],
+        `SELECT id, suite_id, base_url FROM test_cases WHERE id = $1 AND tenant_id = $2`,
+        [caseId, tenantId],
       );
       if (caseRows.length === 0) return null;
 
