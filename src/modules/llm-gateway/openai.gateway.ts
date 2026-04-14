@@ -45,6 +45,9 @@ function scoreAndRankCandidates(candidates: CandidateNode[], target: string): Ca
         c.attributes['aria-label'] ?? '',
         c.attributes['id'] ?? '',
         c.attributes['name'] ?? '',
+        c.attributes['data-qa'] ?? '',
+        c.attributes['data-test'] ?? '',
+        c.attributes['data-testid'] ?? '',
       ].join(' ').toLowerCase();
 
       const score = words.reduce((n, w) => n + (haystack.includes(w) ? 1 : 0), 0);
@@ -68,13 +71,17 @@ export class OpenAIGateway implements ILLMGateway {
     });
   }
 
-  private buildDedupKey(contentHash: string, domain: string, candidates: CandidateNode[]): string {
+  private buildDedupKey(contentHash: string, rawText: string, domain: string, candidates: CandidateNode[]): string {
     const fingerprint = candidates
       .map((c) => `${c.role}:${c.name}:${c.cssSelector}`)
       .sort()
       .join('|');
-    const raw = `resolveElement:1.0.0:${contentHash}:${domain}:${fingerprint}`;
-    return 'llm:dedup:' + createHash('sha256').update(raw).digest('hex');
+    // Version 1.1.0: rawText added to key so two steps that compile to the same
+    // targetDescription but differ in wording produce distinct dedup entries.
+    // Key format: llm:dedup:{targetHash}:{sha256} — the targetHash prefix makes it
+    // pattern-matchable so verdict=failed can evict all dedup entries for a step.
+    const raw = `resolveElement:1.1.0:${contentHash}:${rawText}:${domain}:${fingerprint}`;
+    return `llm:dedup:${contentHash}:` + createHash('sha256').update(raw).digest('hex');
   }
 
   async compileStep(rawText: string, tenantId: string): Promise<StepAST> {
@@ -93,6 +100,21 @@ export class OpenAIGateway implements ILLMGateway {
   "value": "string | null",
   "url": "string | null"
 }
+
+Action rules:
+- "click"  : buttons, links, radio buttons, checkboxes, tabs, toggles — any element the user taps/checks/selects that is NOT a <select> dropdown
+- "select" : ONLY for <select> dropdown elements (e.g. "choose from dropdown", "pick from list")
+- "type"   : filling a text input or textarea
+- "navigate": going to a URL
+
+Radio buttons and checkboxes MUST use "click", never "select".
+
+CRITICAL — value field rules:
+- value MUST always be a JSON string (quoted), never a JSON number or boolean.
+- For "choose day 11"   → value: "11"   (not 11)
+- For "choose option 3" → value: "3"    (not 3)
+- For "select 1997"     → value: "1997" (not 1997)
+- Numbers extracted as the option to select MUST be quoted strings.
 Return only valid JSON.`,
           },
           { role: 'user', content: rawText },
@@ -103,6 +125,13 @@ Return only valid JSON.`,
       if (!jsonStr) throw new Error('Empty LLM response');
 
       const ast = JSON.parse(jsonStr) as StepAST;
+
+      // Guard: LLMs sometimes emit numeric values without quotes (e.g. value: 11).
+      // Playwright's selectOption rejects non-strings, so coerce at the boundary.
+      if (ast.value !== null && ast.value !== undefined && typeof ast.value !== 'string') {
+        (ast as any).value = String((ast as any).value);
+      }
+
       const tokens = response.usage?.total_tokens ?? 0;
 
       await this.billingMeter.emit({
@@ -128,7 +157,7 @@ Return only valid JSON.`,
     try {
       const roleFiltered = filterByActionRole(candidates, step.action);
       const filtered = scoreAndRankCandidates(roleFiltered, step.targetDescription ?? '').slice(0, 7);
-      const dedupKey = this.buildDedupKey(step.targetHash, '', filtered);
+      const dedupKey = this.buildDedupKey(step.targetHash, step.rawText ?? '', '', filtered);
 
       if (this.redis) {
         const cached = await this.redis.get(dedupKey);
@@ -138,10 +167,22 @@ Return only valid JSON.`,
         }
       }
 
+      // Detect which display names appear more than once — those entries get
+      // a parentContext suffix so the LLM can tell them apart. Unique names
+      // are left untouched to keep the prompt clean.
+      const nameCounts = new Map<string, number>();
+      for (const c of filtered) {
+        const key = (c.name || c.textContent || '').toLowerCase().trim();
+        nameCounts.set(key, (nameCounts.get(key) ?? 0) + 1);
+      }
+
       const promptCandidates = filtered
-        .map((c: CandidateNode) =>
-          `[${c.kaizenId}] ${c.role}: "${c.name || c.textContent || c.attributes['placeholder'] || ''}"`,
-        )
+        .map((c: CandidateNode) => {
+          const displayName = c.name || c.textContent || c.attributes['placeholder'] || '';
+          const isAmbiguous = (nameCounts.get(displayName.toLowerCase().trim()) ?? 0) > 1;
+          const contextSuffix = isAmbiguous && c.parentContext ? `  (in: "${c.parentContext}")` : '';
+          return `[${c.kaizenId}] ${c.role}: "${displayName}"${contextSuffix}`;
+        })
         .join('\n');
 
       const response = await this.openai.chat.completions.create({
@@ -154,7 +195,7 @@ Return only valid JSON.`,
           },
           {
             role: 'user',
-            content: `Action: ${step.action} | Target: ${step.targetDescription}\nCandidates:\n${promptCandidates}`,
+            content: `Action: ${step.action} | Target: ${step.targetDescription}\nFull step: ${step.rawText}\nCandidates:\n${promptCandidates}`,
           },
         ],
       });
@@ -180,12 +221,14 @@ Return only valid JSON.`,
       const pickedCandidate = filtered.find((c: CandidateNode) => c.kaizenId === result.kaizenId);
       const selectors = pickedCandidate?.selectorCandidates ?? [];
 
-      // Build compact snapshot of what the LLM was shown, in the order it saw them
+      // Build compact snapshot of what the LLM was shown, in the order it saw them.
+      // parentContext is included so the debug UI can reconstruct the exact prompt line.
       const llmPromptedCandidates: CompactCandidate[] = filtered.map((c: CandidateNode) => ({
         kaizenId: c.kaizenId ?? '',
         role: c.role,
         name: c.name?.trim() || c.textContent?.trim() || '',
         selector: c.cssSelector,
+        ...(c.parentContext ? { parentContext: c.parentContext } : {}),
       }));
 
       const resolution: LLMResolutionResult = {
@@ -199,7 +242,9 @@ Return only valid JSON.`,
       };
 
       if (this.redis) {
-        await this.redis.setex(dedupKey, 86_400, JSON.stringify(resolution));
+        // 1-hour TTL — short enough that a verdict=failed + rerun within the hour
+        // won't be served stale wrong results from this cache.
+        await this.redis.setex(dedupKey, 3_600, JSON.stringify(resolution));
       }
 
       return resolution;

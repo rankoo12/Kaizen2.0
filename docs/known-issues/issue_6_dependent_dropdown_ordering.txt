@@ -1,0 +1,79 @@
+ISSUE: Interdependent dropdown ordering — day/state/city resets when parent changes
+STATUS: No mitigation. Workaround: user must order steps parent-first.
+
+─── What happens ────────────────────────────────────────────────────────────────
+
+Many forms have cascading dropdowns where changing a parent resets the child:
+
+  Date:     month → regenerates valid days (Feb has 28, Apr has 30)
+  Location: country → resets state/province dropdown
+  Location: state → resets city dropdown
+  Product:  category → resets subcategory dropdown
+
+The Kaizen engine executes steps sequentially and independently. Each step
+succeeds in isolation (selectOption returns without error), but a later step's
+side effect destroys the state set by an earlier step.
+
+Example: "choose day 11" → "choose month april" → "choose year 1997"
+  Step 1: selectOption("#days", "11")    → passes, day=11
+  Step 2: selectOption("#months", "4")   → passes, triggers JS that rebuilds #days
+                                           → day resets to blank
+  Step 3: selectOption("#years", "1997") → passes, year=1997
+  Final form state: month=April, year=1997, day=(blank) — form submission fails
+
+─── Why it's hard ───────────────────────────────────────────────────────────────
+
+The engine has no model of inter-element dependencies. It can't know that
+selecting "#months" will fire a change event that reconstructs "#days". The DOM
+after step 2 is different from the DOM after step 1, and the engine doesn't
+re-verify previously set values.
+
+─── Current workaround ──────────────────────────────────────────────────────────
+
+Order steps parent-first, child-last:
+  choose month april   ← parent, may reset day
+  choose year 1997     ← parent, may reset day
+  choose day 11        ← child, set last so nothing resets it
+
+This is fragile — users shouldn't need to know the page's dependency graph.
+
+─── Full solution (not yet implemented) ─────────────────────────────────────────
+
+FIX A — Post-step state verification
+  After each select/type step, re-read the element's value from the DOM and
+  compare it to what was just set. If it doesn't match, re-apply it.
+
+  In PlaywrightExecutionEngine, after a successful selectOption/fill:
+    const actual = await page.$eval(selector, el => (el as HTMLInputElement).value);
+    if (actual !== step.value) {
+      // DOM was reset — re-apply and mark step as "healed"
+      await page.selectOption(selector, step.value, { timeout: ACTION_TIMEOUT_MS });
+    }
+
+  Limitation: only works if the child element still exists after the parent fires.
+  If the parent's change event removes and recreates the child (new DOM node),
+  the selector is still valid but re-applying happens after the full cascade,
+  which is correct.
+
+FIX B — Dependency-aware step reordering (compile time)
+  After compileStep produces all StepASTs for a test case, run a
+  dependency sort pass:
+    - Detect when two steps target elements that share a common parent form section
+    - Use heuristics: "day" < "month" < "year" in dependency order
+    - More generally: if element A's change event is known to reset element B,
+      sort A before B
+
+  This requires either:
+    a) A hardcoded dependency graph for known patterns (date, location cascades)
+    b) A dynamic approach: after each step, snapshot changed element values and
+       if any previously-set element changed, re-apply it (equivalent to FIX A)
+
+FIX C — Healing: detect reset and re-run affected steps
+  Same idea as FIX A but implemented in the healing engine rather than the
+  execution engine. After a run completes with a form submission failure,
+  the healer detects which previously-passed steps had their state overwritten
+  and re-runs them in the correct order.
+
+Recommended path: FIX A (post-step verification) is the most robust, requires
+no dependency graph knowledge, and handles any cascade — not just known patterns.
+Cost: one extra $eval per select/type step (~1ms each).

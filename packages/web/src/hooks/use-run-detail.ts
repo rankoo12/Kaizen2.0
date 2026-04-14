@@ -43,7 +43,10 @@ export function useRunDetail(runId: string | null | undefined) {
             errorType: sr.error_type || null,
             failureClass: sr.failure_class || null,
             resolutionSource: sr.resolution_source || null,
+            selectorUsed: sr.selector_used || null,
             createdAt: sr.created_at,
+            domCandidates: sr.dom_candidates || null,
+            llmPickedKaizenId: sr.llm_picked_kaizen_id || null,
           })),
         };
 

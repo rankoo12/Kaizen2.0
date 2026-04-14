@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { Suite } from '@/types/api';
+import { useAuth } from '@/context/auth-context';
 
 type UseSuitesResult = {
   suites: Suite[];
@@ -11,6 +12,7 @@ type UseSuitesResult = {
 };
 
 export function useSuites(): UseSuitesResult {
+  const { user } = useAuth();
   const [suites, setSuites]     = useState<Suite[]>([]);
   const [isLoading, setLoading] = useState(true);
   const [error, setError]       = useState<string | null>(null);
@@ -19,11 +21,16 @@ export function useSuites(): UseSuitesResult {
   const refetch = useCallback(() => setTick((n) => n + 1), []);
 
   useEffect(() => {
+    if (!user?.id) {
+      setSuites([]);
+      setLoading(false);
+      return;
+    }
     let cancelled = false;
     setLoading(true);
     setError(null);
 
-    fetch('/api/proxy/suites')
+    fetch('/api/proxy/suites', { cache: 'no-store' })
       .then(async (res) => {
         if (!res.ok) throw new Error(`Failed to load suites (${res.status})`);
         const data = await res.json();
@@ -37,7 +44,7 @@ export function useSuites(): UseSuitesResult {
       });
 
     return () => { cancelled = true; };
-  }, [tick]);
+  }, [tick, user?.id]);
 
   return { suites, isLoading, error, refetch };
 }

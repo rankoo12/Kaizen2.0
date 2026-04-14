@@ -79,6 +79,13 @@ export type CandidateNode = {
    * and by the resolver as pre-validated fallbacks when LLM output fails.
    */
   selectorCandidates?: SelectorEntry[];
+  /**
+   * Nearest semantic ancestor label: <form aria-label>, <fieldset><legend>, or
+   * closest <h1>–<h3> heading text. Used to disambiguate elements that share an
+   * identical accessible name (e.g. two "Email" inputs on the same page).
+   * Populated by PlaywrightDOMPruner; used only in LLM prompt formatting.
+   */
+  parentContext?: string;
 };
 
 // ─── Element Resolution ───────────────────────────────────────────────────────
@@ -103,6 +110,8 @@ export type CompactCandidate = {
   role: string;
   name: string;
   selector: string; // primary (most stable) selector
+  /** Nearest semantic ancestor label — included when disambiguation was needed. */
+  parentContext?: string;
 };
 
 export type SelectorSet = {
@@ -121,6 +130,12 @@ export type SelectorSet = {
   candidates?: CompactCandidate[];
   /** The kaizenId the LLM selected from those candidates. Null on cache hits. */
   llmPickedKaizenId?: string | null;
+  /**
+   * LLM tokens consumed during element resolution for this step.
+   * Non-zero only when resolveElement was called (resolutionSource === 'llm').
+   * Zero on all cache hits — no LLM was invoked.
+   */
+  tokensUsed?: number;
 };
 
 export type ResolutionContext = {
@@ -128,6 +143,13 @@ export type ResolutionContext = {
   domain: string;
   /** Typed as unknown here; consuming modules import Page from playwright directly. */
   page: unknown;
+  /**
+   * Full URL of the current page at resolution time (e.g. "https://app.example.com/login").
+   * Used to make element_embedding vectors page-context-aware so that two elements
+   * with identical role+name on different pages (e.g. "textbox: Email" on /login vs
+   * /register) produce distinct vectors and cannot cross-match via L2.5 pgvector search.
+   */
+  pageUrl?: string;
 };
 
 // ─── Accessibility tree ───────────────────────────────────────────────────────

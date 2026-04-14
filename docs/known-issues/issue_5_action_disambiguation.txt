@@ -1,0 +1,85 @@
+ISSUE: Natural language action disambiguation — "select" vs "click" for radio/checkbox
+STATUS: Partially mitigated (compileStep prompt updated). Root cause not fully resolved.
+
+─── What happens ────────────────────────────────────────────────────────────────
+
+The pipeline has two LLM calls:
+
+  1. compileStep  — maps raw NL text → StepAST { action, targetDescription, value, url }
+  2. resolveElement — given the action, filters DOM candidates by role and picks the element
+
+The problem lives at step 1. The action field drives an ACTION_ROLE_ALLOWLIST in step 2:
+
+  select: ['combobox', 'listbox']   ← dropdowns only
+  type:   ['textbox', 'searchbox', 'combobox', 'spinbutton']
+  click:  (no filter — all roles)
+
+If compileStep emits action:"select" for a sentence like "Select 'Mr.' for the title",
+resolveElement's role filter removes all radio/checkbox candidates before the second
+LLM even sees them. The second LLM then picks the best combobox on the page, which is
+always wrong.
+
+─── Why it's hard ───────────────────────────────────────────────────────────────
+
+"Select" in English is overloaded. All of these express the same intent:
+  "Select Mr."
+  "Check the Mr. radio button"
+  "Choose Mr. for the title"
+  "Click the Mr. option"
+  "Pick Mr."
+  "Mark Mr. as the title"
+
+The compileStep LLM has no DOM context — it compiles before a browser session starts.
+It can only infer from vocabulary, which is ambiguous.
+
+─── Current mitigation ──────────────────────────────────────────────────────────
+
+The compileStep system prompt now explicitly states:
+  - radio buttons and checkboxes → action:"click"  (never "select")
+  - action:"select" is ONLY for <select> dropdown elements
+
+This fixes common phrasings but is not exhaustive. Unusual or ambiguous sentences
+may still miscompile.
+
+─── Full solution (not yet implemented) ─────────────────────────────────────────
+
+Two complementary fixes should be made together:
+
+FIX A — Add "check" as a first-class action
+  The StepAST action enum gains: "check"
+  compileStep prompt maps: radio / checkbox / toggle → "check"
+  ACTION_ROLE_ALLOWLIST["check"] = ["radio", "checkbox"]
+  Execution engine: action:"check" → page.check() directly (no DOM-type detection needed)
+
+  This gives the compiler an unambiguous output for checkable inputs and eliminates
+  the runtime role-detection heuristic in playwright.execution-engine.ts.
+
+FIX B — Post-pick action correction in resolveElement
+  After the element resolver LLM picks a candidate with a known role, check if
+  the compiled action is compatible. If not, correct it silently before execution:
+
+    compiled action | picked role   | correction
+    ────────────────┼───────────────┼────────────
+    "select"        | radio         | → "click"
+    "select"        | checkbox      | → "click"
+    "click"         | combobox      | → "select"  (less common but possible)
+
+  This is a safety net for the cases compileStep still gets wrong. The element
+  resolver already knows the winning candidate's role — using it to validate the
+  action costs nothing extra.
+
+FIX A alone prevents the filtering problem upstream.
+FIX B alone would require the wrong action to get past the role filter (unlikely
+  after FIX A), but acts as a runtime guard against future prompt regressions.
+
+─── Why we aren't already doing it (i.e., "aren't we asking the LLM?") ──────────
+
+Yes — compileStep IS an LLM call. But:
+  - The LLM at compile time has zero DOM context.
+  - It maps vocabulary → action, not intent → correct DOM interaction.
+  - "Select" the word biases toward action:"select" even when the intent is a radio click.
+
+The fundamental gap is that action classification and element resolution happen in
+two separate passes with different context. Until the action enum is rich enough to
+express "check a radio" without ambiguity, the compile pass will always have failure
+modes for overloaded verbs (select/pick/choose/mark/tick/check).

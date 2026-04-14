@@ -11,6 +11,7 @@ import { useSuites } from '@/hooks/use-suites';
 import { useCases } from '@/hooks/use-cases';
 import { useRunPoller } from '@/hooks/use-run-poller';
 import type { CaseSummary, Suite, RunStatus } from '@/types/api';
+import { ProfileDropdown } from '@/components/molecules/profile-dropdown';
 
 // ─── Run Watcher ─────────────────────────────────────────────────────────────
 // Zero-render component. Owns one poller per active run and notifies parent on completion.
@@ -366,11 +367,7 @@ export function TestsPanel() {
 
         <div className="flex items-center space-x-6">
           <button className="text-gray-400 hover:text-white transition-colors"><Settings className="w-5 h-5" /></button>
-          <div className="w-8 h-8 rounded-full bg-gradient-to-tr from-brand-pink to-brand-orange p-[1px] cursor-pointer hover:scale-105 transition-transform">
-            <div className="w-full h-full bg-[#1b1422] rounded-full flex items-center justify-center overflow-hidden">
-              <User className="w-4 h-4 text-white/80" />
-            </div>
-          </div>
+          <ProfileDropdown />
         </div>
       </nav>
 

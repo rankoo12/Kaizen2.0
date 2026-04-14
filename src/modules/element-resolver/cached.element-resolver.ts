@@ -17,7 +17,7 @@ import { toVectorSQL } from '../../utils/vector';
  * Returns an empty SelectorSet on full miss so CompositeElementResolver escalates to LLMElementResolver.
  */
 
-const COSINE_THRESHOLD = 0.92;
+const COSINE_THRESHOLD = 0.95;
 const REDIS_TTL_SECONDS = 3_600; // 1 hour
 
 const MISS: SelectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };

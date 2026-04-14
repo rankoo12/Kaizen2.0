@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import type { CaseSummary } from '@/types/api';
+import { useAuth } from '@/context/auth-context';
 
 type UseCasesResult = {
   cases: CaseSummary[];
@@ -11,6 +12,7 @@ type UseCasesResult = {
 };
 
 export function useCases(suiteId: string | null): UseCasesResult {
+  const { user } = useAuth();
   const [cases, setCases]       = useState<CaseSummary[]>([]);
   const [isLoading, setLoading] = useState(false);
   const [error, setError]       = useState<string | null>(null);
@@ -28,7 +30,7 @@ export function useCases(suiteId: string | null): UseCasesResult {
     setLoading(true);
     setError(null);
 
-    fetch(`/api/proxy/suites/${suiteId}/cases`)
+    fetch(`/api/proxy/suites/${suiteId}/cases`, { cache: 'no-store' })
       .then(async (res) => {
         if (!res.ok) throw new Error(`Failed to load cases (${res.status})`);
         const data = await res.json();
@@ -42,7 +44,7 @@ export function useCases(suiteId: string | null): UseCasesResult {
       });
 
     return () => { cancelled = true; };
-  }, [suiteId, tick]);
+  }, [suiteId, tick, user?.id]);
 
   return { cases, isLoading, error, refetch };
 }

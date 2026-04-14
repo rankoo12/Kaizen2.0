@@ -9,12 +9,17 @@ import type { IObservability } from '../observability/interfaces';
 interface PlaywrightPageLike {
   goto(url: string, options?: { timeout?: number }): Promise<unknown>;
   click(selector: string, options?: { timeout?: number }): Promise<void>;
+  check(selector: string, options?: { timeout?: number }): Promise<void>;
   fill(selector: string, value: string, options?: { timeout?: number }): Promise<void>;
-  selectOption(selector: string, value: string, options?: { timeout?: number }): Promise<unknown>;
+  selectOption(selector: string, value: string | { label: string } | { value: string }, options?: { timeout?: number }): Promise<unknown>;
   isVisible(selector: string): Promise<boolean>;
   waitForSelector(selector: string, options?: { timeout?: number }): Promise<unknown>;
   waitForTimeout(ms: number): Promise<void>;
   evaluate<T>(fn: (arg: string) => T, arg: string): Promise<T>;
+  /** Playwright-aware $eval: selector engine understands ARIA, CSS, XPath, data-* */
+  $eval<T>(selector: string, fn: (el: Element) => T): Promise<T>;
+  /** 3-arg form: passes `arg` into the browser-side function */
+  $eval<T, A>(selector: string, fn: (el: Element, arg: A) => T, arg: A): Promise<T>;
   keyboard: {
     press(key: string): Promise<void>;
   };
@@ -56,11 +61,36 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
         );
       }
 
+      // Determine if the target element is a checkable input (radio / checkbox).
+      // page.check() is purpose-built for these: it enforces the checked state and
+      // throws if the element is not checkable — unlike page.click() which may fire
+      // without toggling the state (especially for custom ARIA implementations).
+      const CHECKABLE_ROLES = new Set(['radio', 'checkbox']);
+      const DROPDOWN_ROLES = new Set(['combobox', 'listbox']);
+      const pickedRole = selectorSet.llmPickedKaizenId && selectorSet.candidates
+        ? selectorSet.candidates.find((c) => c.kaizenId === selectorSet.llmPickedKaizenId)?.role
+        : null;
+      const useCheck = step.action === 'click' && pickedRole != null && CHECKABLE_ROLES.has(pickedRole);
+
+      // FIX B (issue_5): Post-pick action correction.
+      // If the compiled action is "select" but the LLM-picked element is not
+      // an actual dropdown (e.g. a radio/button/option/gridcell), calling
+      // selectOption() would throw. Correct to "click" so the dispatch succeeds.
+      // This is a safety net for cases where compileStep mislabels the action;
+      // the primary fix is clearing the compiled_ast_cache on verdict=failed.
+      const effectiveStep: typeof step =
+        step.action === 'select' && pickedRole != null && !DROPDOWN_ROLES.has(pickedRole)
+          ? (() => {
+              this.observability.increment('engine.action_corrected', { from: 'select', to: 'click', pickedRole: pickedRole ?? 'unknown' });
+              return { ...step, action: 'click' as const };
+            })()
+          : step;
+
       // Try each selector in confidence order (already sorted by LLMElementResolver)
       let lastError: Error | null = null;
       for (const entry of selectorSet.selectors) {
         try {
-          await this.dispatchAction(step, entry.selector, pw);
+          await this.dispatchAction(effectiveStep, entry.selector, pw, useCheck);
 
           this.observability.increment('engine.step_passed', {
             action: step.action,
@@ -146,21 +176,71 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
     step: StepAST,
     selector: string,
     page: PlaywrightPageLike,
+    useCheck = false,
   ): Promise<void> {
     switch (step.action) {
-      case 'click':
-        await page.click(selector, { timeout: ACTION_TIMEOUT_MS });
+      case 'click': {
+        // Prefer the caller's hint (from candidates metadata), but also inspect the
+        // live DOM in case the step came from cache where llmPickedKaizenId is absent.
+        // IMPORTANT: must use page.$eval, not page.evaluate + document.querySelector —
+        // $eval uses Playwright's full selector engine and understands ARIA selectors
+        // (e.g. role=radio[name="Mr."]) which document.querySelector cannot parse.
+        let shouldCheck = useCheck;
+        if (!shouldCheck) {
+          try {
+            const inputType = await page.$eval(
+              selector,
+              (el) => (el as HTMLInputElement).type?.toLowerCase() ?? null,
+            );
+            shouldCheck = inputType === 'radio' || inputType === 'checkbox';
+          } catch { /* element not found or selector invalid — fall through to click */ }
+        }
+        if (shouldCheck) {
+          await page.check(selector, { timeout: ACTION_TIMEOUT_MS });
+        } else {
+          await page.click(selector, { timeout: ACTION_TIMEOUT_MS });
+        }
         break;
+      }
 
       case 'type':
         if (!step.value) throw new Error('type action requires StepAST.value');
         await page.fill(selector, step.value, { timeout: ACTION_TIMEOUT_MS });
         break;
 
-      case 'select':
+      case 'select': {
         if (!step.value) throw new Error('select action requires StepAST.value');
-        await page.selectOption(selector, step.value, { timeout: ACTION_TIMEOUT_MS });
+        try {
+          // Fast path: exact match on value attribute or label text (Playwright's default).
+          await page.selectOption(selector, step.value, { timeout: ACTION_TIMEOUT_MS });
+        } catch (exactErr) {
+          // Playwright's selectOption is case-sensitive. "israel" won't match
+          // <option value="Israel"> even though they're the same string modulo case.
+          // Walk the element's options and select the first case-insensitive match
+          // on either the value attribute or the visible label text.
+          const lower = step.value.toLowerCase();
+          const matchedValue = await page.$eval(
+            selector,
+            (el: Element, search: string) => {
+              const select = el as HTMLSelectElement;
+              for (const opt of Array.from(select.options)) {
+                if (opt.value.toLowerCase() === search || opt.text.toLowerCase() === search) {
+                  return opt.value;
+                }
+              }
+              return null;
+            },
+            lower,
+          );
+          if (matchedValue !== null) {
+            this.observability.increment('engine.select_case_insensitive_fallback');
+            await page.selectOption(selector, matchedValue, { timeout: ACTION_TIMEOUT_MS });
+          } else {
+            throw exactErr; // no match at all — surface the original error
+          }
+        }
         break;
+      }
 
       case 'assert_visible': {
         const visible = await page.isVisible(selector);

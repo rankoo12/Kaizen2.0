@@ -1,0 +1,141 @@
+ISSUE 7 — Auth UI Bugs: Broken Logout & Cross-User Data Leak
+=============================================================
+Date: 2026-04-13
+Status: Spec only — not yet implemented
+Affected files:
+  packages/web/src/components/organisms/tests-panel.tsx
+  packages/web/src/hooks/use-suites.ts
+  packages/web/src/hooks/use-cases.ts
+
+
+─────────────────────────────────────────────────────────────
+BUG A: Profile icon does nothing — logout is unreachable
+─────────────────────────────────────────────────────────────
+
+ROOT CAUSE
+  TestsPanel renders its own self-contained nav bar (lines ~335-375 of
+  tests-panel.tsx). That nav bar contains a hardcoded static <div> that
+  looks like a profile avatar but has no onClick handler and no dropdown:
+
+      <div className="w-8 h-8 rounded-full ...">
+        <div className="...">
+          <User className="w-4 h-4 text-white/80" />
+        </div>
+      </div>
+
+  The ProfileDropdown component (packages/web/src/components/molecules/
+  profile-dropdown.tsx) exists and is fully implemented — it opens a menu
+  with user name, email, disabled Settings item, and a working Logout
+  button that calls useAuth().logout(). But it is never mounted on the
+  /tests page.
+
+FIX
+  1. In tests-panel.tsx, add the import:
+       import { ProfileDropdown } from '@/components/molecules/profile-dropdown';
+
+  2. Locate the static profile <div> block inside the nav (the one that
+     contains <User className="w-4 h-4 text-white/80" />).
+
+  3. Replace the entire static <div> block with:
+       <ProfileDropdown />
+
+  No changes to ProfileDropdown itself are needed — it is already correct.
+
+NOTES
+  - The Settings button inside ProfileDropdown is intentionally `disabled`
+    (no settings page yet). Leave it as-is.
+  - The LogOut button in ProfileDropdown already calls logout() from
+    useAuth, which POSTs /api/auth/logout (clears cookies) then calls
+    router.push('/login'). This is correct and requires no changes.
+
+
+─────────────────────────────────────────────────────────────
+BUG B: New user sees tests that belong to a different user
+─────────────────────────────────────────────────────────────
+
+ROOT CAUSE
+  useSuites and useCases fetch their data keyed only on an internal `tick`
+  counter (incremented by calling refetch()). Neither hook observes the
+  currently authenticated user.
+
+  In Next.js App Router the root layout (layout.tsx → Providers →
+  AuthProvider) stays mounted across all client-side navigations — it never
+  remounts when you navigate from /signup to /tests or from /login to
+  /tests. Therefore:
+
+    a) AuthProvider.user updates in memory when login/register completes.
+    b) TestsPanel may be served from the Next.js router cache and also not
+       remount.
+    c) Even if TestsPanel does remount, useSuites fires its effect with
+       tick=0 — but if the component was kept alive, the effect never
+       re-fires at all because nothing in its dependency array changed.
+
+  The result: the suites/cases fetched for User 1 remain in React state and
+  are displayed to User 2 after login/register.
+
+  Note: the data is NOT a backend leak. The proxy correctly forwards the
+  Authorization header. The problem is purely that the frontend never
+  re-fetches after the user identity changes.
+
+FIX
+  The fix must be applied in two hooks: use-suites.ts and use-cases.ts.
+
+  Step 1 — Import the auth context in both hooks:
+    import { useAuth } from '@/context/auth-context';
+
+  Step 2 — Read the current user's id inside the hook:
+    const { user } = useAuth();
+
+  Step 3 — Add user?.id to the useEffect dependency array:
+
+    use-suites.ts
+    ─────────────
+    Current:
+      useEffect(() => { ... }, [tick]);
+
+    Fixed:
+      useEffect(() => { ... }, [tick, user?.id]);
+
+    Also reset suites to [] immediately when user?.id changes so stale
+    data from the previous user is not visible even for the brief moment
+    before the new fetch completes:
+
+      useEffect(() => {
+        if (!user?.id) {
+          setSuites([]);
+          setLoading(false);
+          return;
+        }
+        let cancelled = false;
+        setLoading(true);
+        setError(null);
+        fetch('/api/proxy/suites')
+          ...
+      }, [tick, user?.id]);
+
+    use-cases.ts
+    ─────────────
+    Current:
+      useEffect(() => { ... }, [suiteId, tick]);
+
+    Fixed:
+      useEffect(() => { ... }, [suiteId, tick, user?.id]);
+
+    Same pattern: the existing early-return guard (if (!suiteId) { setCases([]); return; })
+    already clears cases when suiteId is null, which covers the logout path
+    because TestsPanel unmounts on logout. No extra reset is needed here,
+    but adding user?.id to the deps is still required to handle the
+    login-without-full-remount scenario.
+
+  Step 4 — No backend changes are needed. The proxy already attaches the
+  correct Bearer token from the httpOnly cookie on every request. Once the
+  hooks re-fetch they will automatically use the new user's token.
+
+EDGE CASES TO VERIFY AFTER IMPLEMENTATION
+  - User A is on /tests → logs out → logs in as User B: should see only B's suites.
+  - User A registers while on /signup → redirected to /tests: should see
+    an empty suite list (new account has no suites yet), not A's suites.
+  - Refresh of /tests page (hard reload): works correctly already because
+    the component remounts fresh. Fix must not break this.
+  - Two tabs logged in as different users: each tab is independent; no fix
+    needed for cross-tab isolation.
