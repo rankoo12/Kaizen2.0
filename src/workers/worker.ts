@@ -30,6 +30,8 @@ import { LLMElementResolver } from '../modules/element-resolver/llm.element-reso
 import { SharedPoolService } from '../modules/shared-pool/shared-pool.service';
 import { CachedElementResolver } from '../modules/element-resolver/cached.element-resolver';
 import { CompositeElementResolver } from '../modules/element-resolver/composite.element-resolver';
+import { DBArchetypeResolver } from '../modules/element-resolver/db.archetype-resolver';
+import { ArchetypeElementResolver } from '../modules/element-resolver/archetype.element-resolver';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
 import { HealingEngine } from '../modules/healing-engine/healing-engine';
 import { FallbackSelectorStrategy } from '../modules/healing-engine/strategies/fallback-selector.strategy';
@@ -62,7 +64,12 @@ const domPruner = new PlaywrightDOMPruner();
 const sharedPool = new SharedPoolService(cacheRedis, obs);
 const llmResolver = new LLMElementResolver(domPruner, llm, obs, sharedPool);
 const cachedResolver = new CachedElementResolver(cacheRedis, llm, obs);
-const resolver = new CompositeElementResolver(cachedResolver, llmResolver, obs);
+const archetypeResolver = new DBArchetypeResolver(obs);
+const archetypeElementResolver = new ArchetypeElementResolver(domPruner, archetypeResolver, obs);
+const resolver = new CompositeElementResolver(
+  [archetypeElementResolver, cachedResolver, llmResolver],
+  obs,
+);
 const engine = new PlaywrightExecutionEngine(obs);
 const screenshots = new ScreenshotService(obs);
 
