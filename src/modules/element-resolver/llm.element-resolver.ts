@@ -7,6 +7,7 @@ import type { ISharedPoolService } from '../shared-pool/interfaces';
 import { getPool } from '../../db/pool';
 import { appendOutcome, computeConfidence } from './confidence';
 import { toVectorSQL } from '../../utils/vector';
+import { filterCandidatesByAction } from './action-role-filter';
 
 /**
  * Converts a CandidateNode into a compact semantic string for element_embedding.
@@ -89,11 +90,25 @@ export class LLMElementResolver implements IElementResolver {
         return { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
       }
 
-      const candidates = await this.domPruner.prune(context.page, step.targetDescription);
+      const rawCandidates = await this.domPruner.prune(context.page, step.targetDescription);
 
-      if (candidates.length === 0) {
+      if (rawCandidates.length === 0) {
         this.observability.log('warn', 'resolver.no_candidates', { action: step.action });
         return { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+      }
+
+      // Filter to roles that are structurally compatible with the action
+      // (e.g. a `type` action must target a textbox/searchbox/combobox, never a link).
+      // Falls back to the full list if no compatible candidate is found, so custom
+      // widgets without standard ARIA roles are not silently discarded.
+      const candidates = filterCandidatesByAction(rawCandidates, step.action);
+
+      if (candidates !== rawCandidates) {
+        this.observability.log('info', 'resolver.action_role_filter', {
+          action: step.action,
+          before: rawCandidates.length,
+          after: candidates.length,
+        });
       }
 
       const page = context.page as unknown as PlaywrightPageLike;

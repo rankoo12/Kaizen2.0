@@ -20,7 +20,8 @@
     "test:coverage": "jest --coverage",
     "test:integration": "jest --config jest.integration.config.ts",
     "brain:seed": "tsx scripts/seed-global-brain.ts",
-    "archetypes:seed": "tsx scripts/seed-archetypes.ts"
+    "archetypes:seed": "tsx scripts/seed-archetypes.ts",
+    "seed:archetype-tests": "tsx scripts/seed-archetype-test-cases.ts"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

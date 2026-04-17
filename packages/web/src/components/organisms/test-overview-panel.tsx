@@ -4,7 +4,7 @@ import { useState, useEffect, useRef } from 'react';
 import {
   CheckCircle2, Loader2, Clock, XCircle as XCircleStatus,
   Eye, Cpu, Play, ArrowLeft, XCircle, Image as ImageIcon, X,
-  Plus, Save, Trash2,
+  Plus, Save, Trash2, Zap, Globe,
 } from 'lucide-react';
 import { useRouter } from 'next/navigation';
 import { cn } from '@/lib/cn';
@@ -25,8 +25,9 @@ export function TestOverviewPanel({ caseId }: TestOverviewPanelProps) {
   const router = useRouter();
   const { data: test, isLoading: caseLoading, error: caseError, refetch } = useCaseDetail(caseId);
 
-  // ── Editable steps state ──────────────────────────────────────────────────
+  // ── Editable steps + URL state ────────────────────────────────────────────
   const [localSteps, setLocalSteps] = useState<string[]>([]);
+  const [localUrl, setLocalUrl] = useState('');
   const [isSaving, setIsSaving] = useState(false);
   const [saveError, setSaveError] = useState<string | null>(null);
 
@@ -46,18 +47,23 @@ export function TestOverviewPanel({ caseId }: TestOverviewPanelProps) {
   const displayRunId = activeRunId ?? test?.recentRuns?.[0]?.id;
   const { data: runDetail, isLoading: runLoading } = useRunDetail(displayRunId ?? null);
 
-  // ── Sync local steps from API data ───────────────────────────────────────
+  // ── Sync local state from API data ───────────────────────────────────────
   useEffect(() => {
-    if (test?.steps) {
+    if (test) {
       setLocalSteps(test.steps.map((s) => s.rawText));
+      setLocalUrl(test.baseUrl);
     }
   }, [test]);
 
   // ── Derived ───────────────────────────────────────────────────────────────
-  const isDirty = test?.steps
+  const isStepsDirty = test?.steps
     ? localSteps.length !== test.steps.length ||
       localSteps.some((s, i) => s !== (test.steps[i]?.rawText ?? ''))
     : false;
+
+  const isUrlDirty = test ? localUrl !== test.baseUrl : false;
+
+  const isDirty = isStepsDirty || isUrlDirty;
 
   const runStatus: RunStatus | 'pending' =
     runDetail?.status ?? test?.recentRuns?.[0]?.status ?? 'pending';
@@ -82,24 +88,33 @@ export function TestOverviewPanel({ caseId }: TestOverviewPanelProps) {
     setLocalSteps((prev) => prev.filter((_, idx) => idx !== i));
   }
 
-  // ── Save (PATCH steps) ────────────────────────────────────────────────────
+  // ── Save (PATCH steps and/or baseUrl) ────────────────────────────────────
   async function handleSave() {
     const active = localSteps.filter((s) => s.trim());
     if (active.length === 0) {
       setSaveError('At least one step is required.');
       return;
     }
+    if (isUrlDirty && !localUrl.trim()) {
+      setSaveError('Base URL is required.');
+      return;
+    }
+
+    const patch: Record<string, unknown> = {};
+    if (isStepsDirty) patch.steps = active;
+    if (isUrlDirty)   patch.baseUrl = localUrl.trim();
+
     setIsSaving(true);
     setSaveError(null);
     try {
       const res = await fetch(`/api/proxy/cases/${caseId}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ steps: active }),
+        body: JSON.stringify(patch),
       });
       if (!res.ok) throw new Error();
       await refetch();
-      showToast('Steps saved.');
+      showToast('Changes saved.');
     } catch {
       setSaveError('Failed to save. Please try again.');
     } finally {
@@ -208,6 +223,24 @@ export function TestOverviewPanel({ caseId }: TestOverviewPanelProps) {
           <p className="text-brand-pink/80 text-sm md:text-base ml-12">
             Edit steps, then save and run the test against the Kaizen Engine.
           </p>
+
+          {/* Editable Base URL */}
+          <div className="ml-12 flex items-center gap-2 group">
+            <Globe className="w-3.5 h-3.5 text-gray-500 shrink-0 group-focus-within:text-brand-orange transition-colors" />
+            <input
+              type="url"
+              value={localUrl}
+              onChange={(e) => setLocalUrl(e.target.value)}
+              placeholder="https://app.example.com"
+              className="flex-1 bg-transparent text-sm text-gray-400 outline-none border-b border-transparent focus:border-brand-orange/40 transition-colors py-0.5 placeholder:text-gray-600 font-mono"
+              aria-label="Base URL"
+            />
+            {isUrlDirty && (
+              <span className="text-[9px] font-bold text-brand-orange uppercase tracking-widest shrink-0">
+                unsaved
+              </span>
+            )}
+          </div>
         </div>
 
         {/* Steps Table */}
@@ -450,6 +483,7 @@ export function TestOverviewPanel({ caseId }: TestOverviewPanelProps) {
                 time={`${stepResult.durationMs ?? 0}ms`}
                 tool={stepResult.errorType ?? 'GPT-4_Agent'}
                 status={stepResult.status}
+                tokens={stepResult.tokens}
                 screenshotKey={stepResult.screenshotKey}
                 onViewScreenshot={setActiveScreenshot}
                 icon={<Cpu className="w-3 h-3" />}
@@ -476,13 +510,14 @@ export function TestOverviewPanel({ caseId }: TestOverviewPanelProps) {
 
 // ─── Execution Card ───────────────────────────────────────────────────────────
 
-function ExecutionCard({ id, title, type, time, tool, status, icon, isActive, screenshotKey, onViewScreenshot, runId, stepResultId, domCandidates, llmPickedKaizenId, selectorUsed, onVerdict }: {
+function ExecutionCard({ id, title, type, time, tool, status, tokens, icon, isActive, screenshotKey, onViewScreenshot, runId, stepResultId, domCandidates, llmPickedKaizenId, selectorUsed, onVerdict }: {
   id: string;
   title: string;
   type: string;
   time: string;
   tool: string;
   status: string;
+  tokens: number;
   icon: React.ReactNode;
   isActive?: boolean;
   screenshotKey: string | null;
@@ -567,6 +602,12 @@ function ExecutionCard({ id, title, type, time, tool, status, icon, isActive, sc
             <Clock className="w-3 h-3" /> <span>{time}</span>
           </span>
           <span className="flex items-center space-x-1">{icon} <span>{tool}</span></span>
+          {tokens > 0 && (
+            <span className="flex items-center space-x-1 text-brand-orange">
+              <Zap className="w-3 h-3" />
+              <span className="font-mono">{tokens.toLocaleString()}</span>
+            </span>
+          )}
         </div>
         {screenshotKey && (
           <button

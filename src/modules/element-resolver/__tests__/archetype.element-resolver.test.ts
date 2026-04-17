@@ -121,6 +121,74 @@ describe('ArchetypeElementResolver', () => {
     expect(obs.increment).toHaveBeenCalledWith('resolver.archetype_miss');
   });
 
+  // Ranking: shorter name wins tiebreak — "Sign in" preferred over "Sign in with a passkey"
+  it('prefers shorter-named candidate on equal word-overlap score', async () => {
+    const passkey = makeCandidate({ role: 'button', name: 'Sign in with a passkey' });
+    const signIn  = makeCandidate({ role: 'button', name: 'Sign in' });
+    // passkey comes first in DOM order — tiebreaker must flip it
+    domPruner.prune.mockResolvedValue([passkey, signIn]);
+
+    // archetypeResolver only matches "Sign in", not "Sign in with a passkey"
+    archetypeResolver.match.mockImplementation(async (candidate) => {
+      if (candidate.name === 'Sign in') return makeMatch({ selector: 'role=button[name="Sign in"]' });
+      return null;
+    });
+
+    const pageMock = { $: jest.fn().mockResolvedValue({}) };
+    const result = await resolver.resolve(makeStep({ targetDescription: 'sign in button' }), makeContext(pageMock));
+
+    expect(result.selectors[0].selector).toBe('role=button[name="Sign in"]');
+    expect(result.resolutionSource).toBe('archetype');
+  });
+
+  // Top-N iteration: falls through non-matching candidates to find the match.
+  // Scenario: "Purchase Button" scores higher on word-overlap for target "click the button"
+  // but has no archetype; "Submit" scores lower but matches submit_button archetype.
+  it('tries subsequent candidates when higher-scoring candidate has no archetype match', async () => {
+    // "purchase button" → 'button' matches → score 1
+    const noMatch = makeCandidate({ role: 'button', name: 'Purchase Button' });
+    // "submit" → 'button' in role matches → score 1 (same score, longer name → ranked second)
+    // Actually let's just give noMatch a higher score by name length tiebreak going wrong way:
+    // Use a target where noMatch scores higher numerically
+    const matchCandidate = makeCandidate({ role: 'button', name: 'Submit' });
+    // For target "click the custom purchase button", noMatch scores higher (has 'purchase' + 'button')
+    // matchCandidate only scores on 'button'
+    domPruner.prune.mockResolvedValue([noMatch, matchCandidate]);
+
+    archetypeResolver.match.mockImplementation(async (candidate) => {
+      if (candidate.name === 'Submit') return makeMatch({ selector: 'role=button[name="Submit"]' });
+      return null;
+    });
+
+    const pageMock = { $: jest.fn().mockResolvedValue({}) };
+    const step = makeStep({ targetDescription: 'click the custom purchase button' });
+    const result = await resolver.resolve(step, makeContext(pageMock));
+
+    expect(result.resolutionSource).toBe('archetype');
+    // Both candidates were tried (noMatch first by score, then matchCandidate)
+    expect(archetypeResolver.match).toHaveBeenCalledTimes(2);
+  });
+
+  // DOM miss on first candidate → tries next candidate
+  it('continues to next candidate when DOM validation fails for first match', async () => {
+    const first  = makeCandidate({ role: 'button', name: 'Sign in with a passkey' });
+    const second = makeCandidate({ role: 'button', name: 'Sign in' });
+    domPruner.prune.mockResolvedValue([first, second]);
+
+    archetypeResolver.match.mockResolvedValue(makeMatch());
+
+    const pageMock = {
+      $: jest.fn()
+        .mockResolvedValueOnce(null) // first candidate: DOM miss
+        .mockResolvedValueOnce({}),  // second candidate: DOM hit
+    };
+
+    const result = await resolver.resolve(makeStep(), makeContext(pageMock));
+
+    expect(result.resolutionSource).toBe('archetype');
+    expect(obs.increment).toHaveBeenCalledWith('resolver.archetype_dom_miss', expect.any(Object));
+  });
+
   // Extra: recordSuccess and recordFailure are no-ops (do not throw)
   it('recordSuccess is a no-op', async () => {
     await expect(resolver.recordSuccess('hash', 'example.com', 'button')).resolves.toBeUndefined();

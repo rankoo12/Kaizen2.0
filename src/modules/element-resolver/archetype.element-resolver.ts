@@ -32,18 +32,28 @@ const MISS: SelectorSet = {
   tokensUsed: 0,
 };
 
-function pickTopCandidate(candidates: CandidateNode[], target: string): CandidateNode {
+/**
+ * Ranks candidates by word-overlap with the target description.
+ * Tiebreaker: shorter accessible name wins — "Sign in" is more specific
+ * than "Sign in with a passkey" for the same overlap score.
+ */
+function rankCandidates(candidates: CandidateNode[], target: string): CandidateNode[] {
   const words = target.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
-  if (words.length === 0) return candidates[0];
+  if (words.length === 0) return candidates;
 
-  let best = candidates[0];
-  let bestScore = -1;
-  for (const c of candidates) {
-    const haystack = `${c.role} ${c.name ?? ''} ${c.textContent ?? ''}`.toLowerCase();
-    const score = words.reduce((n, w) => n + (haystack.includes(w) ? 1 : 0), 0);
-    if (score > bestScore) { bestScore = score; best = c; }
-  }
-  return best;
+  return [...candidates].sort((a, b) => {
+    const scoreA = words.reduce((n, w) => {
+      const hay = `${a.role} ${a.name ?? ''} ${a.textContent ?? ''}`.toLowerCase();
+      return n + (hay.includes(w) ? 1 : 0);
+    }, 0);
+    const scoreB = words.reduce((n, w) => {
+      const hay = `${b.role} ${b.name ?? ''} ${b.textContent ?? ''}`.toLowerCase();
+      return n + (hay.includes(w) ? 1 : 0);
+    }, 0);
+    if (scoreB !== scoreA) return scoreB - scoreA;
+    // Tiebreak: prefer the candidate with the shorter accessible name (more exact match)
+    return (a.name || a.textContent).length - (b.name || b.textContent).length;
+  });
 }
 
 export class ArchetypeElementResolver implements IElementResolver {
@@ -70,43 +80,45 @@ export class ArchetypeElementResolver implements IElementResolver {
       return MISS;
     }
 
-    const topCandidate = pickTopCandidate(candidates, step.targetDescription);
+    // Rank by word-overlap (desc), tiebreak by name length (asc).
+    // Try the top-5 candidates so that a high-scoring but non-matching candidate
+    // (e.g. "Sign in with a passkey") does not block the correct shorter match.
+    const ranked = rankCandidates(candidates, step.targetDescription).slice(0, 5);
+    const page = context.page as PlaywrightPageLike;
 
-    const match = await this.archetypeResolver.match(topCandidate, step.action);
+    for (const candidate of ranked) {
+      const match = await this.archetypeResolver.match(candidate, step.action);
+      if (!match) continue;
 
-    if (!match) {
-      this.observability.increment('resolver.archetype_miss');
-      return MISS;
-    }
-
-    // Validate the ARIA selector against the live DOM before committing
-    try {
-      const page = context.page as PlaywrightPageLike;
-      const handle = await page.$(match.selector);
-
-      if (handle === null) {
-        this.observability.increment('resolver.archetype_dom_miss', { archetype: match.archetypeName });
-        return MISS;
+      // Validate the ARIA selector against the live DOM before committing
+      try {
+        const handle = await page.$(match.selector);
+        if (handle === null) {
+          this.observability.increment('resolver.archetype_dom_miss', { archetype: match.archetypeName });
+          continue; // try next candidate
+        }
+      } catch (e: any) {
+        this.observability.log('warn', 'archetype_resolver.dom_validation_failed', {
+          archetype: match.archetypeName,
+          selector: match.selector,
+          error: e.message,
+        });
+        continue; // try next candidate
       }
-    } catch (e: any) {
-      this.observability.log('warn', 'archetype_resolver.dom_validation_failed', {
-        archetype: match.archetypeName,
-        selector: match.selector,
-        error: e.message,
-      });
-      return MISS;
+
+      this.observability.increment('resolver.cache_hit', { source: 'archetype' });
+      return {
+        selectors: [{ selector: match.selector, strategy: 'aria', confidence: match.confidence }],
+        fromCache: false,
+        cacheSource: null,
+        resolutionSource: 'archetype',
+        similarityScore: null,
+        tokensUsed: 0,
+      };
     }
 
-    this.observability.increment('resolver.cache_hit', { source: 'archetype' });
-
-    return {
-      selectors: [{ selector: match.selector, strategy: 'aria', confidence: match.confidence }],
-      fromCache: false,
-      cacheSource: null,
-      resolutionSource: 'archetype',
-      similarityScore: null,
-      tokensUsed: 0,
-    };
+    this.observability.increment('resolver.archetype_miss');
+    return MISS;
   }
 
   // Archetypes are static — no success/failure tracking needed

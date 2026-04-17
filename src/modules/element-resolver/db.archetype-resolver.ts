@@ -60,6 +60,85 @@ export class DBArchetypeResolver implements IArchetypeResolver {
     }
   }
 
+  /**
+   * Automatically promotes a newly-observed accessible name into the matching
+   * archetype's name_patterns when the LLM resolves an element that we didn't
+   * know about yet.
+   *
+   * Algorithm:
+   *  1. Filter archetypes by the candidate's role (and action_hint if set).
+   *  2. Score each archetype by keyword overlap between its existing patterns
+   *     and the new normalised name.
+   *  3. If there is one clear winner (highest score, no tie), add the new pattern.
+   *  4. Bust the in-memory cache so the next run sees the pattern immediately.
+   *
+   * Fire-and-forget safe — never throws; all errors are logged as warnings.
+   */
+  async learn(role: string, name: string, action: string): Promise<void> {
+    const normName = normalise(name);
+    // Skip empty names and suspiciously long ones (likely dynamic text, not a label)
+    if (!normName || normName.length > 80) return;
+
+    let archetypes: ArchetypeRow[];
+    try {
+      archetypes = await this.getArchetypes();
+    } catch {
+      return;
+    }
+
+    const candidates = archetypes.filter(
+      (a) => a.role === role && (a.action_hint === null || a.action_hint === action),
+    );
+    if (candidates.length === 0) return;
+
+    // Score each archetype: how many keyword tokens from its existing patterns
+    // overlap with tokens in the new name?
+    const nameTokens = normName.split(/\s+/).filter((w) => w.length > 2);
+    if (nameTokens.length === 0) return;
+
+    const scored = candidates.map((a) => {
+      const score = a.name_patterns.reduce((best, p) => {
+        const patternCore = p.endsWith('*') ? p.slice(0, -1) : p;
+        const patternTokens = patternCore.split(/\s+/).filter((w) => w.length > 2);
+        const overlap = patternTokens.filter((w) => nameTokens.includes(w)).length;
+        return Math.max(best, overlap);
+      }, 0);
+      return { archetype: a, score };
+    }).sort((a, b) => b.score - a.score);
+
+    // Require a clear winner: score > 0 and no other archetype tied for first place
+    if (scored[0].score === 0) return;
+    if (scored.length > 1 && scored[0].score === scored[1].score) return;
+
+    const target = scored[0].archetype;
+
+    // Check if this name is already covered (exact or wildcard)
+    const alreadyCovered = target.name_patterns.some((p) =>
+      p.endsWith('*') ? normName.startsWith(p.slice(0, -1)) : normName === p,
+    );
+    if (alreadyCovered) return;
+
+    try {
+      await getPool().query(
+        `UPDATE element_archetypes
+         SET name_patterns = array_append(name_patterns, $1)
+         WHERE name = $2
+           AND NOT ($1 = ANY(name_patterns))`,
+        [normName, target.name],
+      );
+      // Bust the cache so the next resolution picks up the new pattern immediately
+      this.cache = null;
+      this.cacheExpiresAt = 0;
+      this.observability.increment('archetype_learner.pattern_added', { archetype: target.name });
+      this.observability.log('info', 'archetype_learner.pattern_added', {
+        archetype: target.name,
+        pattern: normName,
+      });
+    } catch (e: any) {
+      this.observability.log('warn', 'archetype_learner.learn_failed', { error: e.message });
+    }
+  }
+
   async match(candidate: CandidateNode, action: string): Promise<ArchetypeMatch | null> {
     const archetypes = await this.getArchetypes();
 
@@ -74,7 +153,11 @@ export class DBArchetypeResolver implements IArchetypeResolver {
       // Respect action_hint: if set, action must match
       if (archetype.action_hint !== null && archetype.action_hint !== action) continue;
 
-      if (archetype.name_patterns.includes(normalisedName)) {
+      // Pattern matching: exact match, or prefix match when pattern ends with '*'
+      const nameMatches = archetype.name_patterns.some((p) =>
+        p.endsWith('*') ? normalisedName.startsWith(p.slice(0, -1)) : normalisedName === p,
+      );
+      if (nameMatches) {
         const selector = buildAriaSelector(candidate.role, candidate.name || candidate.textContent);
         return {
           archetypeName: archetype.name,

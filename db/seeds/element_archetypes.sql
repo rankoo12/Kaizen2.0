@@ -11,7 +11,11 @@ INSERT INTO element_archetypes (name, role, name_patterns, action_hint, confiden
 VALUES
 
 -- ── Authentication ───────────────────────────────────────────────────────────
-('login_button',   'button',   ARRAY['login', 'log in', 'log into', 'sign in', 'sign into'],
+('login_button',   'button',   ARRAY['login', 'log in', 'log into', 'sign in', 'sign into',
+                                     'sign in with email', 'sign in with google', 'sign in with github',
+                                     'sign in with microsoft', 'sign in with apple',
+                                     'log in with email', 'log in with google',
+                                     'continue with email', 'continue with google', 'continue with github'],
   'click', 0.95),
 
 ('logout_button',  'button',   ARRAY['log out', 'logout', 'sign out', 'signout'],
@@ -24,7 +28,9 @@ VALUES
 -- ── Form fields ──────────────────────────────────────────────────────────────
 ('email_input',    'textbox',  ARRAY['email', 'email address', 'e-mail', 'e-mail address',
                                      'work email', 'username or email', 'email or username',
-                                     'email / username'],
+                                     'email / username',
+                                     'enter your email address', 'enter email address',
+                                     'your email address', 'enter your email', 'type your email'],
   'type', 0.95),
 
 ('password_input', 'textbox',  ARRAY['password', 'current password', 'enter password',
@@ -32,10 +38,15 @@ VALUES
   'type', 0.95),
 
 ('search_input',   'searchbox', ARRAY['search', 'search...', 'search for anything',
-                                      'what are you looking for'],
+                                      'what are you looking for', 'search*'],
   'type', 0.95),
 
-('search_input_textbox', 'textbox', ARRAY['search', 'search...'],
+('search_input_textbox', 'textbox', ARRAY['search', 'search...', 'search*'],
+  'type', 0.92),
+
+-- Combobox search: elements like Google's <textarea role="combobox" aria-label="Search">
+-- The combobox role is used for autocomplete search widgets that own a suggestion listbox.
+('search_input_combobox', 'combobox', ARRAY['search', 'search...', 'search*'],
   'type', 0.92),
 
 -- ── Navigation ───────────────────────────────────────────────────────────────
@@ -43,4 +54,7 @@ VALUES
                                      'save changes', 'apply', 'done', 'update', 'finish'],
   'click', 0.90)
 
-ON CONFLICT (name) DO NOTHING;
+ON CONFLICT (name) DO UPDATE
+  SET name_patterns = EXCLUDED.name_patterns,
+      action_hint   = EXCLUDED.action_hint,
+      confidence    = EXCLUDED.confidence;
