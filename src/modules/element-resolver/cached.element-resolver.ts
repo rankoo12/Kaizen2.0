@@ -5,6 +5,7 @@ import type { ILLMGateway } from '../llm-gateway/interfaces';
 import type { IObservability } from '../observability/interfaces';
 import { getPool } from '../../db/pool';
 import { toVectorSQL } from '../../utils/vector';
+import { invalidateRedisCache } from './redis-cache.utils';
 
 /**
  * Spec ref: Section 8 — Element Resolution & Caching (Levels 1–4)
@@ -88,21 +89,10 @@ export class CachedElementResolver implements IElementResolver {
 
   async recordFailure(targetHash: string, domain: string, _selectorAttempted: string): Promise<void> {
     this.observability.increment('resolver.record_failure', { domain });
-    // Evict all Redis entries for this targetHash+domain across all tenants.
-    // Key format: sel:{tenantId}:{targetHash}:{domain}
     try {
-      const pattern = `sel:*:${targetHash}:${domain}`;
-      const keys: string[] = [];
-      let cursor = '0';
-      do {
-        const [next, batch] = await this.redis.scan(cursor, 'MATCH', pattern, 'COUNT', '100');
-        cursor = next;
-        keys.push(...batch);
-      } while (cursor !== '0');
-
-      if (keys.length > 0) {
-        await this.redis.del(...keys);
-        this.observability.increment('resolver.cache_invalidated', { domain, count: String(keys.length) });
+      const evicted = await invalidateRedisCache(this.redis, targetHash, domain);
+      if (evicted > 0) {
+        this.observability.increment('resolver.cache_invalidated', { domain, count: String(evicted) });
       }
     } catch (e: any) {
       this.observability.log('warn', 'cache_resolver.invalidation_failed', { error: e.message });

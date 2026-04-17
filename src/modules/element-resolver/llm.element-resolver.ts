@@ -4,10 +4,12 @@ import type { IDOMPruner } from '../dom-pruner/interfaces';
 import type { ILLMGateway } from '../llm-gateway/interfaces';
 import type { IObservability } from '../observability/interfaces';
 import type { ISharedPoolService } from '../shared-pool/interfaces';
+import type { Redis } from 'ioredis';
 import { getPool } from '../../db/pool';
 import { appendOutcome, computeConfidence } from './confidence';
 import { toVectorSQL } from '../../utils/vector';
 import { filterCandidatesByAction } from './action-role-filter';
+import { invalidateRedisCache, isTransient } from './redis-cache.utils';
 
 /**
  * Converts a CandidateNode into a compact semantic string for element_embedding.
@@ -77,6 +79,7 @@ export class LLMElementResolver implements IElementResolver {
     private readonly llmGateway: ILLMGateway,
     private readonly observability: IObservability,
     private readonly sharedPool?: ISharedPoolService,
+    private readonly redis?: Redis,
   ) {}
 
   async resolve(step: StepAST, context: ResolutionContext): Promise<SelectorSet> {
@@ -344,28 +347,10 @@ export class LLMElementResolver implements IElementResolver {
         this.llmGateway.generateEmbedding(serializeCandidateForEmbedding(winningCandidate, urlPath)),
       ]);
 
-
-      // Store under targetHash so every step targeting this element hits the same row
-      await getPool().query(
-        `INSERT INTO selector_cache
-           (tenant_id, content_hash, domain, selectors, step_embedding, element_embedding)
-         VALUES ($1, $2, $3, $4, $5::vector, $6::vector)
-         ON CONFLICT (tenant_id, content_hash, domain)
-         DO UPDATE SET
-           selectors         = EXCLUDED.selectors,
-           step_embedding    = EXCLUDED.step_embedding,
-           element_embedding = EXCLUDED.element_embedding,
-           updated_at        = now()
-         WHERE selector_cache.pinned_at IS NULL`,
-        [
-          context.tenantId,
-          step.targetHash,
-          context.domain,
-          JSON.stringify(selectorSet.selectors),
-          toVectorSQL(stepEmbedding),
-          toVectorSQL(elementEmbedding),
-        ],
-      );
+      // Store under targetHash so every step targeting this element hits the same row.
+      // Single retry on transient DB errors — the LLM call that produced this result
+      // cost tokens, so losing it to a connection blip means paying again next run.
+      await this.writeCacheRow(context, step, selectorSet, stepEmbedding, elementEmbedding);
 
       this.observability.increment('resolver.cache_write', { domain: context.domain });
 
@@ -382,8 +367,46 @@ export class LLMElementResolver implements IElementResolver {
         });
       }
     } catch (e: any) {
-      // Fire-and-forget — a failed persist must never break the current run
       this.observability.log('warn', 'resolver.cache_write_failed', { error: e.message });
+    }
+  }
+
+  private async writeCacheRow(
+    context: ResolutionContext,
+    step: StepAST,
+    selectorSet: SelectorSet,
+    stepEmbedding: number[],
+    elementEmbedding: number[],
+  ): Promise<void> {
+    const sql = `INSERT INTO selector_cache
+           (tenant_id, content_hash, domain, selectors, step_embedding, element_embedding)
+         VALUES ($1, $2, $3, $4, $5::vector, $6::vector)
+         ON CONFLICT (tenant_id, content_hash, domain)
+         DO UPDATE SET
+           selectors         = EXCLUDED.selectors,
+           step_embedding    = EXCLUDED.step_embedding,
+           element_embedding = EXCLUDED.element_embedding,
+           updated_at        = now()
+         WHERE selector_cache.pinned_at IS NULL`;
+    const params = [
+      context.tenantId,
+      step.targetHash,
+      context.domain,
+      JSON.stringify(selectorSet.selectors),
+      toVectorSQL(stepEmbedding),
+      toVectorSQL(elementEmbedding),
+    ];
+
+    try {
+      await getPool().query(sql, params);
+    } catch (firstError: any) {
+      if (isTransient(firstError)) {
+        this.observability.increment('resolver.cache_write_retry');
+        await new Promise((r) => setTimeout(r, 100));
+        await getPool().query(sql, params);
+      } else {
+        throw firstError;
+      }
     }
   }
 
@@ -419,6 +442,15 @@ export class LLMElementResolver implements IElementResolver {
          WHERE content_hash = $4 AND domain = $5`,
         [JSON.stringify(newWindow), newScore, success, targetHash, domain],
       );
+
+      // Invalidate Redis so the next resolve reads fresh data from Postgres
+      // instead of serving a stale cached entry for up to 1 hour.
+      if (this.redis) {
+        const evicted = await invalidateRedisCache(this.redis, targetHash, domain);
+        if (evicted > 0) {
+          this.observability.increment('resolver.redis_invalidated', { count: String(evicted) });
+        }
+      }
     } catch (e: any) {
       this.observability.log('warn', 'resolver.outcome_update_failed', { error: e.message });
     }
