@@ -43,7 +43,7 @@ export class PlaywrightDOMPruner implements IDOMPruner {
       const elements = Array.from(document.querySelectorAll(
         'button, a, input, textarea, select, ' +
         '[role="button"], [role="link"], [role="checkbox"], ' +
-        '[role="searchbox"], [role="tab"], [role="menuitem"], [role="textbox"]',
+        '[role="combobox"], [role="searchbox"], [role="tab"], [role="menuitem"], [role="textbox"]',
       )) as HTMLElement[];
 
       const results: any[] = [];
@@ -88,6 +88,7 @@ export class PlaywrightDOMPruner implements IDOMPruner {
             if (t === 'checkbox') role = 'checkbox';
             else if (t === 'radio') role = 'radio';
             else if (t === 'submit' || t === 'button' || t === 'reset') role = 'button';
+            else if (t === 'search') role = 'searchbox';
             else role = 'textbox';
           }
         }
@@ -128,6 +129,16 @@ export class PlaywrightDOMPruner implements IDOMPruner {
 
         if (!accessibleName) {
           accessibleName = el.getAttribute('placeholder') || el.getAttribute('title') || '';
+        }
+
+        // input[type=submit] and input[type=button] expose their accessible name
+        // via the value attribute — not innerText (void elements have no children).
+        // Without this, role=button[name="Sign in"] is never built for submit inputs.
+        if (!accessibleName && tagName === 'input') {
+          const t = (el.getAttribute('type') || '').toLowerCase();
+          if (t === 'submit' || t === 'button') {
+            accessibleName = el.getAttribute('value') || '';
+          }
         }
 
         // ── 7. Clean text content ─────────────────────────────────────────

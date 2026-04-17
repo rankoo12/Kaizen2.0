@@ -55,7 +55,7 @@ describe('CompositeElementResolver', () => {
       histogram: jest.fn(),
     };
 
-    composite = new CompositeElementResolver(mockCached, mockLLM, mockObservability);
+    composite = new CompositeElementResolver([mockCached, mockLLM], mockObservability);
   });
 
   afterEach(() => jest.clearAllMocks());
@@ -70,7 +70,7 @@ describe('CompositeElementResolver', () => {
     expect(mockLLM.resolve).not.toHaveBeenCalled();
   });
 
-  it('falls through to LLM resolver on cache miss (empty selectors)', async () => {
+  it('falls through to next resolver on cache miss (empty selectors)', async () => {
     mockCached.resolve.mockResolvedValueOnce(missSet);
     mockLLM.resolve.mockResolvedValueOnce({
       selectors: [{ selector: "[data-kaizen-id='kz-1']", strategy: 'data-testid', confidence: 0.99 }],
@@ -84,27 +84,23 @@ describe('CompositeElementResolver', () => {
 
     expect(result.fromCache).toBe(false);
     expect(mockLLM.resolve).toHaveBeenCalledTimes(1);
-    expect(mockObservability.increment).toHaveBeenCalledWith(
-      'composite_resolver.llm_escalation',
-      { action: 'click' },
-    );
   });
 
-  it('recordSuccess delegates to both cached and llm resolvers', async () => {
+  it('recordSuccess delegates to all resolvers', async () => {
     await composite.recordSuccess('hash', 'example.com', '#btn');
 
     expect(mockCached.recordSuccess).toHaveBeenCalledWith('hash', 'example.com', '#btn');
     expect(mockLLM.recordSuccess).toHaveBeenCalledWith('hash', 'example.com', '#btn');
   });
 
-  it('recordFailure delegates to both cached and llm resolvers', async () => {
+  it('recordFailure delegates to all resolvers', async () => {
     await composite.recordFailure('hash', 'example.com', '#btn');
 
     expect(mockCached.recordFailure).toHaveBeenCalledWith('hash', 'example.com', '#btn');
     expect(mockLLM.recordFailure).toHaveBeenCalledWith('hash', 'example.com', '#btn');
   });
 
-  it('returns LLM result even when LLM also returns empty selectors', async () => {
+  it('returns empty selectors and emits full_miss when all resolvers miss', async () => {
     mockCached.resolve.mockResolvedValueOnce(missSet);
     mockLLM.resolve.mockResolvedValueOnce(missSet);
 
@@ -112,5 +108,21 @@ describe('CompositeElementResolver', () => {
 
     expect(result.selectors).toHaveLength(0);
     expect(mockLLM.resolve).toHaveBeenCalledTimes(1);
+    expect(mockObservability.increment).toHaveBeenCalledWith('composite_resolver.full_miss', { action: 'click' });
+  });
+
+  it('returns first resolver result without calling subsequent resolvers', async () => {
+    const mockFirst: jest.Mocked<IElementResolver> = {
+      resolve: jest.fn().mockResolvedValue(hitSet()),
+      recordSuccess: jest.fn().mockResolvedValue(undefined),
+      recordFailure: jest.fn().mockResolvedValue(undefined),
+    };
+    composite = new CompositeElementResolver([mockFirst, mockCached, mockLLM], mockObservability);
+
+    const result = await composite.resolve(makeStep(), makeContext());
+
+    expect(result.selectors).toHaveLength(1);
+    expect(mockCached.resolve).not.toHaveBeenCalled();
+    expect(mockLLM.resolve).not.toHaveBeenCalled();
   });
 });

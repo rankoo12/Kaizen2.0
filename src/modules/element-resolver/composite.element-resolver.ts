@@ -4,15 +4,16 @@ import type { IObservability } from '../observability/interfaces';
 
 /**
  * Spec ref: Section 6.3 — CompositeElementResolver
+ * Updated: Smart Brain Layer 0 — accepts an ordered resolver chain (first non-empty wins).
  *
- * Tries CachedElementResolver (L1–L4) first.
- * Falls through to LLMElementResolver only on a full cache miss (empty selectors).
- * Both resolvers implement IElementResolver — no implementation imports.
+ * Resolution order:
+ *  [0] ArchetypeElementResolver (L0) — zero-LLM, zero-vector ARIA lookup
+ *  [1] CachedElementResolver   (L1–L4) — Redis + Postgres + pgvector
+ *  [2] LLMElementResolver      (L5) — LLM fallback with cache write-back
  */
 export class CompositeElementResolver implements IElementResolver {
   constructor(
-    private readonly cached: IElementResolver,
-    private readonly llm: IElementResolver,
+    private readonly resolvers: IElementResolver[],
     private readonly observability: IObservability,
   ) {}
 
@@ -22,35 +23,25 @@ export class CompositeElementResolver implements IElementResolver {
     });
 
     try {
-      const cacheResult = await this.cached.resolve(step, context);
-
-      if (cacheResult.selectors.length > 0) {
-        return cacheResult;
+      for (const resolver of this.resolvers) {
+        const result = await resolver.resolve(step, context);
+        if (result.selectors.length > 0) return result;
       }
 
-      // Cache miss — escalate to LLM
-      this.observability.increment('composite_resolver.llm_escalation', {
-        action: step.action,
-      });
-
-      return await this.llm.resolve(step, context);
+      // All resolvers missed — return empty MISS (LLMElementResolver is last and should
+      // always return something, but this guards against an empty chain).
+      this.observability.increment('composite_resolver.full_miss', { action: step.action });
+      return { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
     } finally {
       span.end();
     }
   }
 
   async recordSuccess(contentHash: string, domain: string, selectorUsed: string): Promise<void> {
-    // Delegate to both so each can update its own state
-    await Promise.all([
-      this.cached.recordSuccess(contentHash, domain, selectorUsed),
-      this.llm.recordSuccess(contentHash, domain, selectorUsed),
-    ]);
+    await Promise.all(this.resolvers.map((r) => r.recordSuccess(contentHash, domain, selectorUsed)));
   }
 
   async recordFailure(contentHash: string, domain: string, selectorAttempted: string): Promise<void> {
-    await Promise.all([
-      this.cached.recordFailure(contentHash, domain, selectorAttempted),
-      this.llm.recordFailure(contentHash, domain, selectorAttempted),
-    ]);
+    await Promise.all(this.resolvers.map((r) => r.recordFailure(contentHash, domain, selectorAttempted)));
   }
 }

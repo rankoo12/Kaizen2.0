@@ -99,7 +99,7 @@ export type SelectorEntry = {
 };
 
 /** Where a resolved selector came from — propagated to step_results for UI visibility. */
-export type ResolutionSource = 'redis' | 'db_exact' | 'pgvector_step' | 'pgvector_element' | 'llm';
+export type ResolutionSource = 'archetype' | 'redis' | 'db_exact' | 'pgvector_step' | 'pgvector_element' | 'llm';
 
 /**
  * Compact snapshot of one DOM candidate as presented to the LLM.

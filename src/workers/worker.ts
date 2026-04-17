@@ -30,7 +30,11 @@ import { LLMElementResolver } from '../modules/element-resolver/llm.element-reso
 import { SharedPoolService } from '../modules/shared-pool/shared-pool.service';
 import { CachedElementResolver } from '../modules/element-resolver/cached.element-resolver';
 import { CompositeElementResolver } from '../modules/element-resolver/composite.element-resolver';
+import type { IElementResolver } from '../modules/element-resolver/interfaces';
+import { DBArchetypeResolver } from '../modules/element-resolver/db.archetype-resolver';
+import { ArchetypeElementResolver } from '../modules/element-resolver/archetype.element-resolver';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
+import { PageChallengeDetector } from '../modules/execution-engine/challenge-detector';
 import { HealingEngine } from '../modules/healing-engine/healing-engine';
 import { FallbackSelectorStrategy } from '../modules/healing-engine/strategies/fallback-selector.strategy';
 import { AdaptiveWaitStrategy } from '../modules/healing-engine/strategies/adaptive-wait.strategy';
@@ -62,8 +66,22 @@ const domPruner = new PlaywrightDOMPruner();
 const sharedPool = new SharedPoolService(cacheRedis, obs);
 const llmResolver = new LLMElementResolver(domPruner, llm, obs, sharedPool);
 const cachedResolver = new CachedElementResolver(cacheRedis, llm, obs);
-const resolver = new CompositeElementResolver(cachedResolver, llmResolver, obs);
+const archetypeResolver = new DBArchetypeResolver(obs);
+const archetypeElementResolver = new ArchetypeElementResolver(domPruner, archetypeResolver, obs);
+
+// DISABLE_LLM=1 removes the LLM resolver from the chain entirely.
+// Use this during archetype/cache testing to confirm zero-token resolution.
+const resolvers: IElementResolver[] = [archetypeElementResolver, cachedResolver];
+if (process.env.DISABLE_LLM !== '1') {
+  resolvers.push(llmResolver);
+}
+if (process.env.DISABLE_LLM === '1') {
+  logger.warn({ event: 'llm_disabled' }, 'LLM resolver disabled via DISABLE_LLM=1 — steps that miss archetype/cache will return no selector');
+}
+
+const resolver = new CompositeElementResolver(resolvers, obs);
 const engine = new PlaywrightExecutionEngine(obs);
+const challengeDetector = new PageChallengeDetector();
 const screenshots = new ScreenshotService(obs);
 
 const notifier = new LogNotifier(obs);
@@ -178,18 +196,20 @@ async function insertStepResult(
   domCandidates: SelectorSet['candidates'] | null,
   llmPickedKaizenId: string | null,
   tokensUsed: number,
+  errorType: string | null = null,
 ): Promise<string | null> {
   try {
     const { rows } = await getPool().query<{ id: string }>(
       `INSERT INTO step_results
          (tenant_id, run_id, content_hash, target_hash, status, selector_used,
-          screenshot_key, duration_ms, resolution_source, similarity_score, dom_candidates, llm_picked_kaizen_id, tokens_used)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13)
+          screenshot_key, duration_ms, resolution_source, similarity_score,
+          dom_candidates, llm_picked_kaizen_id, tokens_used, error_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
        RETURNING id`,
       [tenantId, runId, step.contentHash, step.targetHash, status, selectorUsed,
        screenshotKey, durationMs, resolutionSource, similarityScore,
        domCandidates ? JSON.stringify(domCandidates) : null,
-       llmPickedKaizenId, tokensUsed],
+       llmPickedKaizenId, tokensUsed, errorType],
     );
     return rows[0]?.id ?? null;
   } catch (e: any) {
@@ -243,6 +263,24 @@ async function executeStep(
       .catch((e) => obs.log('warn', 'worker.screenshot_upload_failed', { phase: 'before', error: e.message }));
   }
 
+  // ── Challenge detection ───────────────────────────────────────────────────
+  // Check before element resolution so we never waste an LLM call on a page
+  // that is blocked by an anti-bot challenge. The healing engine is not invoked
+  // because challenges cannot be resolved by selector strategies.
+  const challenge = await challengeDetector.detect(page);
+  if (challenge) {
+    obs.log('warn', 'worker.challenge_detected', { runId, stepIndex, type: challenge.type, url: page.url() });
+    obs.increment('worker.challenge_detected', { type: challenge.type });
+    const afterPng = await page.screenshot({ type: 'png' }).catch(() => null);
+    const afterKey = await screenshots.upload(afterPng!, tenantId, runId, stepIndex, 'after');
+    void insertStepResult(
+      tenantId, runId, step, 'failed', null, afterKey,
+      Date.now() - stepStart, null, null, null, null, 0,
+      challenge.type,
+    );
+    return { status: 'failed', healed: false, afterPng };
+  }
+
   // ── Resolve selectors ─────────────────────────────────────────────────────
   // navigate and press_key act on the page/keyboard, not a specific DOM element.
   const needsElement = step.action !== 'navigate' && step.action !== 'press_key' && step.action !== 'wait';
@@ -270,6 +308,17 @@ async function executeStep(
     if (result.selectorUsed) {
       void resolver.recordSuccess(step.targetHash, domain, result.selectorUsed);
     }
+
+    // Archetype learning: when the LLM resolved this step, try to promote the
+    // picked element's accessible name into the archetype library so future runs
+    // on any site with the same accessible name skip the LLM entirely.
+    if (selectorSet.resolutionSource === 'llm' && selectorSet.llmPickedKaizenId && selectorSet.candidates) {
+      const picked = selectorSet.candidates.find((c) => c.kaizenId === selectorSet.llmPickedKaizenId);
+      if (picked) {
+        void archetypeResolver.learn(picked.role, picked.name, step.action);
+      }
+    }
+
     void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart, selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null, selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0);
     return { status: 'passed', healed: false, afterPng };
   }
