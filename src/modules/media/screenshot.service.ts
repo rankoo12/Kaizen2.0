@@ -23,27 +23,30 @@ import type { IObservability } from '../observability/interfaces';
  *   GOOGLE_APPLICATION_CREDENTIALS — alternative to GCS_KEY_FILE
  */
 export class ScreenshotService {
-  private readonly storage: Storage | null;
   private readonly bucket: string;
   private readonly localDir: string;
+  private readonly keyFile: string | undefined;
+  private readonly gcsEnabled: boolean;
 
   constructor(private readonly observability: IObservability) {
     this.bucket = process.env.GCS_BUCKET ?? 'kaizen-screenshots';
     this.localDir = path.resolve('./screenshots');
 
-    const keyFile = process.env.GCS_KEY_FILE ?? process.env.GOOGLE_APPLICATION_CREDENTIALS;
-    const hasCredentials = !!keyFile || !!process.env.GOOGLE_CLOUD_PROJECT;
+    this.keyFile = process.env.GCS_KEY_FILE ?? process.env.GOOGLE_APPLICATION_CREDENTIALS;
+    this.gcsEnabled = !!this.keyFile || !!process.env.GOOGLE_CLOUD_PROJECT;
 
-    if (hasCredentials) {
-      this.storage = new Storage(keyFile ? { keyFilename: keyFile } : {});
+    if (this.gcsEnabled) {
       this.observability.log('info', 'screenshot.gcs_enabled', { bucket: this.bucket });
     } else {
-      this.storage = null;
       this.observability.log('info', 'screenshot.local_fallback', {
         dir: this.localDir,
         note: 'Set GCS_KEY_FILE to enable Google Cloud Storage uploads',
       });
     }
+  }
+
+  private newStorage(): Storage {
+    return new Storage(this.keyFile ? { keyFilename: this.keyFile } : {});
   }
 
   /**
@@ -61,7 +64,7 @@ export class ScreenshotService {
 
     const key = `${tenantId}/${runId}/${stepIndex}/${timing}.png`;
 
-    if (this.storage) {
+    if (this.gcsEnabled) {
       return this.uploadToGCS(png, key);
     }
 
@@ -76,7 +79,7 @@ export class ScreenshotService {
   async download(key: string): Promise<Buffer | null> {
     if (!key) return null;
 
-    if (key.startsWith('gs://') || (this.storage && !key.startsWith('/'))) {
+    if (key.startsWith('gs://') || (this.gcsEnabled && !key.startsWith('/'))) {
       return this.downloadFromGCS(key.replace(`gs://${this.bucket}/`, ''));
     }
 
@@ -84,9 +87,9 @@ export class ScreenshotService {
   }
 
   private async downloadFromGCS(objectKey: string): Promise<Buffer | null> {
-    if (!this.storage) return null;
+    if (!this.gcsEnabled) return null;
     try {
-      const [contents] = await this.storage.bucket(this.bucket).file(objectKey).download();
+      const [contents] = await this.newStorage().bucket(this.bucket).file(objectKey).download();
       return contents;
     } catch (e: any) {
       this.observability.log('warn', 'screenshot.gcs_download_failed', { objectKey, error: e.message });
@@ -123,7 +126,7 @@ export class ScreenshotService {
 
   private writeOnce(png: Buffer, key: string): Promise<void> {
     return new Promise((resolve, reject) => {
-      const file = this.storage!.bucket(this.bucket).file(key);
+      const file = this.newStorage().bucket(this.bucket).file(key);
       const stream = file.createWriteStream({
         contentType: 'image/png',
         resumable: false,
