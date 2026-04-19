@@ -12,6 +12,7 @@ All specs are modular; follow the links to learn more about specific sub-systems
 - [02 API & Routing](./frontend/02-api-routing.md): Next.js App router, middleware, and Next.js backend proxy.
 - [03 Atomic Design Components](./frontend/03-atomic-design.md): Reusable component hierarchy (Atoms, Molecules, Organisms).
 - [04 Data & Hooks](./frontend/04-data-hooks.md): Context APIs and React query hooks.
+- [05 UI & UX Enhancements](./frontend/05-ui-ux-enhancements.md): Interactive element updates, 3D aesthetics, and persistent music player.
 
 ### Backend (`src/`)
 - [01 Architecture Overview](./backend/01-architecture-overview.md): Fastify API, BullMQ workers.

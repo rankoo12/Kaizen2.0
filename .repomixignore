@@ -1,0 +1,84 @@
+# ─── Kaizen AI-sync scope ─────────────────────────────────────────────────────
+# Controls what ships to Google Drive via `npm run sync:ai`.
+# Everything listed here is EXCLUDED from the packed output.
+#
+# Scope philosophy: only ship what an LLM needs to reason about architecture
+# and logic. No data, no secrets, no build artifacts, no binaries.
+
+# ─── Secrets and environment ──────────────────────────────────────────────────
+.env
+.env.*
+!.env.example.sanitized
+*.pem
+*.key
+*.crt
+*.p12
+
+# ─── Build artifacts and caches ───────────────────────────────────────────────
+node_modules/
+dist/
+build/
+.next/
+out/
+coverage/
+.nyc_output/
+*.tsbuildinfo
+
+# ─── Data ── never ship actual data to the cloud ──────────────────────────────
+db/seeds/
+db/dumps/
+*.sql.gz
+*.dump
+data/
+uploads/
+tmp/
+
+# ─── Lockfiles (noisy, not useful for LLM context) ────────────────────────────
+package-lock.json
+yarn.lock
+pnpm-lock.yaml
+
+# ─── Media and static assets ──────────────────────────────────────────────────
+*.mp3
+*.mp4
+*.wav
+*.mov
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.webp
+*.ico
+*.svg
+*.pdf
+*.zip
+*.tar
+*.gz
+public/
+packages/web/public/
+
+# ─── One-off scripts and seed helpers ─────────────────────────────────────────
+scripts/seed-global-brain.ts
+scripts/seed-archetypes.ts
+scripts/seed-archetype-test-cases.ts
+
+# ─── IDE and OS noise ─────────────────────────────────────────────────────────
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+
+# ─── Test fixtures and snapshots (noisy) ──────────────────────────────────────
+**/__snapshots__/
+**/__fixtures__/
+*.snap
+
+# ─── Git ──────────────────────────────────────────────────────────────────────
+.git/
+.gitignore
+
+# ─── The sync output itself (defensive) ───────────────────────────────────────
+kaizen-codebase.txt
+kaizen-codebase.*.txt

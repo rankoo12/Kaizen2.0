@@ -4,6 +4,8 @@ import { useRouter } from 'next/navigation';
 import { ArrowLeft } from 'lucide-react';
 import { NavBar } from '@/components/molecules/nav-bar';
 import { ProfileDropdown } from '@/components/molecules/profile-dropdown';
+import { ThemeSwitcher } from '@/components/molecules/theme-switcher';
+import { MusicPlayerToggle } from '@/components/atoms/music-player-toggle';
 import { NewTestPanel } from '@/components/organisms/new-test-panel';
 
 export default function NewTestPage() {
@@ -23,6 +25,8 @@ export default function NewTestPage() {
               <ArrowLeft className="w-4 h-4" />
               <span className="text-xs font-bold uppercase tracking-wider">Back to Suite</span>
             </button>
+            <MusicPlayerToggle />
+            <ThemeSwitcher />
             <ProfileDropdown />
           </>
         }

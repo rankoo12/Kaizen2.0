@@ -1,25 +1,110 @@
 @import "tailwindcss";
 
+/* ──────────────────────────────────────────────────────────────────────────
+ * Theme palettes
+ *
+ * Every color token is declared as a CSS custom property on a theme root.
+ * Switching themes is a single `data-theme` attribute flip on <html>.
+ * Tailwind consumes these via the @theme block below — utilities like
+ * `bg-app-bg` and `text-brand-primary` automatically reflect the active theme.
+ *
+ * Themes shipped in v1:
+ *   - nebula       (default)   warm pink + orange, the flagship mood
+ *   - deep-space               cyan + indigo on navy, cooler instrument-panel
+ *   - solar-flare              gold + crimson on warm black, high-contrast
+ * ────────────────────────────────────────────────────────────────────────── */
+
+:root,
+[data-theme="nebula"] {
+  --color-app-bg:             #18121d;
+  --color-welcome-bg:         #130d17;
+  --color-card-bg:            #231b29;
+  --color-input-bg:           #18121d;
+  --color-border-subtle:      rgba(255, 255, 255, 0.0625);
+
+  --color-brand-primary:      #d5601c;
+  --color-brand-primary-soft: #e59365;
+  --color-brand-accent:       #db87af;
+  --color-brand-accent-soft:  #ebd1de;
+  --color-brand-accent-mid:   #d498b6;
+
+  --color-brand-warning:      #f59e0b;
+  --color-brand-support:      #c17741;
+  --color-brand-danger:       #ef4444;
+  --color-brand-success:      #22c55e;
+}
+
+[data-theme="deep-space"] {
+  --color-app-bg:             #0b1220;
+  --color-welcome-bg:         #070c17;
+  --color-card-bg:            #111a2e;
+  --color-input-bg:           #0b1220;
+  --color-border-subtle:      rgba(120, 200, 255, 0.08);
+
+  --color-brand-primary:      #38bdf8;
+  --color-brand-primary-soft: #7dd3fc;
+  --color-brand-accent:       #818cf8;
+  --color-brand-accent-soft:  #c7d2fe;
+  --color-brand-accent-mid:   #a5b4fc;
+
+  --color-brand-warning:      #facc15;
+  --color-brand-support:      #0ea5e9;
+  --color-brand-danger:       #f87171;
+  --color-brand-success:      #34d399;
+}
+
+[data-theme="solar-flare"] {
+  --color-app-bg:             #1a1208;
+  --color-welcome-bg:         #130c04;
+  --color-card-bg:            #2a1c0e;
+  --color-input-bg:           #1a1208;
+  --color-border-subtle:      rgba(255, 215, 160, 0.08);
+
+  --color-brand-primary:      #f59e0b;
+  --color-brand-primary-soft: #fbbf24;
+  --color-brand-accent:       #ef4444;
+  --color-brand-accent-soft:  #fca5a5;
+  --color-brand-accent-mid:   #f87171;
+
+  --color-brand-warning:      #fde047;
+  --color-brand-support:      #fb923c;
+  --color-brand-danger:       #dc2626;
+  --color-brand-success:      #84cc16;
+}
+
 @theme {
-  /* Colors */
-  --color-app-bg: #18121d;
-  --color-welcome-bg: #130d17;
-  --color-card-bg: #231b29;
-  --color-input-bg: #18121d;
-  --color-border-subtle: rgba(255, 255, 255, 0.0625);
-  --color-brand-orange: #d5601c;
-  --color-brand-orange-light: #e59365;
-  --color-brand-pink: #db87af;
-  --color-brand-pink-light: #ebd1de;
-  --color-brand-pink-mid: #d498b6;
-  --color-brand-yellow: #f59e0b;
-  --color-brand-accent: #c17741;
-  --color-brand-red: #ef4444;
-  --color-brand-green: #22c55e;
+  /* Themed colors — resolved from the active [data-theme] root above */
+  --color-app-bg:             var(--color-app-bg);
+  --color-welcome-bg:         var(--color-welcome-bg);
+  --color-card-bg:            var(--color-card-bg);
+  --color-input-bg:           var(--color-input-bg);
+  --color-border-subtle:      var(--color-border-subtle);
+
+  --color-brand-primary:      var(--color-brand-primary);
+  --color-brand-primary-soft: var(--color-brand-primary-soft);
+  --color-brand-accent:       var(--color-brand-accent);
+  --color-brand-accent-soft:  var(--color-brand-accent-soft);
+  --color-brand-accent-mid:   var(--color-brand-accent-mid);
+
+  --color-brand-warning:      var(--color-brand-warning);
+  --color-brand-support:      var(--color-brand-support);
+  --color-brand-danger:       var(--color-brand-danger);
+  --color-brand-success:      var(--color-brand-success);
+
+  /* Legacy aliases — kept so existing utilities resolve during migration.
+     Remove once all call sites have moved to the new token names. */
+  --color-brand-orange:       var(--color-brand-primary);
+  --color-brand-orange-light: var(--color-brand-primary-soft);
+  --color-brand-pink:         var(--color-brand-accent);
+  --color-brand-pink-light:   var(--color-brand-accent-soft);
+  --color-brand-pink-mid:     var(--color-brand-accent-mid);
+  --color-brand-yellow:       var(--color-brand-warning);
+  --color-brand-red:          var(--color-brand-danger);
+  --color-brand-green:        var(--color-brand-success);
 
   /* Fonts */
-  --font-sans: var(--font-inter), Inter, sans-serif;
-  --font-space: var(--font-space-grotesk), 'Space Grotesk', sans-serif;
+  --font-sans:    var(--font-inter), Inter, sans-serif;
+  --font-space:   var(--font-space-grotesk), 'Space Grotesk', sans-serif;
   --font-manrope: var(--font-manrope), Manrope, sans-serif;
 }
 
@@ -73,4 +158,72 @@
     rgba(255, 255, 255, 0.03) 24px
   );
   line-height: 24px;
+}
+
+/* Glowing Cube Anchors */
+.glowing-cube {
+  width: 16px;
+  height: 16px;
+  position: relative;
+  overflow: hidden;
+  transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+  border-radius: 2px;
+}
+
+.cube-pink {
+  background-color: #db87af;
+  box-shadow: 0 0 12px 2px rgba(219, 135, 175, 0.7);
+}
+
+.group:hover .cube-pink {
+  background-color: #f1a9ca;
+  box-shadow: 0 0 25px 5px rgba(219, 135, 175, 1), inset 0 0 8px rgba(255, 255, 255, 0.9);
+  transform: scale(1.5) rotate(90deg);
+}
+
+.cube-orange {
+  background-color: #d5601c;
+  box-shadow: 0 0 12px 2px rgba(213, 96, 28, 0.7);
+}
+
+.group:hover .cube-orange {
+  background-color: #f07b34;
+  box-shadow: 0 0 25px 5px rgba(213, 96, 28, 1), inset 0 0 8px rgba(255, 255, 255, 0.9);
+  transform: scale(1.5) rotate(90deg);
+}
+
+.shine-effect {
+  position: absolute;
+  top: 0;
+  left: -150%;
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.8), transparent);
+  transform: skewX(-20deg);
+}
+
+.group:hover .shine-effect {
+  animation: sweep 0.5s ease-out forwards;
+}
+
+@keyframes sweep {
+  0% {
+    left: -150%;
+  }
+  100% {
+    left: 150%;
+  }
+}
+
+/* Accessibility: honor user's motion preference.
+ * Infinite keyframe loops are disabled; one-shot transitions (hover glow,
+ * scale, modal pop) still run — users get static feedback without vertigo. */
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse-red,
+  .animate-glow-green {
+    animation: none !important;
+  }
+  .glowing-cube {
+    transition: none;
+  }
 }

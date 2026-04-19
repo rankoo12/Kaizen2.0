@@ -21,7 +21,8 @@
     "test:integration": "jest --config jest.integration.config.ts",
     "brain:seed": "tsx scripts/seed-global-brain.ts",
     "archetypes:seed": "tsx scripts/seed-archetypes.ts",
-    "seed:archetype-tests": "tsx scripts/seed-archetype-test-cases.ts"
+    "seed:archetype-tests": "tsx scripts/seed-archetype-test-cases.ts",
+    "sync:ai": "bash scripts/sync-ai.sh"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

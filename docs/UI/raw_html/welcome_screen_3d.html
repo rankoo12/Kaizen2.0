@@ -1,0 +1,368 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Kaizen: The QA Brain</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts -->
+    <link
+        href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=Manrope:wght@400;500;600;700;800&family=Space+Grotesk:wght@400;500;600;700&display=swap"
+        rel="stylesheet">
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <!-- Three.js for 3D animation -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    fontFamily: {
+                        sans: ['Inter', 'sans-serif'],
+                        manrope: ['Manrope', 'sans-serif'],
+                        space: ['Space Grotesk', 'sans-serif'],
+                    },
+                    colors: {
+                        appBg: '#130d17',
+                        brandOrange: '#d5601c',
+                        brandPink: '#db87af',
+                        buttonPinkStart: '#ebd1de',
+                        buttonPinkEnd: '#d498b6'
+                    }
+                }
+            }
+        }
+    </script>
+
+    <style>
+        body,
+        html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #130d17;
+        }
+
+        /* 3D Canvas positioning */
+        #webgl-canvas {
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100vw;
+            height: 100vh;
+            z-index: 0;
+            pointer-events: none;
+            /* Let clicks pass through to the UI */
+        }
+
+        /* Glowing Cube Anchors */
+        .glowing-cube {
+            width: 16px;
+            height: 16px;
+            position: relative;
+            overflow: hidden;
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            border-radius: 2px;
+        }
+
+        .cube-pink {
+            background-color: #db87af;
+            box-shadow: 0 0 12px 2px rgba(219, 135, 175, 0.7);
+        }
+
+        .group:hover .cube-pink {
+            background-color: #f1a9ca;
+            box-shadow: 0 0 25px 5px rgba(219, 135, 175, 1), inset 0 0 8px rgba(255, 255, 255, 0.9);
+            transform: scale(1.5) rotate(90deg);
+        }
+
+        .cube-orange {
+            background-color: #d5601c;
+            box-shadow: 0 0 12px 2px rgba(213, 96, 28, 0.7);
+        }
+
+        .group:hover .cube-orange {
+            background-color: #f07b34;
+            box-shadow: 0 0 25px 5px rgba(213, 96, 28, 1), inset 0 0 8px rgba(255, 255, 255, 0.9);
+            transform: scale(1.5) rotate(90deg);
+        }
+
+        .shine-effect {
+            position: absolute;
+            top: 0;
+            left: -150%;
+            width: 100%;
+            height: 100%;
+            background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.8), transparent);
+            transform: skewX(-20deg);
+        }
+
+        .group:hover .shine-effect {
+            animation: sweep 0.5s ease-out forwards;
+        }
+
+        @keyframes sweep {
+            0% {
+                left: -150%;
+            }
+
+            100% {
+                left: 150%;
+            }
+        }
+    </style>
+</head>
+
+<body class="bg-appBg text-white font-sans min-h-screen flex flex-col overflow-hidden relative">
+
+    <!-- Background 3D Layer -->
+    <canvas id="webgl-canvas"></canvas>
+
+    <!-- Main Content -->
+    <main class="flex-1 flex flex-col md:flex-row w-full h-full relative z-10 px-8 md:px-16 lg:px-24">
+
+        <!-- Left Side: Logo and Buttons -->
+        <div class="w-full md:w-1/2 h-full flex flex-col justify-center items-start space-y-12">
+            <!-- Logo -->
+            <div class="text-3xl md:text-4xl font-bold tracking-wider cursor-pointer font-space">
+                <span>KAI</span><span class="text-brandOrange">ZEN</span>
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="flex flex-col space-y-4 w-full max-w-[320px]">
+                <!-- Login Button -->
+                <button
+                    class="w-full py-4 rounded-xl border border-brandOrange/50 text-brandOrange font-medium bg-[#1a121d]/80 hover:bg-brandOrange/10 transition-all backdrop-blur-sm">
+                    Login
+                </button>
+
+                <!-- Sign Up Button -->
+                <button
+                    class="w-full py-4 rounded-xl bg-gradient-to-r from-buttonPinkStart to-buttonPinkEnd text-black font-semibold hover:opacity-90 transition-opacity shadow-[0_0_20px_rgba(219,135,175,0.2)]">
+                    Sign Up
+                </button>
+            </div>
+        </div>
+
+        <!-- Interactive Stars (Fixed in 3D Space) -->
+        <div id="star-1" class="fixed top-0 left-0 group cursor-pointer z-50 transition-opacity duration-300"
+            style="transform: translate(-100vw, -100vh); will-change: transform;">
+            <div class="glowing-cube cube-pink animate-pulse">
+                <div class="shine-effect"></div>
+            </div>
+            <div
+                class="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-300 bg-[#1a121d]/90 backdrop-blur-md border border-white/10 p-4 rounded-lg mt-4 w-48 text-sm text-gray-300 left-1/2 -translate-x-1/2 shadow-2xl z-50 text-center pointer-events-none">
+                None
+            </div>
+        </div>
+
+        <div id="star-2" class="fixed top-0 left-0 group cursor-pointer z-50 transition-opacity duration-300"
+            style="transform: translate(-100vw, -100vh); will-change: transform;">
+            <div class="glowing-cube cube-orange animate-pulse" style="animation-delay: 0.5s;">
+                <div class="shine-effect"></div>
+            </div>
+            <div
+                class="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-300 bg-[#1a121d]/90 backdrop-blur-md border border-white/10 p-4 rounded-lg mt-4 w-48 text-sm text-gray-300 left-1/2 -translate-x-1/2 shadow-2xl z-50 text-center pointer-events-none">
+                None
+            </div>
+        </div>
+
+        <div id="star-3" class="fixed top-0 left-0 group cursor-pointer z-50 transition-opacity duration-300"
+            style="transform: translate(-100vw, -100vh); will-change: transform;">
+            <div class="glowing-cube cube-pink animate-pulse" style="animation-delay: 1s;">
+                <div class="shine-effect"></div>
+            </div>
+            <div
+                class="absolute opacity-0 group-hover:opacity-100 transition-opacity duration-300 bg-[#1a121d]/90 backdrop-blur-md border border-white/10 p-4 rounded-lg mt-4 w-48 text-sm text-gray-300 left-1/2 -translate-x-1/2 shadow-2xl z-50 text-center pointer-events-none">
+                None
+            </div>
+        </div>
+
+    </main>
+
+    <!-- 3D Animation Script -->
+    <script>
+        // Initialize Lucide icons
+        lucide.createIcons();
+
+        // Setup Scene, Camera, Renderer
+        const canvas = document.getElementById('webgl-canvas');
+        const scene = new THREE.Scene();
+
+        // Camera setup
+        const camera = new THREE.PerspectiveCamera(45, window.innerWidth / window.innerHeight, 0.1, 100);
+        camera.position.z = 15;
+
+        const renderer = new THREE.WebGLRenderer({
+            canvas: canvas,
+            antialias: true,
+            alpha: true
+        });
+        renderer.setSize(window.innerWidth, window.innerHeight);
+        renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+
+        // Create a Neural Network Group
+        const neuralGroup = new THREE.Group();
+        scene.add(neuralGroup);
+
+        // 1. Glowing Inner Core (Updated to Brand Orange)
+        const coreGeo = new THREE.IcosahedronGeometry(1.5, 1);
+        const coreMat = new THREE.MeshStandardMaterial({
+            color: 0x130d17,
+            emissive: 0xd5601c, // brandOrange
+            emissiveIntensity: 0.6,
+            wireframe: true
+        });
+        const core = new THREE.Mesh(coreGeo, coreMat);
+        neuralGroup.add(core);
+
+        // 2. Outer Neural Shell (Updated to Brand Pink)
+        const outerGeo = new THREE.IcosahedronGeometry(3, 2);
+        const outerMat = new THREE.MeshStandardMaterial({
+            color: 0xdb87af, // brandPink
+            emissive: 0xdb87af, // brandPink
+            emissiveIntensity: 0.3,
+            wireframe: true,
+            transparent: true,
+            opacity: 0.5
+        });
+        const outer = new THREE.Mesh(outerGeo, outerMat);
+        neuralGroup.add(outer);
+
+        // 3. Floating Data Particles (Updated to Button Pink)
+        const particlesGeo = new THREE.BufferGeometry();
+        const particlesCount = 700;
+        const posArray = new Float32Array(particlesCount * 3);
+        for (let i = 0; i < particlesCount * 3; i++) {
+            posArray[i] = (Math.random() - 0.5) * 25; // Spread across 25 units
+        }
+        particlesGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
+        const particlesMat = new THREE.PointsMaterial({
+            size: 0.08, // Increased size from 0.05 to make them bigger
+            color: 0xebd1de, // buttonPinkStart
+            transparent: true,
+            opacity: 0.8,
+            blending: THREE.AdditiveBlending
+        });
+        const particleSystem = new THREE.Points(particlesGeo, particlesMat);
+        scene.add(particleSystem);
+
+        // Lighting matching new colors
+        const pointLight1 = new THREE.PointLight(0xd5601c, 2, 20); // brandOrange
+        pointLight1.position.set(5, 5, 5);
+        scene.add(pointLight1);
+
+        const pointLight2 = new THREE.PointLight(0xdb87af, 2, 20); // brandPink
+        pointLight2.position.set(-5, -5, -5);
+        scene.add(pointLight2);
+
+        const ambientLight = new THREE.AmbientLight(0xffffff, 0.3);
+        scene.add(ambientLight);
+
+        // Base offset to shift the 3D model to the right side to balance the UI
+        const baseOffsetX = 2.5;
+        neuralGroup.position.x = baseOffsetX;
+        particleSystem.position.x = baseOffsetX;
+
+        // Create 3D Anchors for the Stars to Orbit
+        const starAnchors = [];
+        const anchorPositions = [
+            new THREE.Vector3(3.5, 2.5, 1.5),   // Anchor 1
+            new THREE.Vector3(-3.0, -3.5, 2.0), // Anchor 2
+            new THREE.Vector3(1.5, 1.0, -4.0)   // Anchor 3
+        ];
+
+        anchorPositions.forEach(pos => {
+            const anchor = new THREE.Object3D();
+            anchor.position.copy(pos);
+            neuralGroup.add(anchor);
+            starAnchors.push(anchor);
+        });
+
+        // Setup Star HTML Elements & Hover States
+        const stars = [
+            document.getElementById('star-1'),
+            document.getElementById('star-2'),
+            document.getElementById('star-3')
+        ];
+
+        stars.forEach(star => {
+            if (!star) return;
+            star.dataset.hovered = 'false';
+            star.addEventListener('mouseenter', () => star.dataset.hovered = 'true');
+            star.addEventListener('mouseleave', () => star.dataset.hovered = 'false');
+        });
+
+        // Animation Loop
+        const clock = new THREE.Clock();
+        const tempV = new THREE.Vector3();
+
+        function animate() {
+            requestAnimationFrame(animate);
+            const elapsedTime = clock.getElapsedTime();
+
+            // Smooth base rotation
+            neuralGroup.rotation.y += 0.002;
+            neuralGroup.rotation.x += 0.001;
+
+            // Counter rotate the core for complexity
+            core.rotation.y -= 0.005;
+            core.rotation.z += 0.002;
+
+            // Rotate particles slowly
+            particleSystem.rotation.y = -elapsedTime * 0.02;
+
+            // Project 3D Anchors to 2D Screen Space for Stars
+            starAnchors.forEach((anchor, i) => {
+                const star = stars[i];
+
+                // Freeze star position if it is being hovered
+                if (!star || star.dataset.hovered === 'true') return;
+
+                // Get world position of the anchor
+                anchor.getWorldPosition(tempV);
+
+                // Check if the point is on the back-half of the sphere (z < 0)
+                const isBehind = tempV.z < 0;
+
+                // Project to 2D screen coordinates
+                tempV.project(camera);
+                const x = (tempV.x * 0.5 + 0.5) * window.innerWidth;
+                const y = -(tempV.y * 0.5 - 0.5) * window.innerHeight;
+
+                // Update CSS transform with depth scale
+                const scale = isBehind ? 0.7 : 1;
+                star.style.transform = `translate(${x}px, ${y}px) translate(-50%, -50%) scale(${scale})`;
+
+                // Fade and disable interactions if star rotates behind the model
+                if (isBehind) {
+                    star.style.opacity = '0.15';
+                    star.style.pointerEvents = 'none';
+                    star.style.filter = 'blur(2px)';
+                } else {
+                    star.style.opacity = '1';
+                    star.style.pointerEvents = 'auto';
+                    star.style.filter = 'none';
+                }
+            });
+
+            renderer.render(scene, camera);
+        }
+
+        animate();
+
+        // Handle Window Resize
+        window.addEventListener('resize', () => {
+            camera.aspect = window.innerWidth / window.innerHeight;
+            camera.updateProjectionMatrix();
+            renderer.setSize(window.innerWidth, window.innerHeight);
+        });
+    </script>
+</body>
+
+</html>

@@ -64,7 +64,7 @@ const cacheRedis = createRedisConnection();
 const llm = new OpenAIGateway(billing, obs, undefined, cacheRedis);
 const domPruner = new PlaywrightDOMPruner();
 const sharedPool = new SharedPoolService(cacheRedis, obs);
-const llmResolver = new LLMElementResolver(domPruner, llm, obs, sharedPool);
+const llmResolver = new LLMElementResolver(domPruner, llm, obs, sharedPool, cacheRedis);
 const cachedResolver = new CachedElementResolver(cacheRedis, llm, obs);
 const archetypeResolver = new DBArchetypeResolver(obs);
 const archetypeElementResolver = new ArchetypeElementResolver(domPruner, archetypeResolver, obs);
@@ -306,7 +306,9 @@ async function executeStep(
   // navigate and press_key pass with selectorUsed: null — check status only
   if (result.status === 'passed') {
     if (result.selectorUsed) {
-      void resolver.recordSuccess(step.targetHash, domain, result.selectorUsed);
+      await resolver.recordSuccess(step.targetHash, domain, result.selectorUsed).catch((e: any) =>
+        obs.log('warn', 'worker.record_success_failed', { error: e.message }),
+      );
     }
 
     // Archetype learning: when the LLM resolved this step, try to promote the
@@ -315,7 +317,9 @@ async function executeStep(
     if (selectorSet.resolutionSource === 'llm' && selectorSet.llmPickedKaizenId && selectorSet.candidates) {
       const picked = selectorSet.candidates.find((c) => c.kaizenId === selectorSet.llmPickedKaizenId);
       if (picked) {
-        void archetypeResolver.learn(picked.role, picked.name, step.action);
+        await archetypeResolver.learn(picked.role, picked.name, step.action).catch((e: any) =>
+          obs.log('warn', 'worker.archetype_learn_failed', { error: e.message }),
+        );
       }
     }
 
@@ -324,7 +328,9 @@ async function executeStep(
   }
 
   // ── Failure path: classify → heal ─────────────────────────────────────────
-  void resolver.recordFailure(step.targetHash, domain, selectorSet.selectors[0]?.selector ?? '');
+  await resolver.recordFailure(step.targetHash, domain, selectorSet.selectors[0]?.selector ?? '').catch((e: any) =>
+    obs.log('warn', 'worker.record_failure_failed', { error: e.message }),
+  );
 
   const error = stepError ?? new Error('Step execution failed');
   const axAfter = await (page as any).accessibility?.snapshot().catch(() => null) ?? null;
@@ -362,10 +368,10 @@ async function executeStep(
     });
     // Update the step_result status to healed
     if (stepResultId) {
-      void getPool().query(
+      await getPool().query(
         `UPDATE step_results SET status = 'healed', selector_used = $1 WHERE id = $2`,
         [healingResult.newSelector, stepResultId],
-      ).catch(() => { });
+      ).catch((e: any) => obs.log('warn', 'worker.healed_update_failed', { error: e.message }));
     }
     return { status: 'passed', healed: true, afterPng };
   }

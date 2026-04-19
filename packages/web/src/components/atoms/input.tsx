@@ -7,15 +7,11 @@ type InputProps = {
   onChange?: (e: React.ChangeEvent<HTMLInputElement>) => void;
   leftIcon?: React.ReactNode;
   rightElement?: React.ReactNode;
+  /** @deprecated — kept for API compatibility; all inputs now use the accent focus ring */
   focusVariant?: 'orange' | 'pink' | 'accent';
+  error?: boolean;
   className?: string;
   disabled?: boolean;
-};
-
-const focusVariants: Record<NonNullable<InputProps['focusVariant']>, string> = {
-  orange: 'focus:border-brand-orange/50',
-  pink: 'focus:border-brand-pink/50',
-  accent: 'focus:border-brand-accent/50',
 };
 
 export function Input({
@@ -25,7 +21,7 @@ export function Input({
   onChange,
   leftIcon,
   rightElement,
-  focusVariant = 'orange',
+  error,
   className,
   disabled,
 }: InputProps) {
@@ -45,9 +41,11 @@ export function Input({
         suppressHydrationWarning
         className={cn(
           'w-full bg-input-bg text-sm text-white rounded-lg py-3.5 outline-none',
-          'border border-transparent transition-colors placeholder:text-gray-600',
-          'disabled:opacity-50 disabled:cursor-not-allowed',
-          focusVariants[focusVariant],
+          'border transition-all duration-300 ease-out placeholder:text-gray-600',
+          'disabled:opacity-40 disabled:cursor-not-allowed',
+          error
+            ? 'border-brand-danger focus:border-brand-danger focus:ring-1 focus:ring-brand-danger/40'
+            : 'border-border-subtle focus:border-brand-accent focus:ring-1 focus:ring-brand-accent/40',
           leftIcon ? 'pl-11' : 'px-4',
           rightElement ? 'pr-11' : 'pr-4',
           className,
