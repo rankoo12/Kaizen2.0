@@ -3,6 +3,7 @@ import Fastify from 'fastify';
 import fjwt from '@fastify/jwt';
 import cors from '@fastify/cors';
 import dotenv from 'dotenv';
+import { materializeGcsKeyFromEnv } from '../bootstrap/gcs-key-from-env';
 import { runsRoutes } from './routes/runs';
 import { authRoutes } from './routes/auth';
 import { usersRoutes } from './routes/users';
@@ -13,6 +14,7 @@ import { testCasesRoutes } from './routes/test-cases';
 import { closePool } from '../db/pool';
 
 dotenv.config();
+materializeGcsKeyFromEnv();
 
 /**
  * JWT key configuration.
