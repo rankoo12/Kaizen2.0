@@ -19,6 +19,9 @@
 import dotenv from 'dotenv';
 dotenv.config();
 
+import { materializeGcsKeyFromEnv } from '../bootstrap/gcs-key-from-env';
+materializeGcsKeyFromEnv();
+
 import { Worker } from 'bullmq';
 import { chromium, type Page } from 'playwright';
 import pino from 'pino';
