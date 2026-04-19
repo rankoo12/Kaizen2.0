@@ -544,6 +544,17 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
 
     if (!caseData) return reply.status(404).send({ error: 'CASE_NOT_FOUND' });
 
+    const { rows: budgetRows } = await getPool().query<{ llm_budget_tokens_monthly: string }>(
+      `SELECT llm_budget_tokens_monthly FROM tenants WHERE id = $1`,
+      [tenantId],
+    );
+    if (budgetRows.length === 0 || Number(budgetRows[0].llm_budget_tokens_monthly) <= 0) {
+      return reply.status(402).send({
+        error: 'INSUFFICIENT_TOKENS',
+        message: 'This account has no LLM tokens allocated. Contact the workspace owner to enable runs.',
+      });
+    }
+
     const baseUrl = parsed.data.baseUrl ?? caseData.base_url;
 
     // Compile natural-language steps → AST
