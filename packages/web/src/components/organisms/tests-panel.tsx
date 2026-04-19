@@ -12,6 +12,8 @@ import { useCases } from '@/hooks/use-cases';
 import { useRunPoller } from '@/hooks/use-run-poller';
 import type { CaseSummary, Suite, RunStatus } from '@/types/api';
 import { ProfileDropdown } from '@/components/molecules/profile-dropdown';
+import { ThemeSwitcher } from '@/components/molecules/theme-switcher';
+import { MusicPlayerToggle } from '@/components/atoms/music-player-toggle';
 
 // ─── Run Watcher ─────────────────────────────────────────────────────────────
 // Zero-render component. Owns one poller per active run and notifies parent on completion.
@@ -367,6 +369,8 @@ export function TestsPanel() {
 
         <div className="flex items-center space-x-6">
           <button className="text-gray-400 hover:text-white transition-colors"><Settings className="w-5 h-5" /></button>
+          <MusicPlayerToggle />
+          <ThemeSwitcher />
           <ProfileDropdown />
         </div>
       </nav>
@@ -375,7 +379,7 @@ export function TestsPanel() {
       <main className="p-4 md:p-8 max-w-[1600px] mx-auto w-full flex flex-col gap-6 relative">
         
         {/* Header Controls */}
-        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-[#1b1422] p-6 rounded-2xl border border-white/10 shadow-lg">
+        <div className="flex flex-col md:flex-row justify-between items-start md:items-center gap-4 bg-[#1b1422] p-6 rounded-2xl border border-white/10">
           <div>
             <h1 className="text-3xl font-bold tracking-tight mb-2">Execution & Analysis</h1>
             <p className="text-brand-pink/80 text-sm">Monitoring semantic validations across all suites</p>
@@ -433,7 +437,7 @@ export function TestsPanel() {
 
         {/* COMPARISON LEGEND */}
         {comparisonMode && (
-          <div className="bg-[#1b1422]/80 border border-brand-orange/30 p-4 rounded-xl flex items-center justify-between shadow-lg">
+          <div className="bg-[#1b1422]/80 border border-brand-orange/30 p-4 rounded-xl flex items-center justify-between">
             <div className="flex items-center space-x-3">
               <History className="w-5 h-5 text-brand-orange" />
               <span className="text-sm font-bold text-white tracking-widest uppercase">BASELINE: Last Successful Run</span>
@@ -452,7 +456,7 @@ export function TestsPanel() {
         )}
 
         {/* GRID CONTAINER */}
-        <div className="bg-[#1b1422] p-5 rounded-2xl border border-white/10 shadow-lg min-h-[500px]">
+        <div className="bg-[#1b1422] p-5 rounded-2xl border border-white/10 min-h-[500px]">
           <div className="flex flex-col gap-8 max-h-[60vh] overflow-y-auto pr-2">
             {suitesLoading ? (
               <div className="flex flex-col items-center justify-center py-20 gap-4 text-gray-500">

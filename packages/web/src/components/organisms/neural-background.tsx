@@ -1,17 +1,44 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import * as THREE from 'three';
 
 type NeuralBackgroundProps = {
   anchors: Array<React.RefObject<HTMLDivElement | null>>;
 };
 
+function readThemeColor(cssVar: string, fallback: number): number {
+  const raw = getComputedStyle(document.documentElement)
+    .getPropertyValue(cssVar)
+    .trim();
+  if (!raw) return fallback;
+  const color = new THREE.Color();
+  try {
+    color.set(raw);
+    return color.getHex();
+  } catch {
+    return fallback;
+  }
+}
+
 export function NeuralBackground({ anchors }: NeuralBackgroundProps) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const [themeTick, setThemeTick] = useState(0);
+
+  useEffect(() => {
+    function handleThemeChange() {
+      setThemeTick((n) => n + 1);
+    }
+    window.addEventListener('kaizen:theme-change', handleThemeChange);
+    return () => window.removeEventListener('kaizen:theme-change', handleThemeChange);
+  }, []);
 
   useEffect(() => {
     if (!canvasRef.current || typeof window === 'undefined') return;
+
+    const primary     = readThemeColor('--color-brand-primary',      0xd5601c);
+    const accent      = readThemeColor('--color-brand-accent',       0xdb87af);
+    const particleCol = readThemeColor('--color-brand-accent-soft',  0xebd1de);
 
     const canvas = canvasRef.current;
     const scene = new THREE.Scene();
@@ -30,22 +57,22 @@ export function NeuralBackground({ anchors }: NeuralBackgroundProps) {
     const neuralGroup = new THREE.Group();
     scene.add(neuralGroup);
 
-    // 1. Glowing Inner Core (Updated to Brand Orange)
+    // 1. Glowing Inner Core — emissive uses theme primary
     const coreGeo = new THREE.IcosahedronGeometry(1.5, 1);
     const coreMat = new THREE.MeshStandardMaterial({
       color: 0x130d17,
-      emissive: 0xd5601c, // brandOrange
+      emissive: primary,
       emissiveIntensity: 0.6,
       wireframe: true
     });
     const core = new THREE.Mesh(coreGeo, coreMat);
     neuralGroup.add(core);
 
-    // 2. Outer Neural Shell (Updated to Brand Pink)
+    // 2. Outer Neural Shell — theme accent
     const outerGeo = new THREE.IcosahedronGeometry(3, 2);
     const outerMat = new THREE.MeshStandardMaterial({
-      color: 0xdb87af, // brandPink
-      emissive: 0xdb87af, // brandPink
+      color: accent,
+      emissive: accent,
       emissiveIntensity: 0.3,
       wireframe: true,
       transparent: true,
@@ -54,17 +81,17 @@ export function NeuralBackground({ anchors }: NeuralBackgroundProps) {
     const outer = new THREE.Mesh(outerGeo, outerMat);
     neuralGroup.add(outer);
 
-    // 3. Floating Data Particles (Updated to Button Pink)
+    // 3. Floating Data Particles — softest accent for diffuse glow
     const particlesGeo = new THREE.BufferGeometry();
     const particlesCount = 700;
     const posArray = new Float32Array(particlesCount * 3);
     for (let i = 0; i < particlesCount * 3; i++) {
-        posArray[i] = (Math.random() - 0.5) * 25; // Spread across 25 units
+        posArray[i] = (Math.random() - 0.5) * 25;
     }
     particlesGeo.setAttribute('position', new THREE.BufferAttribute(posArray, 3));
     const particlesMat = new THREE.PointsMaterial({
         size: 0.08,
-        color: 0xebd1de, // buttonPinkStart
+        color: particleCol,
         transparent: true,
         opacity: 0.8,
         blending: THREE.AdditiveBlending
@@ -72,12 +99,11 @@ export function NeuralBackground({ anchors }: NeuralBackgroundProps) {
     const particleSystem = new THREE.Points(particlesGeo, particlesMat);
     scene.add(particleSystem);
 
-    // Lighting matching new colors
-    const pointLight1 = new THREE.PointLight(0xd5601c, 2, 20); // brandOrange
+    const pointLight1 = new THREE.PointLight(primary, 2, 20);
     pointLight1.position.set(5, 5, 5);
     scene.add(pointLight1);
 
-    const pointLight2 = new THREE.PointLight(0xdb87af, 2, 20); // brandPink
+    const pointLight2 = new THREE.PointLight(accent, 2, 20);
     pointLight2.position.set(-5, -5, -5);
     scene.add(pointLight2);
 
@@ -189,7 +215,7 @@ export function NeuralBackground({ anchors }: NeuralBackgroundProps) {
         });
         renderer.dispose();
     };
-  }, [anchors]);
+  }, [anchors, themeTick]);
 
   return (
     <canvas 

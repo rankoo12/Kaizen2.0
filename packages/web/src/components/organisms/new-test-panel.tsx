@@ -119,7 +119,7 @@ export function NewTestPanel({
         {/* Left column */}
         <div className="lg:col-span-8 space-y-6">
           {/* Test Identity */}
-          <div className="bg-card-bg p-6 rounded-2xl border border-border-subtle space-y-5 shadow-lg">
+          <div className="bg-card-bg p-6 rounded-2xl border border-border-subtle space-y-5">
             <div className="space-y-2">
               <Label
                 rightSlot={
@@ -166,7 +166,7 @@ export function NewTestPanel({
           </div>
 
           {/* Execution Steps */}
-          <div className="bg-card-bg p-6 rounded-2xl border border-border-subtle shadow-lg">
+          <div className="bg-card-bg p-6 rounded-2xl border border-border-subtle">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-sm font-bold tracking-widest text-brand-accent uppercase flex items-center space-x-2">
                 <ListOrdered className="w-4 h-4" />
@@ -205,12 +205,12 @@ export function NewTestPanel({
         {/* Right column */}
         <div className="lg:col-span-4 space-y-6">
           {/* Suite selector */}
-          <div className="bg-card-bg p-5 rounded-2xl border border-border-subtle shadow-lg">
+          <div className="bg-card-bg p-5 rounded-2xl border border-border-subtle">
             <SuiteSelector value={suiteId} onChange={setSuiteId} />
           </div>
 
           {/* Expected Results (UI Only for now) */}
-          <div className="bg-card-bg p-6 rounded-2xl border border-border-subtle shadow-lg flex flex-col h-full max-h-[350px]">
+          <div className="bg-card-bg p-6 rounded-2xl border border-border-subtle flex flex-col h-full max-h-[350px]">
             <h2 className="text-sm font-bold tracking-widest text-brand-pink uppercase flex items-center space-x-2 mb-4">
               <Zap className="w-4 h-4" />
               <span>Expected Results</span>

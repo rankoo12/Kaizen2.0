@@ -29,9 +29,9 @@ export function Textarea({
       suppressHydrationWarning
       className={cn(
         'w-full bg-input-bg text-sm text-white rounded-xl px-4 py-3 outline-none',
-        'border border-border-subtle focus:border-brand-accent/50 transition-colors',
-        'placeholder:text-gray-700 resize-none',
-        'disabled:opacity-50 disabled:cursor-not-allowed',
+        'border border-border-subtle focus:border-brand-accent focus:ring-1 focus:ring-brand-accent/40',
+        'transition-all duration-300 ease-out placeholder:text-gray-700 resize-none',
+        'disabled:opacity-40 disabled:cursor-not-allowed',
         codeStyle && 'code-input font-mono text-brand-accent',
         className,
       )}

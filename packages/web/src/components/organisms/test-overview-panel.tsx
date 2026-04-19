@@ -342,7 +342,7 @@ export function TestOverviewPanel({ caseId }: TestOverviewPanelProps) {
         )}
 
         {/* Action bar */}
-        <div className="bg-panel-bg p-5 rounded-2xl border border-white/10 flex flex-col sm:flex-row gap-3 shadow-lg">
+        <div className="bg-panel-bg p-5 rounded-2xl border border-white/10 flex flex-col sm:flex-row gap-3">
           {/* Add step */}
           <button
             onClick={addStep}
@@ -374,7 +374,7 @@ export function TestOverviewPanel({ caseId }: TestOverviewPanelProps) {
           <button
             onClick={handleRun}
             disabled={isEnqueuing || !!activeRunId}
-            className="flex-1 py-3.5 bg-gradient-to-r from-brand-orange to-brand-yellow text-black text-sm font-bold tracking-widest uppercase rounded-xl hover:opacity-90 transition-opacity flex items-center justify-center space-x-2 shadow-lg disabled:opacity-50 disabled:cursor-not-allowed"
+            className="flex-1 py-3.5 bg-gradient-to-r from-brand-orange to-brand-yellow text-black text-sm font-bold tracking-widest uppercase rounded-xl hover:opacity-90 transition-opacity flex items-center justify-center space-x-2 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             {isEnqueuing || activeRunId ? (
               <Loader2 className="w-4 h-4 animate-spin" />

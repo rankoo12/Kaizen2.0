@@ -14,19 +14,25 @@ type ButtonProps = {
 };
 
 const base =
-  'inline-flex items-center justify-center gap-2 font-semibold rounded-lg transition-all cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed';
+  'inline-flex items-center justify-center gap-2 font-semibold rounded-lg cursor-pointer ' +
+  'transition-all duration-300 ease-out active:scale-95 ' +
+  'disabled:opacity-40 disabled:cursor-not-allowed disabled:pointer-events-none ' +
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-brand-accent ' +
+  'focus-visible:ring-offset-2 focus-visible:ring-offset-app-bg';
 
 const variants: Record<ButtonProps['variant'], string> = {
   'primary-orange':
-    'bg-gradient-to-r from-brand-orange-light to-brand-orange text-black hover:opacity-90',
+    'bg-gradient-to-r from-brand-primary-soft to-brand-primary text-black ' +
+    'hover:-translate-y-0.5 hover:shadow-[0_0_20px_color-mix(in_oklab,var(--color-brand-primary)_40%,transparent)]',
   'primary-pink':
-    'bg-gradient-to-r from-brand-pink-light to-brand-pink-mid text-black hover:opacity-90',
+    'bg-gradient-to-r from-brand-accent-soft to-brand-accent-mid text-black ' +
+    'hover:-translate-y-0.5 hover:shadow-[0_0_20px_color-mix(in_oklab,var(--color-brand-accent)_40%,transparent)]',
   'outline-orange':
-    'bg-transparent border border-brand-orange text-brand-orange hover:bg-brand-orange/10',
+    'bg-transparent border border-brand-primary text-brand-primary hover:bg-brand-primary/10',
   'ghost-pink':
-    'bg-card-bg border border-border-subtle text-brand-pink hover:bg-white/5',
+    'bg-card-bg border border-border-subtle text-brand-accent hover:bg-white/5',
   destructive:
-    'bg-transparent text-brand-red hover:bg-brand-red/10',
+    'bg-transparent text-brand-danger hover:bg-brand-danger/10',
 };
 
 const sizes: Record<NonNullable<ButtonProps['size']>, string> = {
