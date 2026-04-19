@@ -104,15 +104,22 @@ export class ScreenshotService {
   }
 
   private async uploadToGCS(png: Buffer, key: string): Promise<string | null> {
-    try {
-      const file = this.storage!.bucket(this.bucket).file(key);
-      await file.save(png, { contentType: 'image/png', resumable: false });
-      this.observability.increment('screenshot.gcs_uploaded');
-      return `gs://${this.bucket}/${key}`;
-    } catch (e: any) {
-      this.observability.log('warn', 'screenshot.gcs_upload_failed', { key, error: e.message });
-      return null;
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      try {
+        const file = this.storage!.bucket(this.bucket).file(key);
+        await file.save(png, { contentType: 'image/png', resumable: false, validation: false });
+        this.observability.increment('screenshot.gcs_uploaded');
+        return `gs://${this.bucket}/${key}`;
+      } catch (e: any) {
+        const retriable = /stream was destroyed|ECONNRESET|ETIMEDOUT|socket hang up/i.test(e.message ?? '');
+        if (!retriable || attempt === 3) {
+          this.observability.log('warn', 'screenshot.gcs_upload_failed', { key, attempt, error: e.message });
+          return null;
+        }
+        await new Promise((r) => setTimeout(r, 200 * attempt));
+      }
     }
+    return null;
   }
 
   private async saveLocally(png: Buffer, key: string): Promise<string | null> {
