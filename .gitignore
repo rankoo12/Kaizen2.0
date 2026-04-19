@@ -54,3 +54,7 @@ secrets/
 
 # Local screenshot downloads (GCS is the source of truth)
 screenshots/
+
+# AI sync artifacts — packed codebase must never be committed back
+kaizen-codebase.txt
+kaizen-codebase.*.txt
