@@ -51,13 +51,13 @@ export class ScreenshotService {
    * Returns the object key (GCS) or file path (local) on success, null on error.
    */
   async upload(
-    png: Buffer,
+    png: Buffer | null | undefined,
     tenantId: string,
     runId: string,
     stepIndex: number,
     timing: 'before' | 'after',
   ): Promise<string | null> {
-    if (!png) return null;
+    if (!png || !Buffer.isBuffer(png) || png.length === 0) return null;
 
     const key = `${tenantId}/${runId}/${stepIndex}/${timing}.png`;
 
@@ -106,12 +106,11 @@ export class ScreenshotService {
   private async uploadToGCS(png: Buffer, key: string): Promise<string | null> {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        const file = this.storage!.bucket(this.bucket).file(key);
-        await file.save(png, { contentType: 'image/png', resumable: false, validation: false });
+        await this.writeOnce(png, key);
         this.observability.increment('screenshot.gcs_uploaded');
         return `gs://${this.bucket}/${key}`;
       } catch (e: any) {
-        const retriable = /stream was destroyed|ECONNRESET|ETIMEDOUT|socket hang up/i.test(e.message ?? '');
+        const retriable = /stream was destroyed|ECONNRESET|ETIMEDOUT|socket hang up|key must be/i.test(e.message ?? '');
         if (!retriable || attempt === 3) {
           this.observability.log('warn', 'screenshot.gcs_upload_failed', { key, attempt, error: e.message });
           return null;
@@ -120,6 +119,21 @@ export class ScreenshotService {
       }
     }
     return null;
+  }
+
+  private writeOnce(png: Buffer, key: string): Promise<void> {
+    return new Promise((resolve, reject) => {
+      const file = this.storage!.bucket(this.bucket).file(key);
+      const stream = file.createWriteStream({
+        contentType: 'image/png',
+        resumable: false,
+        validation: false,
+        metadata: { contentType: 'image/png' },
+      });
+      stream.once('error', reject);
+      stream.once('finish', resolve);
+      stream.end(png);
+    });
   }
 
   private async saveLocally(png: Buffer, key: string): Promise<string | null> {
