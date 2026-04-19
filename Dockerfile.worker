@@ -1,10 +1,18 @@
-FROM mcr.microsoft.com/playwright:v1.58.2-noble
+FROM mcr.microsoft.com/playwright:v1.58.2-noble AS builder
 WORKDIR /app
-
 COPY package*.json ./
-RUN npm install
+RUN npm ci
+COPY tsconfig.json tsconfig.build.json ./
+COPY src ./src
+COPY db ./db
+COPY scripts ./scripts
+RUN npm run build
 
-COPY . .
-
-# Used to gracefully handle worker lifecycle if ran directly
-CMD ["npm", "run", "start:worker"]
+FROM mcr.microsoft.com/playwright:v1.58.2-noble AS production
+WORKDIR /app
+ENV NODE_ENV=production
+COPY package*.json ./
+RUN npm ci --omit=dev
+COPY --from=builder /app/dist ./dist
+COPY --from=builder /app/db ./db
+CMD ["node", "dist/workers/worker.js"]
