@@ -131,7 +131,14 @@ export function TestOverviewPanel({ caseId }: TestOverviewPanelProps) {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({}),
       });
-      if (!res.ok) throw new Error();
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 402 && body?.message) {
+          showToast(body.message);
+          return;
+        }
+        throw new Error();
+      }
       const { runId } = await res.json();
       setActiveRunId(runId);
       showToast('Run enqueued — polling for results...');

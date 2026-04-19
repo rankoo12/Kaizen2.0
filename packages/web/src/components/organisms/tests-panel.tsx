@@ -294,18 +294,25 @@ export function TestsPanel() {
 
   const runTest = useCallback(async (id: string) => {
     try {
-      const res = await fetch(`/api/proxy/cases/${id}/run`, { 
+      const res = await fetch(`/api/proxy/cases/${id}/run`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({})
       });
-      if (!res.ok) throw new Error();
+      if (!res.ok) {
+        const body = await res.json().catch(() => ({}));
+        if (res.status === 402 && body?.message) {
+          showToast(body.message);
+          return;
+        }
+        throw new Error();
+      }
       const { runId } = await res.json();
       setRunningMap(prev => new Map(prev).set(id, runId));
     } catch {
       showToast('Failed to enqueue test run.');
     }
-  }, []);
+  }, [showToast]);
 
   const runSelected = async () => {
     const ids = Array.from(selectedIds);
