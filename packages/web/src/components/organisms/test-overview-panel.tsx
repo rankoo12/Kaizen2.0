@@ -65,8 +65,13 @@ export function TestOverviewPanel({ caseId }: TestOverviewPanelProps) {
 
   const isDirty = isStepsDirty || isUrlDirty;
 
-  const runStatus: RunStatus | 'pending' =
-    runDetail?.status ?? test?.recentRuns?.[0]?.status ?? 'pending';
+  // Only fall back to the last known run status when no active run is in flight.
+  // While activeRunId is set, show the live runDetail status (or 'queued' until
+  // the first poll resolves) — prevents stale "failed" from the previous run
+  // bleeding through as the new run starts.
+  const runStatus: RunStatus | 'pending' | 'queued' = activeRunId
+    ? (runDetail?.status ?? 'queued')
+    : (runDetail?.status ?? test?.recentRuns?.[0]?.status ?? 'pending');
 
   // ── Helpers ───────────────────────────────────────────────────────────────
   function showToast(msg: string) {
@@ -458,7 +463,8 @@ export function TestOverviewPanel({ caseId }: TestOverviewPanelProps) {
               runStatus === 'passed' ? 'bg-brand-green shadow-[0_0_10px_rgba(34,197,94,0.5)]' :
               runStatus === 'failed' ? 'bg-brand-red shadow-[0_0_10px_rgba(239,68,68,0.5)]' :
               runStatus === 'running' ? 'bg-brand-orange shadow-[0_0_10px_rgba(213,96,28,0.5)] animate-pulse' :
-              'bg-brand-yellow shadow-[0_0_10px_rgba(245,158,11,0.5)]',
+              runStatus === 'queued' ? 'bg-brand-yellow shadow-[0_0_10px_rgba(245,158,11,0.5)] animate-pulse' :
+              'bg-gray-500',
             )} />
             <span className="text-3xl font-bold tracking-widest font-mono text-white uppercase">
               {runStatus}
@@ -486,9 +492,9 @@ export function TestOverviewPanel({ caseId }: TestOverviewPanelProps) {
                 key={stepResult.id}
                 id={String(idx + 1).padStart(3, '0')}
                 title={test.steps[idx]?.rawText ?? `Step ${idx + 1}`}
-                type={stepResult.resolutionSource ?? 'LLM RESOLVED'}
+                type={stepResult.resolutionSource ?? (stepResult.errorType ? 'BLOCKED' : 'UNRESOLVED')}
                 time={`${stepResult.durationMs ?? 0}ms`}
-                tool={stepResult.errorType ?? 'GPT-4_Agent'}
+                tool={stepResult.errorType ?? '—'}
                 status={stepResult.status}
                 tokens={stepResult.tokens}
                 screenshotKey={stepResult.screenshotKey}
