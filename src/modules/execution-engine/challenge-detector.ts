@@ -92,9 +92,34 @@ export class PageChallengeDetector implements IChallengeDetector {
         //
         // Catch hCaptcha, reCAPTCHA, DataDome, PerimeterX, and similar pages
         // that were not specifically identified as Cloudflare above.
-        const isHCaptcha      = !!document.querySelector('iframe[src*="hcaptcha.com"]');
-        const isReCaptcha     = !!document.querySelector('iframe[src*="recaptcha"]');
-        const isPerimeterX    = /perimeterx|px-captcha/i.test(body);
+        //
+        // Only flag a challenge when the widget is actually *blocking* the page.
+        // Many sites embed invisible reCAPTCHA v3 or silent token iframes that
+        // do not interrupt interaction — matching those produced false positives
+        // (e.g. automationexercise.com signup form).
+        //
+        // Heuristics for "blocking":
+        //  - reCAPTCHA: only the anchor (checkbox) or bframe (challenge image)
+        //    iframes are user-facing. The api2/webworker and token frames are
+        //    background-only.
+        //  - Visibility: require iframe to have non-zero layout size. Invisible
+        //    reCAPTCHA frames are typically 0x0 or positioned offscreen.
+        const isVisible = (el: Element | null): boolean => {
+          if (!el) return false;
+          const rect = (el as HTMLElement).getBoundingClientRect?.();
+          if (!rect) return false;
+          if (rect.width < 50 || rect.height < 50) return false;
+          const style = window.getComputedStyle(el as HTMLElement);
+          return style.display !== 'none' && style.visibility !== 'hidden';
+        };
+
+        const hCaptchaFrame   = document.querySelector('iframe[src*="hcaptcha.com/captcha"]');
+        const reCaptchaFrame  = document.querySelector(
+          'iframe[src*="/recaptcha/api2/anchor"], iframe[src*="/recaptcha/api2/bframe"]',
+        );
+        const isHCaptcha      = isVisible(hCaptchaFrame);
+        const isReCaptcha     = isVisible(reCaptchaFrame);
+        const isPerimeterX    = /perimeterx|px-captcha/i.test(body) && /captcha|verify/i.test(title);
         const isDataDome      = /datadome/i.test(body) && /captcha/i.test(title);
 
         const isGenericCaptcha = !isCloudflare && (

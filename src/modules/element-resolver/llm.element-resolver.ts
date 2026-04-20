@@ -137,9 +137,25 @@ export class LLMElementResolver implements IElementResolver {
       // Discard any selector the LLM hallucinated or that no longer resolves.
       let validSelectors = await this.validateSelectors(llmResult.selectors, page, true);
 
+      // Diagnostic: when every LLM selector fails validation we end up using kz-id
+      // (session-only, never cached). Log what was tried so we can fix the pruner
+      // or the validation logic instead of silently paying LLM tokens every run.
+      if (validSelectors.length === 0 && llmResult.selectors.length > 0) {
+        this.observability.log('warn', 'resolver.all_selectors_invalidated', {
+          pickedKaizenId: llmResult.llmPickedKaizenId ?? null,
+          attempted: llmResult.selectors.map((s) => ({ selector: s.selector, strategy: s.strategy })),
+          pageUrl: context.pageUrl ?? null,
+        });
+      }
+
       // Track whether the winning selector is session-scoped (data-kaizen-id)
       // and therefore must NOT be cached — it won't exist in the next session.
       let sessionOnly = false;
+
+      // When a stable selector is ambiguous we swap to kz-id for execution but
+      // still want to cache the stable selector so future runs don't re-invoke the LLM.
+      // This variable holds the selectors to persist; defaults to validSelectors below.
+      let cacheSelectors: typeof validSelectors | null = null;
 
       // ── Ambiguity check ───────────────────────────────────────────────────
       // If the top stable selector matches more than one element (e.g. two inputs
@@ -155,8 +171,10 @@ export class LLMElementResolver implements IElementResolver {
             const handle = await page.$(kzSelector);
             if (handle !== null) {
               this.observability.increment('resolver.ambiguous_selector_kz_fallback');
+              // Cache the stable selector (at reduced confidence) so future runs
+              // skip the LLM. Use kz-id only for this execution — it's session-scoped.
+              cacheSelectors = [{ ...validSelectors[0], confidence: 0.50 }];
               validSelectors = [{ selector: kzSelector, strategy: 'css' as const, confidence: 0.50 }];
-              sessionOnly = true;
             }
           } catch { /* keep the ambiguous stable selector — better than nothing */ }
         }
@@ -218,9 +236,15 @@ export class LLMElementResolver implements IElementResolver {
         tokensUsed: (llmResult.promptTokens ?? 0) + (llmResult.completionTokens ?? 0),
       };
 
-      // Only cache stable selectors — session-scoped data-kaizen-id must never be persisted
-      if (validSelectors.length > 0 && !sessionOnly) {
-        void this.persistToCache(step, context, selectorSet, candidates);
+      // Only cache stable selectors — session-scoped data-kaizen-id must never be persisted.
+      // When cacheSelectors is set the execution used kz-id but we persist the stable selector.
+      if (!sessionOnly) {
+        const setToCache = cacheSelectors
+          ? { ...selectorSet, selectors: cacheSelectors }
+          : selectorSet;
+        if (setToCache.selectors.length > 0) {
+          void this.persistToCache(step, context, setToCache, candidates);
+        }
       }
 
       return selectorSet;

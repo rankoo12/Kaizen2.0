@@ -174,16 +174,18 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
       healingRows = healingQuery.rows;
     }
 
-    // Fetch tokens used by this tenant during the run
+    // Fetch tokens used by this tenant during the run.
+    // Use created_at as fallback lower bound when started_at is NULL (worker hasn't
+    // called markRunRunning yet) to avoid returning 0 tokens for in-progress runs.
     const { rows: llmRows } = await pool.query(
       `SELECT id, quantity as tokens, created_at, metadata->>'purpose' as purpose
        FROM billing_events
-       WHERE tenant_id = $1 
-         AND event_type = 'LLM_CALL' 
-         AND created_at >= $2 
+       WHERE tenant_id = $1
+         AND event_type = 'LLM_CALL'
+         AND created_at >= COALESCE($2, $4)
          AND created_at <= COALESCE($3, now())
        ORDER BY created_at ASC`,
-      [run.tenant_id, run.started_at, run.completed_at]
+      [run.tenant_id, run.started_at, run.completed_at, run.created_at]
     );
 
     run.stepResults = stepRows.map((step: any) => ({
