@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { Redis } from 'ioredis';
 import { getPool } from '../../db/pool';
 import { createRunQueue } from '../../queue';
-import { cancelKey } from '../../workers/worker';
+import { cancelKey } from '../../workers/cancel-keys';
 import { LearnedCompiler } from '../../modules/test-compiler/learned.compiler';
 import { OpenAIGateway } from '../../modules/llm-gateway/openai.gateway';
 import { PostgresBillingMeter } from '../../modules/billing-meter/postgres.billing-meter';

@@ -1,5 +1,3 @@
-version: "3.9"
-
 # Kaizen Dockerized Development Infrastructure
 # Composes Postgres, Redis, the API server, the Playwright Worker engine, and the UI Dashboard seamlessly.
 
@@ -36,7 +34,8 @@ services:
   api:
     build:
       context: .
-      dockerfile: Dockerfile.api
+      dockerfile: Dockerfile
+      target: development
     ports:
       - "3000:3000"
     environment:
@@ -62,6 +61,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile.worker
+      target: development
     environment:
       - NODE_ENV=development
       - DATABASE_URL=postgres://kaizen:kaizen@postgres:5432/kaizen

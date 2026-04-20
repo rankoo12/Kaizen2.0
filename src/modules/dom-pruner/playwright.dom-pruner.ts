@@ -203,22 +203,31 @@ export class PlaywrightDOMPruner implements IDOMPruner {
       return results;
     });
 
-    // ── Patch accessible names using Playwright's own AX tree ─────────────────
+    // ── Patch accessible names using locator.ariaSnapshot() ──────────────────
     // Our evaluate() computes names from innerText/aria-label/etc., but Playwright's
-    // role= selectors use the browser's FULL accessible name computation which
-    // includes CSS ::before/::after pseudo-element content (e.g. Font Awesome icons).
-    // Using page.accessibility.snapshot({ root }) per element gives us the exact
-    // name Playwright will match against, so our ARIA selectors are always correct.
-    const axPage = pwPage as any;
-    if (axPage.accessibility?.snapshot) {
+    // role= selectors match against the AX tree's full accessible-name computation,
+    // which: (a) includes CSS ::before/::after content, (b) preserves whitespace from
+    // inline siblings that innerText.trim() would strip. When the stored name differs
+    // from Playwright's AX name — even by one space — role=X[name="Y"] returns 0
+    // matches on pages with multiple same-role elements, silently defeating caching.
+    //
+    // Spec: docs/spec-dom-pruner-aria-snapshot.md
+    const supportsAriaSnapshot = (() => {
+      try {
+        const probe = pwPage.locator('body');
+        return typeof probe.ariaSnapshot === 'function';
+      } catch { return false; }
+    })();
+
+    if (supportsAriaSnapshot) {
       for (const raw of rawCandidates) {
         try {
-          const handle = await pwPage.$(`[data-kaizen-id='${raw.kaizenId}']`);
-          if (handle) {
-            const snapshot = await axPage.accessibility.snapshot({ root: handle });
-            if (snapshot?.name) {
-              raw.accessibleName = snapshot.name;
-            }
+          const snapshot: string = await pwPage
+            .locator(`[data-kaizen-id='${raw.kaizenId}']`)
+            .ariaSnapshot();
+          const parsed = parseAriaSnapshotName(snapshot);
+          if (parsed !== null) {
+            raw.accessibleName = parsed;
           }
         } catch { /* keep the evaluate()-computed name as fallback */ }
       }
@@ -356,4 +365,25 @@ function escapeAttr(value: string): string {
 function cssEscapeId(id: string): string {
   // If the id starts with a digit, prefix with a unicode escape
   return id.replace(/([^\w-])/g, '\\$1').replace(/^(\d)/, '\\3$1 ');
+}
+
+/**
+ * Extracts the accessible name from the first line of a Playwright locator.ariaSnapshot().
+ * Format examples:
+ *   `- link " Signup / Login":\n  - /url: /login`
+ *   `- button "Sign in"`
+ *   `- textbox`                                            (no name → returns null)
+ *   `- img "User avatar \"Ada Lovelace\""`                 (escaped quotes inside)
+ *
+ * Returns null when no quoted name is present so the evaluate()-computed name
+ * is retained as the fallback.
+ */
+export function parseAriaSnapshotName(snapshot: string): string | null {
+  const firstLine = snapshot.split('\n', 1)[0] ?? '';
+  // Match: "- <role> "<name>"" — captures everything between the first opening
+  // quote and its matching closing quote, allowing \" escapes. Leading whitespace
+  // INSIDE the quotes is preserved on purpose (this is the whole reason we switched).
+  const match = firstLine.match(/^-\s+[\w-]+\s+"((?:[^"\\]|\\.)*)"/);
+  if (!match) return null;
+  return match[1].replace(/\\"/g, '"').replace(/\\\\/g, '\\');
 }

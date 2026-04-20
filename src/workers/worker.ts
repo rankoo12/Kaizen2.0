@@ -24,6 +24,7 @@ materializeGcsKeyFromEnv();
 
 import { Worker } from 'bullmq';
 import { chromium, type Page } from 'playwright';
+import { cancelKey } from './cancel-keys';
 import pino from 'pino';
 import { PinoObservability } from '../modules/observability/pino.observability';
 import { PostgresBillingMeter } from '../modules/billing-meter/postgres.billing-meter';
@@ -116,10 +117,6 @@ async function markRunComplete(runId: string, status: 'passed' | 'failed' | 'hea
 }
 
 // ─── Job Processor ────────────────────────────────────────────────────────────
-
-export function cancelKey(runId: string): string {
-  return `cancel:${runId}`;
-}
 
 async function isCancelled(runId: string): Promise<boolean> {
   try {

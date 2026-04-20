@@ -8,6 +8,16 @@ COPY db ./db
 COPY scripts ./scripts
 RUN npm run build
 
+# Development stage for docker-compose: full deps (tsx, esbuild, etc.) with
+# Linux-native binaries, so host node_modules never has to be copied in.
+FROM mcr.microsoft.com/playwright:v1.58.2-noble AS development
+WORKDIR /app
+ENV NODE_ENV=development
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
+COPY package*.json ./
+RUN npm ci
+CMD ["npm", "run", "dev:worker"]
+
 FROM mcr.microsoft.com/playwright:v1.58.2-noble AS production
 WORKDIR /app
 ENV NODE_ENV=production

@@ -63,6 +63,14 @@ function toCompactCandidates(candidates: CandidateNode[]): CompactCandidate[] {
 interface PlaywrightPageLike {
   $(selector: string): Promise<unknown | null>;
   $$(selector: string): Promise<unknown[]>;
+  locator?(selector: string): {
+    count(): Promise<number>;
+    ariaSnapshot?(): Promise<string>;
+    first(): {
+      evaluate<T>(fn: (el: Element) => T): Promise<T>;
+      ariaSnapshot?(): Promise<string>;
+    };
+  };
 }
 
 /**
@@ -138,12 +146,82 @@ export class LLMElementResolver implements IElementResolver {
       let validSelectors = await this.validateSelectors(llmResult.selectors, page, true);
 
       // Diagnostic: when every LLM selector fails validation we end up using kz-id
-      // (session-only, never cached). Log what was tried so we can fix the pruner
-      // or the validation logic instead of silently paying LLM tokens every run.
+      // (session-only, never cached). Capture pruner-vs-Playwright ground truth so
+      // we can fix the pruner or the validation logic instead of silently paying
+      // LLM tokens every run.
       if (validSelectors.length === 0 && llmResult.selectors.length > 0) {
+        const attempted = await Promise.all(
+          llmResult.selectors.map(async (s) => {
+            let locatorCount: number | null = null;
+            try {
+              locatorCount = (await page.locator?.(s.selector).count()) ?? null;
+            } catch { /* ignore — locator may throw on malformed selectors */ }
+            return { selector: s.selector, strategy: s.strategy, locatorCount };
+          }),
+        );
+
+        let prunerCandidate: { role?: string; name?: string } | null = null;
+        const pickedId = llmResult.llmPickedKaizenId ?? null;
+        const probes: Record<string, unknown> = {};
+        if (pickedId) {
+          const picked = candidates.find((c) => c.kaizenId === pickedId);
+          prunerCandidate = picked ? { role: picked.role, name: picked.name } : null;
+
+          if (picked) {
+            const name = picked.name;
+            const role = picked.role;
+
+            // Ask Playwright's ARIA engine — this is the authoritative source of truth,
+            // not the pruner's in-page DOM traversal. If these differ, the pruner is the bug.
+            const tryCount = async (selector: string): Promise<number | 'err'> => {
+              try { return (await page.locator?.(selector).count()) ?? 0; } catch { return 'err'; }
+            };
+            probes.exact = await tryCount(`role=${role}[name="${name}"]`);
+            probes.singleQuote = await tryCount(`role=${role}[name='${name}']`);
+            probes.caseInsensitive = await tryCount(`role=${role}[name="${name}" i]`);
+            // Regex match — strips the AX engine's potential whitespace normalization
+            const nameEscaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            probes.regex = await tryCount(`role=${role}[name=/${nameEscaped}/]`);
+            probes.roleOnly = await tryCount(`role=${role}`);
+
+            // Ask Playwright directly what it thinks this element's accessible name is.
+            // Output form: `- role "Accessible Name":\n  - /url: ...`
+            try {
+              const snap = await page.locator?.(`[data-kaizen-id='${pickedId}']`).first().ariaSnapshot?.();
+              probes.ariaSnapshot = snap ?? null;
+            } catch (e: any) { probes.ariaSnapshot = { error: e.message }; }
+
+            // Dump the kz-id element's attributes + aria context so we can see WHY
+            // Playwright's AX computation would differ from what the pruner stored.
+            try {
+              probes.element = await page.locator?.(`[data-kaizen-id='${pickedId}']`).first().evaluate((el) => {
+                const attrs: Record<string, string> = {};
+                const attrMap = (el as Element).attributes;
+                for (let i = 0; i < attrMap.length; i++) {
+                  const a = attrMap.item(i);
+                  if (a) attrs[a.name] = a.value;
+                }
+                return {
+                  tag: (el as Element).tagName.toLowerCase(),
+                  attrs,
+                  innerText: ((el as HTMLElement).innerText ?? '').slice(0, 200),
+                  textContent: ((el as Element).textContent ?? '').slice(0, 200),
+                  ariaHidden: (el as Element).closest('[aria-hidden="true"]') !== null,
+                  hiddenByCss: (() => {
+                    const s = window.getComputedStyle(el as Element);
+                    return s.display === 'none' || s.visibility === 'hidden' || s.opacity === '0';
+                  })(),
+                };
+              }) ?? null;
+            } catch (e: any) { probes.element = { error: e.message }; }
+          }
+        }
+
         this.observability.log('warn', 'resolver.all_selectors_invalidated', {
-          pickedKaizenId: llmResult.llmPickedKaizenId ?? null,
-          attempted: llmResult.selectors.map((s) => ({ selector: s.selector, strategy: s.strategy })),
+          pickedKaizenId: pickedId,
+          attempted,
+          prunerCandidate,
+          probes,
           pageUrl: context.pageUrl ?? null,
         });
       }

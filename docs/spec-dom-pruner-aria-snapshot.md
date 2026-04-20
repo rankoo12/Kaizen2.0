@@ -1,9 +1,11 @@
 # Spec: DOM Pruner — ariaSnapshot-Based Accessible Name Resolution
 
 **Status:** Draft  
-**Branch:** feat/dom-pruner/aria-snapshot (to be created after L0 merges)  
-**Playwright requirement:** ≥ 1.59  
-**Spec ref:** Playwright 1.59 release notes — `locator.ariaSnapshot()` + `page.ariaSnapshot()`
+**Created:** 2026-04-17  
+**Updated:** 2026-04-20 — Added whitespace-mismatch failure mode, evidence appendix, acceptance test; corrected Playwright version floor (1.49+ has `locator.ariaSnapshot`, not 1.59).  
+**Branch:** fix/element-resolver/selector-cache-not-populated  
+**Playwright requirement:** ≥ 1.49 (`locator.ariaSnapshot()` verified available on 1.58.2 in-tree)  
+**Spec ref:** Playwright release notes — `locator.ariaSnapshot()` introduced for stable AX name/tree access
 
 ---
 
@@ -21,11 +23,18 @@
    including pseudo-element content. **Removed in Playwright 1.49.1.** The call is silently
    skipped; the evaluate()-computed name is always used as-is.
 
-This produces two known failure modes:
+This produces three known failure modes:
 - `input[type=submit]` buttons lose their accessible name (void element, no `innerText`;
   worked around in the evaluate() block by reading the `value` attribute).
 - Elements whose label comes from `::before`/`::after` content get an empty name and
   never match an archetype or generate a valid ARIA selector.
+- **Whitespace mismatch (added 2026-04-20):** the pruner calls `.trim()` on `innerText`,
+  but Playwright's AX engine preserves leading/trailing whitespace introduced by inline
+  siblings (e.g. a Font Awesome `<i>` icon followed by a space and the label). On a page
+  with multiple candidates of the same role, Playwright's `role=X[name="Y"]` engine
+  requires exact AX-name match and returns 0 hits when the stored name is trimmed.
+  The LLM resolver then falls back to `data-kaizen-id` (session-only, never cached),
+  silently paying LLM tokens every run.
 
 ---
 
@@ -186,3 +195,64 @@ this.observability.increment('dom_pruner.aria_snapshot_fallback');  // exception
   pin the regex in a unit test so breakage is caught immediately.
 - **Performance:** 40 sequential locator calls add ~100–400 ms on a dense page. Acceptable
   for self-healing (not a hot path). If profiling shows it dominates, switch to Option B.
+
+---
+
+## Acceptance Tests (added 2026-04-20)
+
+### AT-1: Leading-whitespace parity
+Given a page with `<a href="/login"><i class="fa"></i> Signup / Login</a>`:
+- `candidate.name` stored by the pruner MUST equal `" Signup / Login"` (leading space
+  preserved to match Playwright's AX output), OR the pruner MUST normalize AND drive
+  the LLM prompt+cache through the same canonical form so that
+  `page.locator(\`role=\${candidate.role}[name="\${candidate.name}"]\`).count() >= 1`
+  for every emitted candidate with a non-empty name.
+- This assertion MUST run on a fixture page that has ≥ 2 anchors sharing the role so
+  Playwright's disambiguation path is exercised.
+
+### AT-2: Trailing whitespace
+Same as AT-1 with `<a>Edit Profile  </a>` (trailing double-space).
+
+### AT-3: Pseudo-element name
+`<button class="close"></button>` where `::before { content: "×"; }`. Pruner MUST NOT
+emit an empty name when Playwright reports `× Close` via ariaSnapshot.
+
+### AT-4: Submit input keeps existing workaround
+Existing `value`-based fallback must still produce a valid name when ariaSnapshot fails
+or is unavailable (regression guard on the current workaround).
+
+---
+
+## Evidence Appendix (2026-04-20)
+
+Diagnostic log captured from the automationexercise.com repro that motivated the
+amendment:
+
+```
+event: resolver.all_selectors_invalidated
+pickedKaizenId: "kz-5"
+attempted:    [{ selector: 'role=link[name="Signup / Login"]', locatorCount: 0 }]
+prunerCandidate: { role: "link", name: "Signup / Login" }             ← trimmed
+probes:
+  exact:            0
+  caseInsensitive:  0
+  roleOnly:         60
+  ariaSnapshot:     '- link " Signup / Login":\n  - /url: /login'     ← Playwright keeps leading space
+  element:
+    tag: "a"
+    attrs: { href: "/login", data-kaizen-id: "kz-5" }
+    innerText:   " Signup / Login"
+    textContent: " Signup / Login"
+    ariaHidden: false
+    hiddenByCss: false
+```
+
+Key observations:
+1. Pruner name differs from AX name by exactly one leading space.
+2. `role=link[name="..."]` with the trimmed form returns 0 on a page with 60 links;
+   Playwright's engine requires exact AX-name match when disambiguating.
+3. Element is rendered, visible, not aria-hidden — rules out visibility/iframe theories.
+
+This evidence supplies the fixture content for AT-1 and pins the regex used to parse
+ariaSnapshot output in implementation step 2.
+
