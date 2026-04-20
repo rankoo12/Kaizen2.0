@@ -11,6 +11,10 @@ RUN npm run build
 FROM mcr.microsoft.com/playwright:v1.58.2-noble AS production
 WORKDIR /app
 ENV NODE_ENV=production
+# The Playwright base image installs browsers under /ms-playwright. Point the
+# runtime cache lookup at that path so `chromium.launch()` finds them regardless
+# of which user the process runs as.
+ENV PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist

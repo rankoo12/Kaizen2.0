@@ -182,8 +182,8 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
        FROM billing_events
        WHERE tenant_id = $1
          AND event_type = 'LLM_CALL'
-         AND created_at >= COALESCE($2, $4)
-         AND created_at <= COALESCE($3, now())
+         AND created_at >= COALESCE($2::timestamptz, $4::timestamptz)
+         AND created_at <= COALESCE($3::timestamptz, now())
        ORDER BY created_at ASC`,
       [run.tenant_id, run.started_at, run.completed_at, run.created_at]
     );
