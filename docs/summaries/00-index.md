@@ -21,3 +21,18 @@ All specs are modular; follow the links to learn more about specific sub-systems
 - [04 Healing Engine](./backend/04-healing-engine.md): Strategy matrix for resolving broken selectors.
 - [05 Identity & Auth](./backend/05-identity-auth.md): Multi-tenancy and standard JWT patterns.
 - [06 LLM Gateway](./backend/06-llm-gateway.md): Integration layer for OpenAI/Anthropic.
+
+### Specs (`docs/specs/`)
+
+Full specifications live under `docs/specs/`, grouped by domain:
+
+- **core** — Master spec versions and phase plans: [core/](../specs/core/)
+- **ui** — Frontend design system and UX: [ui/](../specs/ui/)
+- **identity** — Tenants, users, memberships, auth: [identity/](../specs/identity/)
+- **integration** — Backend ↔ frontend contracts: [integration/](../specs/integration/)
+- **smart-brain** — Element archetypes, shared pool, archetype disambiguation: [smart-brain/](../specs/smart-brain/)
+- **dom-pruner** — DOM candidate extraction and accessible-name resolution: [dom-pruner/](../specs/dom-pruner/)
+- **reliability** — Feedback loop, cache coverage, resilience tiers: [reliability/](../specs/reliability/)
+- **tests-ux** — Tests dashboard feature specs (comparison mode, etc.): [tests-ux/](../specs/tests-ux/)
+- **workers** — Distributed worker architecture: [workers/](../specs/workers/)
+- **deployment** — Deployment and ops: [deployment/](../specs/deployment/)

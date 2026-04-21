@@ -12,9 +12,15 @@
 import { getPool } from '../../db/pool';
 import type { IObservability } from '../observability/interfaces';
 import type { CandidateNode } from '../../types';
-import type { IArchetypeResolver, ArchetypeMatch } from './archetype.interfaces';
+import type {
+  IArchetypeResolver,
+  ArchetypeMatch,
+  ArchetypeFailureKey,
+} from './archetype.interfaces';
 
 const ARCHETYPE_CACHE_TTL_MS = 5 * 60 * 1000; // 5 minutes
+const ARCHETYPE_FAILURE_COOLDOWN_HOURS = 24;
+const AMBIGUITY_MARGIN = 0.1;
 
 type ArchetypeRow = {
   name: string;
@@ -149,24 +155,92 @@ export class DBArchetypeResolver implements IArchetypeResolver {
     const normalisedName = normalise(candidate.name || candidate.textContent);
     if (!normalisedName) return null;
 
+    // Collect ALL archetypes whose (action_hint, name_pattern) matches. A
+    // first-hit-wins strategy would silently pick an alphabetically-earlier
+    // archetype over a more specific one (e.g. `full_name_input` with pattern
+    // "name" vs. `password_input` with pattern "password" when both are
+    // accidentally catching the same candidate).
+    const hits: ArchetypeRow[] = [];
     for (const archetype of byRole) {
-      // Respect action_hint: if set, action must match
       if (archetype.action_hint !== null && archetype.action_hint !== action) continue;
-
-      // Pattern matching: exact match, or prefix match when pattern ends with '*'
       const nameMatches = archetype.name_patterns.some((p) =>
         p.endsWith('*') ? normalisedName.startsWith(p.slice(0, -1)) : normalisedName === p,
       );
-      if (nameMatches) {
-        const selector = buildAriaSelector(candidate.role, candidate.name || candidate.textContent);
-        return {
-          archetypeName: archetype.name,
-          selector,
-          confidence: Number(archetype.confidence),
-        };
-      }
+      if (nameMatches) hits.push(archetype);
     }
 
-    return null;
+    if (hits.length === 0) return null;
+
+    if (hits.length === 1) {
+      const only = hits[0];
+      return {
+        archetypeName: only.name,
+        selector: buildAriaSelector(candidate.role, candidate.name || candidate.textContent),
+        confidence: Number(only.confidence),
+      };
+    }
+
+    // ≥ 2 hits — require a clear winner by confidence margin, else bail.
+    const sorted = [...hits].sort((a, b) => Number(b.confidence) - Number(a.confidence));
+    const best = sorted[0];
+    const runnerUp = sorted[1];
+    if (Number(best.confidence) - Number(runnerUp.confidence) < AMBIGUITY_MARGIN) {
+      this.observability.increment('archetype_resolver.ambiguous');
+      this.observability.log('info', 'archetype_resolver.ambiguous', {
+        role: candidate.role,
+        name: candidate.name,
+        matches: hits.map((h) => h.name),
+      });
+      return null;
+    }
+
+    return {
+      archetypeName: best.name,
+      selector: buildAriaSelector(candidate.role, candidate.name || candidate.textContent),
+      confidence: Number(best.confidence),
+    };
+  }
+
+  async getCooldownArchetypes(key: ArchetypeFailureKey): Promise<Set<string>> {
+    try {
+      const { rows } = await getPool().query<{ archetype_name: string }>(
+        `SELECT archetype_name
+           FROM archetype_failures
+          WHERE tenant_id = $1
+            AND domain = $2
+            AND target_hash = $3
+            AND created_at > now() - ($4 || ' hours')::interval`,
+        [key.tenantId, key.domain, key.targetHash, String(ARCHETYPE_FAILURE_COOLDOWN_HOURS)],
+      );
+      return new Set(rows.map((r) => r.archetype_name));
+    } catch (e: any) {
+      this.observability.log('warn', 'archetype_resolver.cooldown_read_failed', {
+        error: e.message,
+      });
+      return new Set();
+    }
+  }
+
+  async recordFailure(
+    key: ArchetypeFailureKey,
+    archetypeName: string,
+    selectorUsed: string,
+  ): Promise<void> {
+    try {
+      await getPool().query(
+        `INSERT INTO archetype_failures
+           (tenant_id, domain, target_hash, archetype_name, selector_used, created_at)
+         VALUES ($1, $2, $3, $4, $5, now())
+         ON CONFLICT (tenant_id, domain, target_hash, archetype_name)
+         DO UPDATE SET selector_used = EXCLUDED.selector_used, created_at = now()`,
+        [key.tenantId, key.domain, key.targetHash, archetypeName, selectorUsed],
+      );
+      this.observability.increment('archetype_resolver.record_failure');
+    } catch (e: any) {
+      this.observability.increment('archetype_resolver.record_failure_error');
+      this.observability.log('warn', 'archetype_resolver.record_failure_failed', {
+        error: e.message,
+      });
+    }
   }
 }
