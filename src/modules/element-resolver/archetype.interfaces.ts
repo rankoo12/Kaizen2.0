@@ -24,6 +24,12 @@ export type ArchetypeMatch = {
   confidence: number;
 };
 
+export type ArchetypeFailureKey = {
+  tenantId: string;
+  domain: string;
+  targetHash: string;
+};
+
 export interface IArchetypeResolver {
   /**
    * Attempt to match a DOM candidate against a known archetype.
@@ -33,4 +39,22 @@ export interface IArchetypeResolver {
    * @returns          An ArchetypeMatch if recognised; null otherwise.
    */
   match(candidate: CandidateNode, action: string): Promise<ArchetypeMatch | null>;
+
+  /**
+   * Returns the set of archetype names on cooldown for this (tenant, domain,
+   * target) triple. Archetype resolver skips any archetype whose name appears
+   * in this set when selecting a candidate.
+   */
+  getCooldownArchetypes(key: ArchetypeFailureKey): Promise<Set<string>>;
+
+  /**
+   * Record a user-driven failure so future runs skip this archetype for the
+   * same (tenant, domain, target) triple until the cooldown window elapses.
+   * Fire-and-forget: errors are logged, never thrown.
+   */
+  recordFailure(
+    key: ArchetypeFailureKey,
+    archetypeName: string,
+    selectorUsed: string,
+  ): Promise<void>;
 }

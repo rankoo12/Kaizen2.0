@@ -32,28 +32,64 @@ const MISS: SelectorSet = {
   tokensUsed: 0,
 };
 
+const TARGET_STOPWORDS = new Set([
+  'the', 'a', 'an', 'in', 'on', 'at', 'to', 'into', 'for', 'of', 'with', 'and', 'or',
+  'type', 'click', 'enter', 'press', 'select', 'choose', 'fill', 'input', 'tap',
+  'field', 'button', 'link', 'box', 'textbox',
+]);
+
+/**
+ * DOM-attribute tokens we fold into the ranking haystack alongside the
+ * accessible name. These surface intent that the AX name may drop (e.g. when
+ * the page labels a field "Email or Username" but the step says "username",
+ * the <input name="username"> attribute still carries the signal).
+ */
+const RANK_ATTRIBUTES = ['id', 'name', 'placeholder', 'aria-label', 'data-testid'];
+
+function extractTargetWords(target: string): string[] {
+  return target
+    .toLowerCase()
+    .split(/[\s,.\-_/]+/)
+    .filter((w) => w.length > 2 && !TARGET_STOPWORDS.has(w));
+}
+
+function candidateHaystack(c: CandidateNode): string {
+  const attrBag = RANK_ATTRIBUTES.map((k) => c.attributes?.[k] ?? '')
+    .filter(Boolean)
+    .join(' ');
+  return `${c.role} ${c.name ?? ''} ${c.textContent ?? ''} ${attrBag} ${c.parentContext ?? ''}`.toLowerCase();
+}
+
+function scoreCandidate(c: CandidateNode, words: string[]): number {
+  if (words.length === 0) return 0;
+  const hay = candidateHaystack(c);
+  return words.reduce((n, w) => n + (hay.includes(w) ? 1 : 0), 0);
+}
+
+type RankedCandidate = { candidate: CandidateNode; score: number };
+
 /**
  * Ranks candidates by word-overlap with the target description.
+ *
+ * Haystack folds in DOM-attribute values (id/name/placeholder/aria-label/
+ * data-testid) and the parent-context label so that cases where the AX name
+ * differs from the step description but the attribute name agrees still rank
+ * correctly (e.g. step "username" matches `<input name="username">` even when
+ * the accessible name is "Email").
+ *
  * Tiebreaker: shorter accessible name wins — "Sign in" is more specific
  * than "Sign in with a passkey" for the same overlap score.
  */
-function rankCandidates(candidates: CandidateNode[], target: string): CandidateNode[] {
-  const words = target.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
-  if (words.length === 0) return candidates;
-
-  return [...candidates].sort((a, b) => {
-    const scoreA = words.reduce((n, w) => {
-      const hay = `${a.role} ${a.name ?? ''} ${a.textContent ?? ''}`.toLowerCase();
-      return n + (hay.includes(w) ? 1 : 0);
-    }, 0);
-    const scoreB = words.reduce((n, w) => {
-      const hay = `${b.role} ${b.name ?? ''} ${b.textContent ?? ''}`.toLowerCase();
-      return n + (hay.includes(w) ? 1 : 0);
-    }, 0);
-    if (scoreB !== scoreA) return scoreB - scoreA;
-    // Tiebreak: prefer the candidate with the shorter accessible name (more exact match)
-    return (a.name || a.textContent).length - (b.name || b.textContent).length;
-  });
+function rankCandidates(candidates: CandidateNode[], target: string): RankedCandidate[] {
+  const words = extractTargetWords(target);
+  return [...candidates]
+    .map<RankedCandidate>((c) => ({ candidate: c, score: scoreCandidate(c, words) }))
+    .sort((a, b) => {
+      if (b.score !== a.score) return b.score - a.score;
+      const nameA = a.candidate.name || a.candidate.textContent;
+      const nameB = b.candidate.name || b.candidate.textContent;
+      return nameA.length - nameB.length;
+    });
 }
 
 export class ArchetypeElementResolver implements IElementResolver {
@@ -80,15 +116,42 @@ export class ArchetypeElementResolver implements IElementResolver {
       return MISS;
     }
 
+    // Fetch cooldown set before iterating — a single DB read for the target.
+    const cooldown = await this.archetypeResolver.getCooldownArchetypes({
+      tenantId: context.tenantId,
+      domain: context.domain,
+      targetHash: step.targetHash,
+    });
+
     // Rank by word-overlap (desc), tiebreak by name length (asc).
-    // Try the top-5 candidates so that a high-scoring but non-matching candidate
-    // (e.g. "Sign in with a passkey") does not block the correct shorter match.
     const ranked = rankCandidates(candidates, step.targetDescription).slice(0, 5);
+
+    // Top-score lock: an archetype match on a lower-scoring candidate cannot
+    // beat a higher-scoring candidate that has no archetype. Otherwise the
+    // resolver silently reroutes from the correct element ("username" input,
+    // no archetype) to an unrelated lower-scoring one ("password" input,
+    // password_input archetype). Accept archetype hits only from candidates
+    // tied with the top score — this preserves genuine ties (e.g. "Sign in"
+    // vs. "Sign in with a passkey" tie on overlap, archetype filters within
+    // that tie) but blocks semantic drift across score buckets.
+    const topScore = ranked.length > 0 ? ranked[0].score : 0;
     const page = context.page as PlaywrightPageLike;
 
-    for (const candidate of ranked) {
+    for (const { candidate, score } of ranked) {
+      if (score < topScore) {
+        this.observability.increment('archetype_resolver.lower_score_skip');
+        break;
+      }
       const match = await this.archetypeResolver.match(candidate, step.action);
       if (!match) continue;
+
+      // Skip archetypes the user marked failed for this target within the cooldown window.
+      if (cooldown.has(match.archetypeName)) {
+        this.observability.increment('archetype_resolver.cooldown_skip', {
+          archetype: match.archetypeName,
+        });
+        continue;
+      }
 
       // Validate the ARIA selector against the live DOM before committing
       try {
@@ -107,6 +170,15 @@ export class ArchetypeElementResolver implements IElementResolver {
       }
 
       this.observability.increment('resolver.cache_hit', { source: 'archetype' });
+      this.lastMatch = {
+        key: {
+          tenantId: context.tenantId,
+          domain: context.domain,
+          targetHash: step.targetHash,
+        },
+        archetypeName: match.archetypeName,
+        selector: match.selector,
+      };
       return {
         selectors: [{ selector: match.selector, strategy: 'aria', confidence: match.confidence }],
         fromCache: false,
@@ -121,7 +193,34 @@ export class ArchetypeElementResolver implements IElementResolver {
     return MISS;
   }
 
-  // Archetypes are static — no success/failure tracking needed
-  async recordSuccess(_contentHash: string, _domain: string, _selectorUsed: string): Promise<void> {}
-  async recordFailure(_contentHash: string, _domain: string, _selectorAttempted: string): Promise<void> {}
+  /**
+   * Remembers the last archetype that we resolved so that a subsequent
+   * recordFailure() call from the worker can be attributed to the correct
+   * (tenantId, domain, targetHash, archetypeName) tuple. Cleared after use.
+   */
+  private lastMatch: {
+    key: { tenantId: string; domain: string; targetHash: string };
+    archetypeName: string;
+    selector: string;
+  } | null = null;
+
+  async recordSuccess(_contentHash: string, _domain: string, _selectorUsed: string): Promise<void> {
+    // Success wipes the last-match slot — cooldown is driven only by failures.
+    this.lastMatch = null;
+  }
+
+  async recordFailure(targetHash: string, domain: string, selectorAttempted: string): Promise<void> {
+    // The worker calls recordFailure with targetHash + domain but no tenantId
+    // (by design: selectorSet + step carry those). We only have enough context
+    // to act when the most recent resolve() on this instance produced this
+    // archetype+selector combo.
+    const last = this.lastMatch;
+    this.lastMatch = null;
+    if (!last) return;
+    if (last.key.targetHash !== targetHash) return;
+    if (last.key.domain !== domain) return;
+    if (last.selector !== selectorAttempted) return;
+
+    await this.archetypeResolver.recordFailure(last.key, last.archetypeName, last.selector);
+  }
 }

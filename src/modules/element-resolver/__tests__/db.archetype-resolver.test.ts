@@ -264,6 +264,130 @@ describe('DBArchetypeResolver', () => {
     expect(result).toBeNull();
   });
 
+  // ─── AT-2 / AT-3: ambiguity margin in match() ─────────────────────────────
+
+  // AT-2: two archetypes within the margin → match() returns null and logs.
+  it('AT-2: returns null and logs ambiguous when two archetypes tie within the margin', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [
+        { name: 'generic_input_a', role: 'textbox', name_patterns: ['name'], action_hint: 'type', confidence: 0.80 },
+        { name: 'generic_input_b', role: 'textbox', name_patterns: ['name'], action_hint: 'type', confidence: 0.78 },
+      ],
+    });
+    resolver = new DBArchetypeResolver(obs);
+    const candidate = makeCandidate({ role: 'textbox', name: 'name' });
+    const result = await resolver.match(candidate, 'type');
+    expect(result).toBeNull();
+    expect(obs.increment).toHaveBeenCalledWith('archetype_resolver.ambiguous');
+    expect(obs.log).toHaveBeenCalledWith('info', 'archetype_resolver.ambiguous', expect.objectContaining({
+      matches: expect.arrayContaining(['generic_input_a', 'generic_input_b']),
+    }));
+  });
+
+  // AT-3: clear winner beyond the 0.10 margin → best is returned.
+  it('AT-3: returns best archetype when confidence margin exceeds threshold', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [
+        { name: 'password_input', role: 'textbox', name_patterns: ['password'], action_hint: 'type', confidence: 0.95 },
+        { name: 'generic_input',  role: 'textbox', name_patterns: ['password'], action_hint: 'type', confidence: 0.60 },
+      ],
+    });
+    resolver = new DBArchetypeResolver(obs);
+    const candidate = makeCandidate({ role: 'textbox', name: 'password' });
+    const result = await resolver.match(candidate, 'type');
+    expect(result).not.toBeNull();
+    expect(result!.archetypeName).toBe('password_input');
+  });
+
+  // ─── Cooldown table ────────────────────────────────────────────────────────
+
+  it('getCooldownArchetypes returns the set of archetype names on cooldown', async () => {
+    // first call is getArchetypes (populates cache); we only care about the second
+    mockQuery
+      .mockResolvedValueOnce({ rows: makeArchetypeRows() })
+      .mockResolvedValueOnce({ rows: [{ archetype_name: 'login_button' }, { archetype_name: 'submit_button' }] });
+    // prime cache so the next call is the cooldown SELECT
+    await resolver.match(makeCandidate({ role: 'button', name: 'Log in' }), 'click');
+
+    const set = await resolver.getCooldownArchetypes({
+      tenantId: 'tenant-A',
+      domain: 'example.com',
+      targetHash: 'th-1',
+    });
+    expect(set.has('login_button')).toBe(true);
+    expect(set.has('submit_button')).toBe(true);
+    expect(set.has('email_input')).toBe(false);
+  });
+
+  it('getCooldownArchetypes returns empty set when DB read fails', async () => {
+    mockQuery.mockRejectedValueOnce(new Error('connection refused'));
+    const set = await resolver.getCooldownArchetypes({
+      tenantId: 'tenant-A',
+      domain: 'example.com',
+      targetHash: 'th-1',
+    });
+    expect(set.size).toBe(0);
+    expect(obs.log).toHaveBeenCalledWith(
+      'warn',
+      'archetype_resolver.cooldown_read_failed',
+      expect.any(Object),
+    );
+  });
+
+  it('recordFailure inserts with ON CONFLICT DO UPDATE and increments success counter', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    await resolver.recordFailure(
+      { tenantId: 'tenant-A', domain: 'example.com', targetHash: 'th-1' },
+      'login_button',
+      'role=button[name="Log in"]',
+    );
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('ON CONFLICT'),
+      ['tenant-A', 'example.com', 'th-1', 'login_button', 'role=button[name="Log in"]'],
+    );
+    expect(obs.increment).toHaveBeenCalledWith('archetype_resolver.record_failure');
+  });
+
+  it('recordFailure swallows DB errors and increments the error counter', async () => {
+    mockQuery.mockRejectedValueOnce(new Error('boom'));
+    await expect(
+      resolver.recordFailure(
+        { tenantId: 'tenant-A', domain: 'example.com', targetHash: 'th-1' },
+        'login_button',
+        'role=button[name="Log in"]',
+      ),
+    ).resolves.toBeUndefined();
+    expect(obs.increment).toHaveBeenCalledWith('archetype_resolver.record_failure_error');
+  });
+
+  // AT-5: tenant isolation — the cooldown query includes tenant_id, so different
+  // tenants passing the same (domain, targetHash) get independent result sets.
+  it('AT-5: cooldown read scopes to tenant_id (different tenants, independent sets)', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: makeArchetypeRows() }) // warm cache
+      .mockResolvedValueOnce({ rows: [{ archetype_name: 'login_button' }] })
+      .mockResolvedValueOnce({ rows: [] });
+    await resolver.match(makeCandidate({ role: 'button', name: 'Log in' }), 'click');
+
+    const setA = await resolver.getCooldownArchetypes({
+      tenantId: 'tenant-A',
+      domain: 'example.com',
+      targetHash: 'th-1',
+    });
+    const setB = await resolver.getCooldownArchetypes({
+      tenantId: 'tenant-B',
+      domain: 'example.com',
+      targetHash: 'th-1',
+    });
+    expect(setA.has('login_button')).toBe(true);
+    expect(setB.size).toBe(0);
+    // Both cooldown calls must pass tenant_id in the query params (param $1)
+    const [, paramsA] = mockQuery.mock.calls[1];
+    const [, paramsB] = mockQuery.mock.calls[2];
+    expect(paramsA[0]).toBe('tenant-A');
+    expect(paramsB[0]).toBe('tenant-B');
+  });
+
   // Selector escaping: double quotes in accessible name are escaped
   it('escapes double quotes in accessible name in the ARIA selector', async () => {
     mockQuery.mockResolvedValue({
