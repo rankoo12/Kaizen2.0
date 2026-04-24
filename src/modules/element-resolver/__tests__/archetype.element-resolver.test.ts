@@ -125,48 +125,21 @@ describe('ArchetypeElementResolver', () => {
     expect(obs.increment).toHaveBeenCalledWith('resolver.archetype_miss');
   });
 
-  // Ranking: shorter name wins tiebreak — "Sign in" preferred over "Sign in with a passkey"
-  it('prefers shorter-named candidate on equal word-overlap score', async () => {
+  // S5 supersedes the prior "shorter name wins tiebreak" behavior. When two
+  // candidates tie at top overlap score, the resolver now bails L0 instead of
+  // guessing via name-length tiebreak — the LLM (L5) has parent context the
+  // ranker doesn't. This is the intended fix for the automationexercise.com
+  // signup-vs-login email ambiguity.
+  it('bails L0 when two candidates tie at top score (supersedes shorter-name tiebreak)', async () => {
     const passkey = makeCandidate({ role: 'button', name: 'Sign in with a passkey' });
     const signIn  = makeCandidate({ role: 'button', name: 'Sign in' });
-    // passkey comes first in DOM order — tiebreaker must flip it
     domPruner.prune.mockResolvedValue([passkey, signIn]);
-
-    // archetypeResolver only matches "Sign in", not "Sign in with a passkey"
-    archetypeResolver.match.mockImplementation(async (candidate) => {
-      if (candidate.name === 'Sign in') return makeMatch({ selector: 'role=button[name="Sign in"]' });
-      return null;
-    });
 
     const pageMock = { $: jest.fn().mockResolvedValue({}) };
     const result = await resolver.resolve(makeStep({ targetDescription: 'sign in button' }), makeContext(pageMock));
 
-    expect(result.selectors[0].selector).toBe('role=button[name="Sign in"]');
-    expect(result.resolutionSource).toBe('archetype');
-  });
-
-  // Tied-score fallthrough: when two candidates score equally on target overlap,
-  // the resolver is allowed to skip a non-matching tied candidate and try the
-  // next tied one (e.g. "Sign in with a passkey" vs. "Sign in" both score on
-  // "sign in button"). Score-lower candidates are NOT tried (see lower-score-skip test).
-  it('tries subsequent tied-score candidates when top one has no archetype match', async () => {
-    const noMatch = makeCandidate({ role: 'button', name: 'Sign in with a passkey' });
-    const matchCandidate = makeCandidate({ role: 'button', name: 'Sign in' });
-    // Both score 1 on target "sign in button" ('sign' in haystack of both;
-    // 'button' is a stopword).  Ranked by name-length tiebreak → matchCandidate first.
-    domPruner.prune.mockResolvedValue([noMatch, matchCandidate]);
-
-    archetypeResolver.match.mockImplementation(async (candidate) => {
-      if (candidate.name === 'Sign in') return makeMatch({ selector: 'role=button[name="Sign in"]' });
-      return null;
-    });
-
-    const pageMock = { $: jest.fn().mockResolvedValue({}) };
-    const step = makeStep({ targetDescription: 'sign in button' });
-    const result = await resolver.resolve(step, makeContext(pageMock));
-
-    expect(result.resolutionSource).toBe('archetype');
-    expect(result.selectors[0].selector).toBe('role=button[name="Sign in"]');
+    expect(result.resolutionSource).toBeNull();
+    expect(obs.increment).toHaveBeenCalledWith('archetype_resolver.top_tie_skip');
   });
 
   // Top-score lock: an archetype match on a lower-scoring candidate MUST NOT
@@ -204,23 +177,24 @@ describe('ArchetypeElementResolver', () => {
     expect(obs.increment).toHaveBeenCalledWith('archetype_resolver.lower_score_skip');
   });
 
-  // DOM miss on first candidate → tries next candidate
-  it('continues to next candidate when DOM validation fails for first match', async () => {
-    const first  = makeCandidate({ role: 'button', name: 'Sign in with a passkey' });
-    const second = makeCandidate({ role: 'button', name: 'Sign in' });
-    domPruner.prune.mockResolvedValue([first, second]);
+  // DOM miss on the top-scoring candidate → falls through to subsequent tied
+  // candidates only when they share the top score exactly (no S5 bail because
+  // the match is returned only from the top-scoring bucket).
+  // Fixture: one candidate scores top (unique), DOM misses on first attempt
+  // via a retry mock to cover the validation-failure code path.
+  it('returns MISS and increments dom_miss when the top-scoring candidate fails DOM validation', async () => {
+    const sole = makeCandidate({ role: 'button', name: 'Log in' });
+    domPruner.prune.mockResolvedValue([sole]);
 
     archetypeResolver.match.mockResolvedValue(makeMatch());
 
     const pageMock = {
-      $: jest.fn()
-        .mockResolvedValueOnce(null) // first candidate: DOM miss
-        .mockResolvedValueOnce({}),  // second candidate: DOM hit
+      $: jest.fn().mockResolvedValue(null), // DOM miss
     };
 
     const result = await resolver.resolve(makeStep(), makeContext(pageMock));
 
-    expect(result.resolutionSource).toBe('archetype');
+    expect(result.resolutionSource).toBeNull();
     expect(obs.increment).toHaveBeenCalledWith('resolver.archetype_dom_miss', expect.any(Object));
   });
 
@@ -280,9 +254,19 @@ describe('ArchetypeElementResolver', () => {
     );
   });
 
-  // recordFailure routes through to the archetype resolver when it matches the
-  // last resolved archetype.
-  it('recordFailure forwards (tenantId, domain, targetHash, archetypeName, selector) to archetypeResolver.recordFailure', async () => {
+  // Surface archetypeName on the SelectorSet so the worker can persist it on
+  // step_results.archetype_name — the verdict route reads that column to
+  // write the archetype_failures cooldown row (cross-process fix, S4).
+  it('surfaces archetypeName on the SelectorSet for persistence by the worker', async () => {
+    const pageMock = { $: jest.fn().mockResolvedValue({}) };
+    const result = await resolver.resolve(makeStep(), makeContext(pageMock));
+    expect(result.archetypeName).toBe('login_button');
+  });
+
+  // recordFailure is now a no-op on the element resolver — the verdict route
+  // owns the archetype_failures write path because it runs in the API process
+  // while this resolver lives in the worker process.
+  it('recordFailure is a no-op (verdict route owns the cooldown write path)', async () => {
     const pageMock = { $: jest.fn().mockResolvedValue({}) };
     const step = makeStep();
     const ctx = makeContext(pageMock);
@@ -290,47 +274,58 @@ describe('ArchetypeElementResolver', () => {
 
     await resolver.recordFailure(step.targetHash, ctx.domain, 'role=button[name="Log in"]');
 
-    expect(archetypeResolver.recordFailure).toHaveBeenCalledWith(
-      { tenantId: ctx.tenantId, domain: ctx.domain, targetHash: step.targetHash },
-      'login_button',
-      'role=button[name="Log in"]',
-    );
-  });
-
-  // AT-5 proxy: ArchetypeElementResolver forwards tenantId — which implies
-  // the DB resolver scopes cooldowns per tenant. Integration-level assertion
-  // of tenant isolation lives in the db.archetype-resolver.test.ts suite.
-  it('AT-5 proxy: recordFailure preserves tenantId from the resolve() call', async () => {
-    const pageMock = { $: jest.fn().mockResolvedValue({}) };
-    const step = makeStep();
-    const ctx: ResolutionContext = {
-      tenantId: 'tenant-A',
-      domain: 'example.com',
-      page: pageMock,
-    };
-    await resolver.resolve(step, ctx);
-    await resolver.recordFailure(step.targetHash, ctx.domain, 'role=button[name="Log in"]');
-
-    expect(archetypeResolver.recordFailure).toHaveBeenCalledWith(
-      expect.objectContaining({ tenantId: 'tenant-A' }),
-      'login_button',
-      expect.any(String),
-    );
-  });
-
-  // recordFailure is a no-op when it doesn't match the last resolve()
-  it('recordFailure is a no-op when targetHash/selector do not match the last resolve', async () => {
-    await resolver.recordFailure('different-hash', 'example.com', 'role=button[name="Log in"]');
     expect(archetypeResolver.recordFailure).not.toHaveBeenCalled();
   });
 
-  it('recordSuccess clears the pending lastMatch', async () => {
+  // AT-7: tied top-score bail. When ≥ 2 candidates share the highest overlap
+  // score (e.g. signup vs. login email inputs both exposing the same AX name),
+  // L0 has no basis to pick one and must fall through to L1..L5.
+  it('AT-7: bails L0 when ≥ 2 candidates tie at top overlap score', async () => {
+    const signupEmail = makeCandidate({
+      role: 'textbox',
+      name: 'Email Address',
+      attributes: { name: 'email', 'data-qa': 'signup-email', placeholder: 'Email Address' },
+    });
+    const loginEmail = makeCandidate({
+      role: 'textbox',
+      name: 'Email Address',
+      attributes: { name: 'email', 'data-qa': 'login-email', placeholder: 'Email Address' },
+    });
+    domPruner.prune.mockResolvedValue([signupEmail, loginEmail]);
+    archetypeResolver.match.mockResolvedValue(
+      makeMatch({ archetypeName: 'email_input', selector: 'role=textbox[name="Email Address"]' }),
+    );
+
     const pageMock = { $: jest.fn().mockResolvedValue({}) };
-    const step = makeStep();
-    const ctx = makeContext(pageMock);
-    await resolver.resolve(step, ctx);
-    await resolver.recordSuccess(step.contentHash, ctx.domain, 'role=button[name="Log in"]');
-    await resolver.recordFailure(step.targetHash, ctx.domain, 'role=button[name="Log in"]');
-    expect(archetypeResolver.recordFailure).not.toHaveBeenCalled();
+    const step = makeStep({ action: 'type', targetDescription: 'type x in email' });
+    const result = await resolver.resolve(step, makeContext(pageMock));
+
+    expect(result.resolutionSource).toBeNull();
+    expect(result.selectors).toHaveLength(0);
+    expect(obs.increment).toHaveBeenCalledWith('archetype_resolver.top_tie_skip');
+    // Must not have even attempted an archetype match — the bail short-circuits.
+    expect(archetypeResolver.match).not.toHaveBeenCalled();
+  });
+
+  // Counterpart to AT-7: when the top score is unique, L0 proceeds normally.
+  it('AT-7 counterpart: proceeds with L0 when only one candidate holds the top score', async () => {
+    const winner = makeCandidate({
+      role: 'textbox',
+      name: 'Login',
+      attributes: { name: 'username' },
+    });
+    const loser = makeCandidate({
+      role: 'textbox',
+      name: 'Unrelated',
+      attributes: { name: 'unrelated' },
+    });
+    domPruner.prune.mockResolvedValue([winner, loser]);
+
+    const pageMock = { $: jest.fn().mockResolvedValue({}) };
+    const step = makeStep({ action: 'type', targetDescription: 'type x in the login username field' });
+    const result = await resolver.resolve(step, makeContext(pageMock));
+
+    expect(result.resolutionSource).toBe('archetype');
+    expect(obs.increment).not.toHaveBeenCalledWith('archetype_resolver.top_tie_skip');
   });
 });
