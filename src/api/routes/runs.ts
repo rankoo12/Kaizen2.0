@@ -227,11 +227,16 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
       const pool = getPool();
 
       // Fetch the step result.
-      // content_hash — links to compiled_ast_cache (cleared on verdict=failed so
-      //   a stale wrong compilation gets evicted and recompiled fresh next run)
-      // target_hash  — links to selector_cache
+      // content_hash    — links to compiled_ast_cache (cleared on verdict=failed so
+      //                   a stale wrong compilation gets evicted and recompiled next run)
+      // target_hash     — links to selector_cache
+      // archetype_name  — populated when the step was resolved at L0; triggers an
+      //                   archetype_failures cooldown row on verdict=failed
+      // environment_url — host domain for the cooldown row (matches how worker
+      //                   derives domain at run time)
       const { rows } = await pool.query(
-        `SELECT sr.id, sr.content_hash, sr.target_hash, sr.selector_used, r.tenant_id
+        `SELECT sr.id, sr.content_hash, sr.target_hash, sr.selector_used,
+                sr.archetype_name, r.tenant_id, r.environment_url
          FROM step_results sr
          JOIN runs r ON r.id = sr.run_id
          WHERE sr.id = $1 AND sr.run_id = $2`,
@@ -342,6 +347,36 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
             }
           } catch {
             // Best-effort — Postgres rows are already gone; Redis TTL will expire naturally.
+          }
+
+          // 5. Archetype cooldown: if the step was resolved at L0, record a row
+          //    in archetype_failures so the resolver skips this archetype for
+          //    the same (tenant, domain, target_hash) until the 24h window elapses.
+          //    This closes the cross-process gap — the resolver instance lives in
+          //    the worker, the verdict arrives at the API, and without this write
+          //    user "fail" clicks on L0 hits had no effect.
+          if (stepResult.archetype_name && stepResult.selector_used && stepResult.environment_url) {
+            try {
+              const cooldownDomain = new URL(stepResult.environment_url).hostname;
+              await pool.query(
+                `INSERT INTO archetype_failures
+                   (tenant_id, domain, target_hash, archetype_name, selector_used)
+                 VALUES ($1, $2, $3, $4, $5)
+                 ON CONFLICT (tenant_id, domain, target_hash, archetype_name)
+                 DO UPDATE SET selector_used = EXCLUDED.selector_used, created_at = now()`,
+                [
+                  stepResult.tenant_id,
+                  cooldownDomain,
+                  stepResult.target_hash,
+                  stepResult.archetype_name,
+                  stepResult.selector_used,
+                ],
+              );
+              obs.increment('archetype_resolver.verdict_failure_recorded');
+            } catch (e: any) {
+              obs.increment('archetype_resolver.verdict_failure_record_error');
+              obs.log('warn', 'verdict.archetype_failure_record_failed', { error: e.message });
+            }
           }
         }
       }

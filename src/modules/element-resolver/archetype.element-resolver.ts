@@ -131,10 +131,22 @@ export class ArchetypeElementResolver implements IElementResolver {
     // resolver silently reroutes from the correct element ("username" input,
     // no archetype) to an unrelated lower-scoring one ("password" input,
     // password_input archetype). Accept archetype hits only from candidates
-    // tied with the top score — this preserves genuine ties (e.g. "Sign in"
-    // vs. "Sign in with a passkey" tie on overlap, archetype filters within
-    // that tie) but blocks semantic drift across score buckets.
+    // tied with the top score.
     const topScore = ranked.length > 0 ? ranked[0].score : 0;
+
+    // Tied top-score bail (S5): when ≥ 2 candidates tie at the top overlap
+    // score, L0 has no basis to pick one. The keyword ranker has already used
+    // every signal it has; a tie means the DOM genuinely exposes two
+    // equivalent candidates (e.g. signup vs. login email inputs both labelled
+    // "Email Address" on automationexercise.com). Fall through to L1..L5 —
+    // the LLM sees parent context the ranker does not and can disambiguate.
+    const topTieCount = ranked.filter((r) => r.score === topScore).length;
+    if (topTieCount >= 2) {
+      this.observability.increment('archetype_resolver.top_tie_skip');
+      this.observability.increment('resolver.archetype_miss');
+      return MISS;
+    }
+
     const page = context.page as PlaywrightPageLike;
 
     for (const { candidate, score } of ranked) {
@@ -170,15 +182,6 @@ export class ArchetypeElementResolver implements IElementResolver {
       }
 
       this.observability.increment('resolver.cache_hit', { source: 'archetype' });
-      this.lastMatch = {
-        key: {
-          tenantId: context.tenantId,
-          domain: context.domain,
-          targetHash: step.targetHash,
-        },
-        archetypeName: match.archetypeName,
-        selector: match.selector,
-      };
       return {
         selectors: [{ selector: match.selector, strategy: 'aria', confidence: match.confidence }],
         fromCache: false,
@@ -186,6 +189,7 @@ export class ArchetypeElementResolver implements IElementResolver {
         resolutionSource: 'archetype',
         similarityScore: null,
         tokensUsed: 0,
+        archetypeName: match.archetypeName,
       };
     }
 
@@ -193,34 +197,18 @@ export class ArchetypeElementResolver implements IElementResolver {
     return MISS;
   }
 
-  /**
-   * Remembers the last archetype that we resolved so that a subsequent
-   * recordFailure() call from the worker can be attributed to the correct
-   * (tenantId, domain, targetHash, archetypeName) tuple. Cleared after use.
-   */
-  private lastMatch: {
-    key: { tenantId: string; domain: string; targetHash: string };
-    archetypeName: string;
-    selector: string;
-  } | null = null;
-
   async recordSuccess(_contentHash: string, _domain: string, _selectorUsed: string): Promise<void> {
-    // Success wipes the last-match slot — cooldown is driven only by failures.
-    this.lastMatch = null;
+    // No-op: archetype resolutions don't write to selector_cache, so there's
+    // no tenant-scoped row to confirm. Success signal is implicit — the step
+    // passed, and the verdict route never fires for passed steps.
   }
 
-  async recordFailure(targetHash: string, domain: string, selectorAttempted: string): Promise<void> {
-    // The worker calls recordFailure with targetHash + domain but no tenantId
-    // (by design: selectorSet + step carry those). We only have enough context
-    // to act when the most recent resolve() on this instance produced this
-    // archetype+selector combo.
-    const last = this.lastMatch;
-    this.lastMatch = null;
-    if (!last) return;
-    if (last.key.targetHash !== targetHash) return;
-    if (last.key.domain !== domain) return;
-    if (last.selector !== selectorAttempted) return;
-
-    await this.archetypeResolver.recordFailure(last.key, last.archetypeName, last.selector);
+  async recordFailure(_targetHash: string, _domain: string, _selectorAttempted: string): Promise<void> {
+    // No-op: the UI verdict route (src/api/routes/runs.ts) owns the
+    // archetype_failures write path. It reads step_results.archetype_name to
+    // know which archetype to cool down, so this worker-side resolver instance
+    // never needs to observe user-driven failures. Worker-observed failures
+    // (execution errors, DOM changes mid-run) are not user intent and must
+    // not cool down an archetype.
   }
 }

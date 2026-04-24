@@ -2,6 +2,7 @@
 
 **Status:** Draft
 **Created:** 2026-04-21
+**Updated:** 2026-04-22 — Add S4 (cross-process failure wiring) and S5 (tied-score bail) after the v1 fix failed in production. The cooldown table existed but was never populated because the UI verdict route did not invoke `composite.recordFailure`, and the L0 resolver's in-memory `lastMatch` was unreachable from the API process. The tied-score case (automationexercise.com signup vs. login email share AX name "Email Address") cannot be resolved from keyword signals alone.
 **Branch:** `fix/element-resolver/archetype-ambiguous-match`
 **Spec ref:** [spec-smart-brain-layer0.md](./spec-smart-brain-layer0.md) (Layer 0 archetype library)
 **Depends on:** current archetype resolver behaviour in [src/modules/element-resolver/archetype.element-resolver.ts](../../../src/modules/element-resolver/archetype.element-resolver.ts) and [db.archetype-resolver.ts](../../../src/modules/element-resolver/db.archetype-resolver.ts)
@@ -89,6 +90,29 @@ CREATE INDEX archetype_failures_created_at_idx ON archetype_failures (created_at
 
 **Why a separate table (not reuse `selector_cache` failure window):** archetype resolutions are not written to `selector_cache` (see [archetype.element-resolver.ts](../../../src/modules/element-resolver/archetype.element-resolver.ts) — `fromCache: false`). Reusing the outcome_window machinery would require inventing synthetic cache rows and would conflate "this cached selector broke" with "this archetype is wrong for this target," which are different remedies.
 
+### S4 — Cross-process failure wiring (v2 fix)
+
+**The gap:** S3 as originally scoped kept `archetype_failures` writes inside the resolver (`archetype.element-resolver.ts::recordFailure`) using an in-memory `lastMatch` field. That instance lives in the worker process. The UI "fail" verdict is handled by `PATCH /runs/:runId/steps/:stepId/verdict` in the API process, which deletes cache rows but never calls `composite.recordFailure`. Net result: `archetype_failures` stays empty no matter how many times a user clicks fail. Verified in production on 2026-04-22.
+
+**The fix — persist the archetype name on `step_results`, have the verdict route write the cooldown row directly:**
+
+1. **Migration 022:** `ALTER TABLE step_results ADD COLUMN archetype_name text NULL`. Null for every non-archetype resolution.
+2. **Worker:** when `selectorSet.resolutionSource === 'archetype'`, the worker writes `archetypeName` into the row (surfaced on `SelectorSet.archetypeName`). No behaviour change for any other resolution source.
+3. **Verdict route (API):** on `verdict = 'failed'`, after the existing cache purges, read the step row. If `archetype_name IS NOT NULL`, insert into `archetype_failures (tenant_id, domain, target_hash, archetype_name, selector_used)` with `ON CONFLICT DO UPDATE SET created_at = now()`.
+4. **Delete dead code:** the `lastMatch` field and `recordFailure` override on `ArchetypeElementResolver` come out. The resolver no longer observes failures — the verdict route owns that write path. Cooldown reads stay on the resolver.
+
+Why this is correct: it follows the existing pattern (verdict route is already the sole owner of "user said fail" side effects — Redis scan/delete, `selector_cache` delete, `compiled_ast_cache` delete) and keeps the archetype resolver stateless.
+
+### S5 — Tied top-score bail
+
+When `rankCandidates` produces ≥ 2 candidates tied at the top overlap score, the resolver has no basis to pick one of them via L0. If any of the tied candidates matches an archetype, **bail L0 entirely and let L1..L5 resolve the step**. Rationale:
+
+- AutomationExercise repro: signup and login pages both render `<input name="email" placeholder="Email Address">`, so both candidates score identically against the step "type X in email". L0 with the existing tiebreaker (shortest name) just gambles.
+- LLM resolution (L5) is explicitly built for this: it sees the full candidate list + parent context and picks deterministically. Letting L0 guess is strictly worse.
+- Behaviour is emitted as `archetype_resolver.top_tie_skip` so we can track how often L0 bails.
+
+This tightens S2, not replaces it. S2's attribute-aware ranking breaks as many ties as it can before S5 triggers.
+
 ---
 
 ## Acceptance Tests
@@ -123,19 +147,34 @@ Expected: `match()` returns `password_input` because 0.95 − 0.60 = 0.35 > 0.10
 
 Two tenants marking the same archetype failed on the same domain+target MUST have independent cooldowns. Cross-tenant leakage is a multi-tenancy violation.
 
+### AT-6: UI "fail" populates the cooldown row (S4)
+
+Integration path:
+1. Worker runs a step, resolves via L0 with archetype `login_email_input`, writes `step_results` row with `archetype_name = 'login_email_input'`, `selector_used = 'role=textbox[name="Email Address"]'`.
+2. API receives `PATCH /runs/:runId/steps/:stepId/verdict` with `verdict: 'failed'`.
+3. After cache purges, the route inserts into `archetype_failures` with the correct `(tenant_id, domain, target_hash, archetype_name, selector_used)` tuple.
+4. Re-running the same step now skips `login_email_input` at L0 and falls through to L1..L5.
+
+### AT-7: Tied top-score bail (S5)
+
+Two candidates both score `3` for "type X in email": `<input name="email">` on the signup form (AX name "Email Address") and `<input name="email">` on the login form (AX name "Email Address"). At least one matches an archetype.
+Expected: `ArchetypeElementResolver.resolve` returns MISS, emits `archetype_resolver.top_tie_skip`, L1..L5 takes over. When only the top candidate has the top score (no tie), L0 proceeds as before.
+
 ---
 
 ## Affected Files
 
 | File | Change |
 |---|---|
-| `src/modules/element-resolver/db.archetype-resolver.ts` | `match()` becomes "collect all hits, apply ambiguity margin"; new prepared-statement reader for cooldown table |
-| `src/modules/element-resolver/archetype.element-resolver.ts` | `rankCandidates()` folds DOM attribute signals into score; new cooldown check before archetype call; `recordFailure` writes to `archetype_failures` |
-| `src/modules/element-resolver/archetype.interfaces.ts` | New `recordFailure(candidate, archetypeName, selector, ctx)` method on `IArchetypeResolver` |
-| `src/modules/element-resolver/__tests__/archetype.element-resolver.test.ts` | Add AT-1, AT-4, AT-5 |
-| `src/modules/element-resolver/__tests__/db.archetype-resolver.test.ts` | Add AT-2, AT-3 + cooldown reader/writer tests |
-| `db/migrations/NNN_archetype_failures.sql` | New table + indexes |
-| `src/types/index.ts` | Widen `CandidateNode` usage if needed to carry `attributes` into ranker (already present) |
+| `src/modules/element-resolver/db.archetype-resolver.ts` | `match()` collects all hits + ambiguity margin; cooldown reader. `recordFailure` unchanged (now called from verdict route via a small helper, not from the element resolver instance). |
+| `src/modules/element-resolver/archetype.element-resolver.ts` | `rankCandidates()` folds DOM attribute signals; top-score lock; S5 tied-top-score bail. `lastMatch` state and `recordFailure` override removed — verdict route is the sole failure writer. |
+| `src/modules/element-resolver/archetype.interfaces.ts` | `IArchetypeResolver.recordFailure` still exists (for the verdict route to call). |
+| `src/modules/element-resolver/__tests__/archetype.element-resolver.test.ts` | Add AT-1, AT-7; remove stale `recordFailure` tests on the element resolver wrapper. |
+| `src/modules/element-resolver/__tests__/db.archetype-resolver.test.ts` | Add AT-2, AT-3, AT-5 + cooldown reader/writer tests. |
+| `src/workers/worker.ts` | Pass `archetype_name` into `insertStepResult` when `resolutionSource === 'archetype'`. |
+| `src/api/routes/runs.ts` | In the `failed` verdict branch, after existing purges: if `step_results.archetype_name IS NOT NULL`, insert into `archetype_failures`. |
+| `src/types/index.ts` | `SelectorSet.archetypeName?: string \| null` so the worker can persist it. |
+| `db/migrations/022_step_results_archetype_name.sql` | `ALTER TABLE step_results ADD COLUMN archetype_name text`. |
 
 ---
 
@@ -146,6 +185,9 @@ New counters:
 - `archetype_resolver.cooldown_skip` — candidate was eligible but skipped because of a recent failure row.
 - `archetype_resolver.record_failure` — user-driven failure was recorded successfully.
 - `archetype_resolver.record_failure_error` — DB insert for cooldown row failed.
+- `archetype_resolver.top_tie_skip` — L0 bailed because ≥ 2 candidates tied at top rank (S5).
+- `archetype_resolver.verdict_failure_recorded` — verdict route successfully wrote an `archetype_failures` row.
+- `archetype_resolver.verdict_failure_record_error` — verdict route failed to write the failure row.
 
 All existing `resolver.archetype_*` counters stay unchanged.
 

@@ -196,6 +196,7 @@ async function insertStepResult(
   domCandidates: SelectorSet['candidates'] | null,
   llmPickedKaizenId: string | null,
   tokensUsed: number,
+  archetypeName: string | null = null,
   errorType: string | null = null,
 ): Promise<string | null> {
   try {
@@ -203,13 +204,13 @@ async function insertStepResult(
       `INSERT INTO step_results
          (tenant_id, run_id, content_hash, target_hash, status, selector_used,
           screenshot_key, duration_ms, resolution_source, similarity_score,
-          dom_candidates, llm_picked_kaizen_id, tokens_used, error_type)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14)
+          dom_candidates, llm_picked_kaizen_id, tokens_used, archetype_name, error_type)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
        RETURNING id`,
       [tenantId, runId, step.contentHash, step.targetHash, status, selectorUsed,
        screenshotKey, durationMs, resolutionSource, similarityScore,
        domCandidates ? JSON.stringify(domCandidates) : null,
-       llmPickedKaizenId, tokensUsed, errorType],
+       llmPickedKaizenId, tokensUsed, archetypeName, errorType],
     );
     return rows[0]?.id ?? null;
   } catch (e: any) {
@@ -276,6 +277,7 @@ async function executeStep(
     void insertStepResult(
       tenantId, runId, step, 'failed', null, afterKey,
       Date.now() - stepStart, null, null, null, null, 0,
+      null,
       challenge.type,
     );
     return { status: 'failed', healed: false, afterPng };
@@ -323,7 +325,7 @@ async function executeStep(
       }
     }
 
-    void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart, selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null, selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0);
+    void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart, selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null, selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0, selectorSet.archetypeName ?? null);
     return { status: 'passed', healed: false, afterPng };
   }
 
@@ -345,6 +347,7 @@ async function executeStep(
     selectorSet.selectors[0]?.selector ?? null, afterKey, Date.now() - stepStart,
     selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null,
     selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0,
+    selectorSet.archetypeName ?? null,
   );
 
   const classifiedFailure: ClassifiedFailure = {

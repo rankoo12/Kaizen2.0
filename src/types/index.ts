@@ -136,6 +136,13 @@ export type SelectorSet = {
    * Zero on all cache hits — no LLM was invoked.
    */
   tokensUsed?: number;
+  /**
+   * Archetype slug, populated only when resolutionSource === 'archetype'.
+   * Persisted to step_results.archetype_name so the UI verdict route can write
+   * an archetype_failures cooldown row from the API process (the resolver
+   * instance that produced this match lives in the worker process).
+   */
+  archetypeName?: string | null;
 };
 
 export type ResolutionContext = {
