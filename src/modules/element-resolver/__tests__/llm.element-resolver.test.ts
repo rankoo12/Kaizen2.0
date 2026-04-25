@@ -162,3 +162,202 @@ describe('LLMElementResolver', () => {
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 });
+
+describe('LLMElementResolver — ambiguous selector cache write', () => {
+  // Spec: docs/specs/smart-brain/spec-element-resolver-ambiguous-cache-write.md
+  // Reproduces the live bug where two textboxes share name="Email Address",
+  // the LLM correctly picks the second one, and the resolver previously
+  // cached the ambiguous role= selector — guaranteeing run 3 hits the wrong field.
+
+  let resolver: LLMElementResolver;
+  let mockDOMPruner: jest.Mocked<IDOMPruner>;
+  let mockLLMGateway: jest.Mocked<ILLMGateway>;
+  let mockObservability: jest.Mocked<IObservability>;
+  let mockPage: { $: jest.Mock; $$: jest.Mock };
+  let mockQuery: jest.Mock;
+
+  const ambiguousAria = 'role=textbox[name="Email Address"]';
+  const kzSelector = "[data-kaizen-id='kz-14']";
+
+  // Two elements share the ambiguous accessible name; one has a unique #signup-email id.
+  const candidatesWithUniqueAlt: CandidateNode[] = [
+    {
+      kaizenId: 'kz-14',
+      role: 'textbox',
+      name: 'Email Address',
+      cssSelector: '#signup-email',
+      xpath: '',
+      attributes: { id: 'signup-email' },
+      textContent: '',
+      isVisible: true,
+      similarityScore: 1,
+      selectorCandidates: [
+        { selector: ambiguousAria,        strategy: 'aria', confidence: 0.95 },
+        { selector: '#signup-email',      strategy: 'css',  confidence: 0.90 },
+        { selector: kzSelector,           strategy: 'data-testid', confidence: 0.50 },
+      ],
+    },
+  ];
+
+  // Same kz, but no unique alternative — every stable selector in the list is ambiguous.
+  const candidatesNoUniqueAlt: CandidateNode[] = [
+    {
+      kaizenId: 'kz-14',
+      role: 'textbox',
+      name: 'Email Address',
+      cssSelector: '',
+      xpath: '',
+      attributes: {},
+      textContent: '',
+      isVisible: true,
+      similarityScore: 1,
+      selectorCandidates: [
+        { selector: ambiguousAria,           strategy: 'aria', confidence: 0.95 },
+        { selector: 'input[type="email"]',   strategy: 'css',  confidence: 0.70 },
+        { selector: kzSelector,              strategy: 'data-testid', confidence: 0.50 },
+      ],
+    },
+  ];
+
+  beforeEach(() => {
+    mockDOMPruner = { prune: jest.fn() };
+    mockLLMGateway = {
+      compileStep: jest.fn(),
+      resolveElement: jest.fn(),
+      generateEmbedding: jest.fn().mockResolvedValue(Array(1536).fill(0.1)),
+    };
+    mockObservability = {
+      startSpan: jest.fn().mockReturnValue({ end: jest.fn(), setAttribute: jest.fn() }),
+      log: jest.fn(),
+      increment: jest.fn(),
+      histogram: jest.fn(),
+    };
+    mockPage = { $: jest.fn(), $$: jest.fn() };
+    mockQuery = jest.fn().mockResolvedValue({ rows: [] });
+    (getPool as jest.Mock).mockReturnValue({ query: mockQuery });
+
+    resolver = new LLMElementResolver(mockDOMPruner, mockLLMGateway, mockObservability);
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  const emailStep = {
+    action: 'type' as const,
+    targetDescription: 'signup-email',
+    value: 'testing@example.com',
+    url: null,
+    rawText: 'under signup type testing@example.com in signup-email',
+    contentHash: 'content-hash-1',
+    targetHash: 'target-hash-1',
+  };
+
+  const ctx = () => ({ tenantId: 'tenant-1', domain: 'example.com', page: mockPage });
+
+  it('caches a unique stable alternative when the top selector is ambiguous', async () => {
+    mockDOMPruner.prune.mockResolvedValueOnce(candidatesWithUniqueAlt);
+    mockLLMGateway.resolveElement.mockResolvedValueOnce({
+      selectors: [{ selector: ambiguousAria, strategy: 'aria', confidence: 0.95 }],
+      fromCache: false, promptTokens: 80, completionTokens: 20, templateVersion: '1.0.0',
+      llmPickedKaizenId: 'kz-14',
+    });
+
+    // page.$ — used by validateSelectors and the kz-id fallback. Both succeed.
+    mockPage.$.mockResolvedValue({});
+    // page.$$ — ambiguous selector → 2 matches; unique #signup-email → 1; kz → 1.
+    mockPage.$$.mockImplementation(async (sel: string) => {
+      if (sel === ambiguousAria) return [{}, {}];
+      if (sel === '#signup-email') return [{}];
+      if (sel === kzSelector) return [{}];
+      return [];
+    });
+
+    const result = await resolver.resolve(emailStep, ctx());
+    await new Promise((r) => setImmediate(r));
+
+    // Execution swapped to kz-id (correct on this run)
+    expect(result.selectors[0].selector).toBe(kzSelector);
+
+    // The cache write must NOT carry the ambiguous selector.
+    const insertCall = mockQuery.mock.calls.find((c) => /INSERT INTO selector_cache/.test(c[0]));
+    expect(insertCall).toBeDefined();
+    const cachedSelectorsJson = insertCall![1][3] as string;
+    const cached = JSON.parse(cachedSelectorsJson);
+    expect(cached[0].selector).toBe('#signup-email');
+    expect(cached[0].selector).not.toBe(ambiguousAria);
+
+    expect(mockObservability.increment).toHaveBeenCalledWith('resolver.ambiguous_selector_disambiguated');
+    expect(mockObservability.increment).toHaveBeenCalledWith('resolver.ambiguous_selector_kz_fallback');
+  });
+
+  it('writes nothing to selector_cache when no unique stable alternative exists', async () => {
+    mockDOMPruner.prune.mockResolvedValueOnce(candidatesNoUniqueAlt);
+    mockLLMGateway.resolveElement.mockResolvedValueOnce({
+      selectors: [{ selector: ambiguousAria, strategy: 'aria', confidence: 0.95 }],
+      fromCache: false, promptTokens: 80, completionTokens: 20, templateVersion: '1.0.0',
+      llmPickedKaizenId: 'kz-14',
+    });
+
+    mockPage.$.mockResolvedValue({});
+    mockPage.$$.mockImplementation(async (sel: string) => {
+      // Every stable selector matches > 1 element on the page.
+      if (sel === ambiguousAria) return [{}, {}];
+      if (sel === 'input[type="email"]') return [{}, {}];
+      if (sel === kzSelector) return [{}];
+      return [];
+    });
+
+    const result = await resolver.resolve(emailStep, ctx());
+    await new Promise((r) => setImmediate(r));
+
+    // Execution still uses kz-id this run.
+    expect(result.selectors[0].selector).toBe(kzSelector);
+
+    // No INSERT into selector_cache happened.
+    const insertCall = mockQuery.mock.calls.find((c) => /INSERT INTO selector_cache/.test(c[0]));
+    expect(insertCall).toBeUndefined();
+
+    expect(mockObservability.increment).toHaveBeenCalledWith('resolver.ambiguous_selector_uncacheable');
+    expect(mockObservability.increment).toHaveBeenCalledWith('resolver.ambiguous_selector_kz_fallback');
+  });
+
+  it('caches the LLM-picked stable selector unchanged when it is unique', async () => {
+    // Top selector is unique — neither disambiguation branch should fire.
+    const uniqueCandidates: CandidateNode[] = [{
+      kaizenId: 'kz-1',
+      role: 'button',
+      name: 'Submit',
+      cssSelector: '#submit-btn',
+      xpath: '',
+      attributes: {},
+      textContent: '',
+      isVisible: true,
+      similarityScore: 1,
+      selectorCandidates: [{ selector: '#submit-btn', strategy: 'css', confidence: 0.95 }],
+    }];
+
+    mockDOMPruner.prune.mockResolvedValueOnce(uniqueCandidates);
+    mockLLMGateway.resolveElement.mockResolvedValueOnce({
+      selectors: [{ selector: '#submit-btn', strategy: 'css', confidence: 0.95 }],
+      fromCache: false, promptTokens: 80, completionTokens: 20, templateVersion: '1.0.0',
+      llmPickedKaizenId: 'kz-1',
+    });
+
+    mockPage.$.mockResolvedValue({});
+    mockPage.$$.mockResolvedValue([{}]); // unique
+
+    const step = { ...emailStep, targetDescription: 'submit', rawText: 'click submit' };
+    const result = await resolver.resolve(step, ctx());
+    await new Promise((r) => setImmediate(r));
+
+    expect(result.selectors[0].selector).toBe('#submit-btn');
+
+    const insertCall = mockQuery.mock.calls.find((c) => /INSERT INTO selector_cache/.test(c[0]));
+    expect(insertCall).toBeDefined();
+    const cached = JSON.parse(insertCall![1][3] as string);
+    expect(cached[0].selector).toBe('#submit-btn');
+
+    expect(mockObservability.increment).not.toHaveBeenCalledWith('resolver.ambiguous_selector_kz_fallback');
+    expect(mockObservability.increment).not.toHaveBeenCalledWith('resolver.ambiguous_selector_disambiguated');
+    expect(mockObservability.increment).not.toHaveBeenCalledWith('resolver.ambiguous_selector_uncacheable');
+  });
+});
