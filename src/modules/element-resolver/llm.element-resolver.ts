@@ -231,9 +231,13 @@ export class LLMElementResolver implements IElementResolver {
       let sessionOnly = false;
 
       // When a stable selector is ambiguous we swap to kz-id for execution but
-      // still want to cache the stable selector so future runs don't re-invoke the LLM.
+      // still want to cache a stable selector so future runs don't re-invoke the LLM.
       // This variable holds the selectors to persist; defaults to validSelectors below.
       let cacheSelectors: typeof validSelectors | null = null;
+      // Set to true when we deliberately decline to cache (ambiguous selector with no
+      // unique stable alternative). Distinct from `cacheSelectors === null`, which
+      // means "fall back to selectorSet". See spec-element-resolver-ambiguous-cache-write.md.
+      let skipCacheWrite = false;
 
       // ── Ambiguity check ───────────────────────────────────────────────────
       // If the top stable selector matches more than one element (e.g. two inputs
@@ -249,10 +253,25 @@ export class LLMElementResolver implements IElementResolver {
             const handle = await page.$(kzSelector);
             if (handle !== null) {
               this.observability.increment('resolver.ambiguous_selector_kz_fallback');
-              // Cache the stable selector (at reduced confidence) so future runs
-              // skip the LLM. Use kz-id only for this execution — it's session-scoped.
-              cacheSelectors = [{ ...validSelectors[0], confidence: 0.50 }];
-              validSelectors = [{ selector: kzSelector, strategy: 'css' as const, confidence: 0.50 }];
+
+              // Try to find a unique stable selector for this element among the
+              // candidate's pre-generated selectorCandidates. The ambiguous top
+              // selector itself must never be cached — Playwright would resolve
+              // it DOM-first on the next run and target the wrong element.
+              const pickedCandidate = candidates.find((c) => c.kaizenId === llmResult.llmPickedKaizenId);
+              const uniqueStable = pickedCandidate
+                ? await this.firstUniqueStableSelector(pickedCandidate, page)
+                : null;
+
+              if (uniqueStable) {
+                cacheSelectors = [uniqueStable];
+                this.observability.increment('resolver.ambiguous_selector_disambiguated');
+              } else {
+                skipCacheWrite = true;
+                this.observability.increment('resolver.ambiguous_selector_uncacheable');
+              }
+
+              validSelectors = [{ selector: kzSelector, strategy: 'css' as const, confidence: 1.0 }];
             }
           } catch { /* keep the ambiguous stable selector — better than nothing */ }
         }
@@ -315,8 +334,11 @@ export class LLMElementResolver implements IElementResolver {
       };
 
       // Only cache stable selectors — session-scoped data-kaizen-id must never be persisted.
-      // When cacheSelectors is set the execution used kz-id but we persist the stable selector.
-      if (!sessionOnly) {
+      // When cacheSelectors is set the execution used kz-id but we persist a unique
+      // stable selector. When skipCacheWrite is true we deliberately write nothing;
+      // a future run will pay for one more LLM call but will not be poisoned by an
+      // ambiguous cache hit.
+      if (!sessionOnly && !skipCacheWrite) {
         const setToCache = cacheSelectors
           ? { ...selectorSet, selectors: cacheSelectors }
           : selectorSet;
@@ -397,6 +419,32 @@ export class LLMElementResolver implements IElementResolver {
     } catch {
       return true; // assume unique on error so we don't needlessly fall back
     }
+  }
+
+  /**
+   * Walk the candidate's pre-generated selectorCandidates (stable → least stable)
+   * and return the first one that resolves to exactly one element on the page.
+   *
+   * Used when the LLM-picked element's top stable selector is ambiguous: the
+   * ambiguous selector must not be cached (Playwright would target the wrong
+   * element next run), but a less-preferred selector may still uniquely identify
+   * the same element. Skips data-kaizen-id selectors — those are session-scoped
+   * and never cacheable.
+   */
+  private async firstUniqueStableSelector(
+    candidate: CandidateNode,
+    page: PlaywrightPageLike,
+  ): Promise<SelectorEntry | null> {
+    for (const sel of candidate.selectorCandidates ?? []) {
+      if (sel.selector.includes('data-kaizen-id')) continue;
+      try {
+        const handles = await page.$$(sel.selector);
+        if (handles.length === 1) return sel;
+      } catch {
+        // selector malformed or otherwise unparseable; try the next one
+      }
+    }
+    return null;
   }
 
   /**
