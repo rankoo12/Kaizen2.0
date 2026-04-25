@@ -25,6 +25,7 @@ materializeGcsKeyFromEnv();
 import { Worker } from 'bullmq';
 import { chromium, type Page } from 'playwright';
 import { cancelKey } from './cancel-keys';
+import { runStepLoop } from './step-loop';
 import pino from 'pino';
 import { PinoObservability } from '../modules/observability/pino.observability';
 import { PostgresBillingMeter } from '../modules/billing-meter/postgres.billing-meter';
@@ -83,7 +84,7 @@ if (process.env.DISABLE_LLM === '1') {
   logger.warn({ event: 'llm_disabled' }, 'LLM resolver disabled via DISABLE_LLM=1 — steps that miss archetype/cache will return no selector');
 }
 
-const resolver = new CompositeElementResolver(resolvers, obs);
+const resolver = new CompositeElementResolver(resolvers, obs, llm);
 const engine = new PlaywrightExecutionEngine(obs);
 const challengeDetector = new PageChallengeDetector();
 const screenshots = new ScreenshotService(obs);
@@ -140,34 +141,32 @@ async function processRun(payload: RunJobPayload): Promise<void> {
 
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
 
-  let runPassed = true;
-  let anyHealed = false;
-  let cancelled = false;
   const domain = new URL(baseUrl).hostname;
-  let previousAfterPng: Buffer | null = null;
 
+  let loopResult;
   try {
-    for (let i = 0; i < compiledSteps.length; i++) {
-      // Check for a cancellation signal set via POST /runs/:id/cancel before
-      // starting each step. The current step is allowed to finish; we never
-      // interrupt mid-action to avoid leaving the browser in a broken state.
-      if (await isCancelled(runId)) {
-        cancelled = true;
-        logger.info({ event: 'run_cancelled', runId, stepsCompleted: i });
-        break;
-      }
-
-      const step = compiledSteps[i];
-      const { status, healed, afterPng } = await executeStep(step, page, tenantId, runId, domain, i, previousAfterPng);
-      previousAfterPng = afterPng;
-
-      if (status === 'failed') {
-        runPassed = false;
+    loopResult = await runStepLoop(runId, compiledSteps, {
+      isCancelled,
+      executeStep: (step, stepIndex, previousAfterPng) =>
+        executeStep(step, page, tenantId, runId, domain, stepIndex, previousAfterPng),
+      recordSkippedSteps: (steps, startIndex, reason) =>
+        recordSkippedSteps(tenantId, runId, steps, startIndex, reason),
+      onStepFailed: (stepIndex, step) => {
         logger.warn({ event: 'step_failed', runId, action: step.action, rawText: step.rawText });
-      } else if (healed) {
-        anyHealed = true;
-      }
-    }
+        // Stop-on-fail observability — fired every time the loop bails on
+        // an unrecovered failure. Spec: docs/specs/workers/spec-worker-stop-on-step-failure.md
+        obs.increment('worker.stopped_on_failure', { stepIndex: String(stepIndex) });
+        logger.warn({
+          event: 'run_stopped_on_failure',
+          runId,
+          stepIndex,
+          stepsSkipped: compiledSteps.length - (stepIndex + 1),
+        });
+      },
+      onCancelled: (stepsCompleted) => {
+        logger.info({ event: 'run_cancelled', runId, stepsCompleted });
+      },
+    });
   } finally {
     await context.close();
     await browser.close();
@@ -175,6 +174,7 @@ async function processRun(payload: RunJobPayload): Promise<void> {
     await cacheRedis.del(cancelKey(runId)).catch(() => {});
   }
 
+  const { runPassed, anyHealed, cancelled } = loopResult;
   const finalStatus = cancelled ? 'cancelled' : runPassed ? (anyHealed ? 'healed' : 'passed') : 'failed';
   await markRunComplete(runId, finalStatus);
 
@@ -187,7 +187,7 @@ async function insertStepResult(
   tenantId: string,
   runId: string,
   step: StepAST,
-  status: 'passed' | 'failed' | 'healed',
+  status: 'passed' | 'failed' | 'healed' | 'skipped',
   selectorUsed: string | null,
   screenshotKey: string | null,
   durationMs: number,
@@ -216,6 +216,37 @@ async function insertStepResult(
   } catch (e: any) {
     obs.log('warn', 'worker.step_result_insert_failed', { error: e.message });
     return null;
+  }
+}
+
+/**
+ * Writes a lean `skipped` row for every step at index >= startIndex. Called
+ * after stop-on-fail so the run timeline still enumerates every step from the
+ * compiled AST; absent rows would make skipped steps vanish from the UI.
+ * Spec: docs/specs/workers/spec-worker-stop-on-step-failure.md
+ */
+async function recordSkippedSteps(
+  tenantId: string,
+  runId: string,
+  compiledSteps: StepAST[],
+  startIndex: number,
+  reason: 'prior_step_failed',
+): Promise<void> {
+  for (let i = startIndex; i < compiledSteps.length; i++) {
+    await insertStepResult(
+      tenantId, runId, compiledSteps[i],
+      'skipped',
+      null,    // selectorUsed
+      null,    // screenshotKey
+      0,       // durationMs
+      null,    // resolutionSource
+      null,    // similarityScore
+      null,    // domCandidates
+      null,    // llmPickedKaizenId
+      0,       // tokensUsed
+      null,    // archetypeName
+      reason,  // errorType — carries the skip reason
+    ).catch((e: any) => obs.log('warn', 'worker.skip_record_failed', { error: e.message, stepIndex: i }));
   }
 }
 
