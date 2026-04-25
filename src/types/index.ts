@@ -157,6 +157,14 @@ export type ResolutionContext = {
    * /register) produce distinct vectors and cannot cross-match via L2.5 pgvector search.
    */
   pageUrl?: string;
+  /**
+   * Embedding of `"${step.action} ${step.targetDescription}"`, computed once per step
+   * by CompositeElementResolver. Consumed by the cache layers both for existing
+   * pgvector lookups (L3/L4) and for the semantic guard that rejects a cached hit
+   * when its stored vectors disagree with the current step's intent (L1/L2/L3/L4).
+   * Undefined when targetDescription is null (navigate/wait) — guard skipped.
+   */
+  stepEmbedding?: number[];
 };
 
 // ─── Accessibility tree ───────────────────────────────────────────────────────
