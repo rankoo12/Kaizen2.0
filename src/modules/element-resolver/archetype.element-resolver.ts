@@ -158,9 +158,18 @@ export class ArchetypeElementResolver implements IElementResolver {
       if (!match) continue;
 
       // Skip archetypes the user marked failed for this target within the cooldown window.
-      if (cooldown.has(match.archetypeName)) {
+      if (cooldown.archetypes.has(match.archetypeName)) {
         this.observability.increment('archetype_resolver.cooldown_skip', {
           archetype: match.archetypeName,
+        });
+        continue;
+      }
+
+      // Also skip any candidate selector that the user previously rejected for this target,
+      // even if it was proposed by a different archetype.
+      if (cooldown.selectors.has(match.selector)) {
+        this.observability.increment('archetype_resolver.selector_cooldown_skip', {
+          selector: match.selector,
         });
         continue;
       }

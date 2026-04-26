@@ -861,8 +861,8 @@ function StepInspectorList({
   }
 
   return (
-    <div ref={containerRef} className="overflow-auto px-5 py-4 bg-app-bg">
-      <div className="eyebrow mb-3 sticky top-0 bg-app-bg pb-1 z-10">step inspector</div>
+    <div ref={containerRef} className="overflow-auto px-5 bg-app-bg pb-4">
+      <div className="eyebrow mb-3 sticky top-0 bg-app-bg pt-4 pb-2 z-10">step inspector</div>
       <div className="flex flex-col">
         {stepResults.map((sr, i) => {
           const stepText = sr.rawText
@@ -930,7 +930,7 @@ function StepInspectorBlock({
       data-step-id={stepResult.id}
       onClick={onClick}
       className={cn(
-        'scroll-mt-2 rounded-lg px-3 py-3 mb-2 transition-colors cursor-pointer',
+        'scroll-mt-14 rounded-lg px-3 py-3 mb-2 transition-colors cursor-pointer',
         isActive
           ? 'bg-surface-elevated ring-1 ring-border-accent'
           : 'bg-transparent hover:bg-surface',

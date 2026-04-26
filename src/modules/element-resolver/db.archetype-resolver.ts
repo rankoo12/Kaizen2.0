@@ -201,10 +201,10 @@ export class DBArchetypeResolver implements IArchetypeResolver {
     };
   }
 
-  async getCooldownArchetypes(key: ArchetypeFailureKey): Promise<Set<string>> {
+  async getCooldownArchetypes(key: ArchetypeFailureKey): Promise<{ archetypes: Set<string>; selectors: Set<string> }> {
     try {
-      const { rows } = await getPool().query<{ archetype_name: string }>(
-        `SELECT archetype_name
+      const { rows } = await getPool().query<{ archetype_name: string; selector_used: string }>(
+        `SELECT archetype_name, selector_used
            FROM archetype_failures
           WHERE tenant_id = $1
             AND domain = $2
@@ -212,12 +212,15 @@ export class DBArchetypeResolver implements IArchetypeResolver {
             AND created_at > now() - ($4 || ' hours')::interval`,
         [key.tenantId, key.domain, key.targetHash, String(ARCHETYPE_FAILURE_COOLDOWN_HOURS)],
       );
-      return new Set(rows.map((r) => r.archetype_name));
+      return {
+        archetypes: new Set(rows.map((r) => r.archetype_name)),
+        selectors: new Set(rows.map((r) => r.selector_used).filter(Boolean)),
+      };
     } catch (e: any) {
       this.observability.log('warn', 'archetype_resolver.cooldown_read_failed', {
         error: e.message,
       });
-      return new Set();
+      return { archetypes: new Set(), selectors: new Set() };
     }
   }
 

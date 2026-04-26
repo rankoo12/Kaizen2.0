@@ -45,7 +45,7 @@ export interface IArchetypeResolver {
    * target) triple. Archetype resolver skips any archetype whose name appears
    * in this set when selecting a candidate.
    */
-  getCooldownArchetypes(key: ArchetypeFailureKey): Promise<Set<string>>;
+  getCooldownArchetypes(key: ArchetypeFailureKey): Promise<{ archetypes: Set<string>; selectors: Set<string> }>;
 
   /**
    * Record a user-driven failure so future runs skip this archetype for the

@@ -196,6 +196,7 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
 
     run.stepResults = stepRows.map((step: any) => ({
       ...step,
+      rawText: step.step_raw_text,
       healingEvents: healingRows.filter((h: any) => h.step_result_id === step.id),
       tokens: step.tokens_used ?? 0,
     }));

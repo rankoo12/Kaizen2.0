@@ -57,7 +57,7 @@ describe('ArchetypeElementResolver', () => {
     domPruner = { prune: jest.fn().mockResolvedValue([makeCandidate()]) };
     archetypeResolver = {
       match: jest.fn().mockResolvedValue(makeMatch()),
-      getCooldownArchetypes: jest.fn().mockResolvedValue(new Set()),
+      getCooldownArchetypes: jest.fn().mockResolvedValue({ archetypes: new Set(), selectors: new Set() }),
       recordFailure: jest.fn().mockResolvedValue(undefined),
     };
     obs = makeObservability();
@@ -242,7 +242,7 @@ describe('ArchetypeElementResolver', () => {
 
   // AT-4: user marks the step failed → next run skips the cooldowned archetype.
   it('AT-4: cooldown skip — archetype on cooldown is bypassed', async () => {
-    archetypeResolver.getCooldownArchetypes.mockResolvedValue(new Set(['login_button']));
+    archetypeResolver.getCooldownArchetypes.mockResolvedValue({ archetypes: new Set(['login_button']), selectors: new Set() });
     const pageMock = { $: jest.fn().mockResolvedValue({}) };
     const result = await resolver.resolve(makeStep(), makeContext(pageMock));
 
@@ -253,6 +253,25 @@ describe('ArchetypeElementResolver', () => {
       { archetype: 'login_button' },
     );
   });
+
+  it('AT-4: cooldown skip — selector on cooldown is bypassed even if archetype is not', async () => {
+    // The archetype "login_button" is not on cooldown, but the specific selector is.
+    archetypeResolver.getCooldownArchetypes.mockResolvedValue({
+      archetypes: new Set(),
+      selectors: new Set(['role=button[name="Log in"]'])
+    });
+    const pageMock = { $: jest.fn().mockResolvedValue({}) };
+    const result = await resolver.resolve(makeStep(), makeContext(pageMock));
+
+    expect(result.resolutionSource).toBeNull();
+    expect(result.selectors).toHaveLength(0);
+    expect(obs.increment).toHaveBeenCalledWith(
+      'archetype_resolver.selector_cooldown_skip',
+      { selector: 'role=button[name="Log in"]' },
+    );
+  });
+
+
 
   // Surface archetypeName on the SelectorSet so the worker can persist it on
   // step_results.archetype_name — the verdict route reads that column to

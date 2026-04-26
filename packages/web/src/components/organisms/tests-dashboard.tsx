@@ -619,7 +619,8 @@ function TestHoverCard({ tc, status, x, y }: { tc: CaseSummary; status: StatusKi
 
     // Vertical: flip below the cell if there isn't room above.
     const fitsAbove = y - rect.height - 12 >= margin;
-    const top = fitsAbove ? y : y + 12 + 22; // 22 ≈ cell height
+    let top = fitsAbove ? y : y + 12 + 22; // 22 ≈ cell height
+    if (top + rect.height > vh - margin) top = vh - rect.height - margin;
 
     setPos({ left, top, below: !fitsAbove });
   }, [x, y]);
@@ -806,7 +807,7 @@ function StatusChip({ status, small = false }: { status: StatusKind; small?: boo
   return (
     <span
       className={cn(
-        'inline-flex items-center gap-1.5 rounded-full border font-mono uppercase font-semibold tracking-[0.12em]',
+        'inline-flex items-center gap-1.5 rounded-full border font-mono uppercase font-semibold tracking-[0.12em] shrink-0',
         small ? 'text-[9px] px-1.5 py-px' : 'text-[10px] px-2 py-0.5',
         tone[status],
       )}
