@@ -28,6 +28,7 @@ import { createRunQueue } from '../../queue';
 import { LearnedCompiler } from '../../modules/test-compiler/learned.compiler';
 import { OpenAIGateway } from '../../modules/llm-gateway/openai.gateway';
 import { PostgresBillingMeter } from '../../modules/billing-meter/postgres.billing-meter';
+import { usageThisMonth } from '../../modules/billing-meter/usage';
 import { PinoObservability } from '../../modules/observability/pino.observability';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
@@ -548,10 +549,21 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       `SELECT llm_budget_tokens_monthly FROM tenants WHERE id = $1`,
       [tenantId],
     );
-    if (budgetRows.length === 0 || Number(budgetRows[0].llm_budget_tokens_monthly) <= 0) {
+    const budget = Number(budgetRows[0]?.llm_budget_tokens_monthly ?? 0);
+    if (budget <= 0) {
       return reply.status(402).send({
         error: 'INSUFFICIENT_TOKENS',
         message: 'This account has no LLM tokens allocated. Contact the workspace owner to enable runs.',
+      });
+    }
+
+    const used = await usageThisMonth(tenantId);
+    if (used >= budget) {
+      return reply.status(402).send({
+        error: 'TOKEN_LIMIT_REACHED',
+        message: `Token limit reached (${budget.toLocaleString()}). Used ${used.toLocaleString()} this month.`,
+        used,
+        budget,
       });
     }
 
