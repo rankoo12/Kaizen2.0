@@ -61,7 +61,7 @@ export function LoginForm() {
         />
 
         {error && (
-          <p className="text-brand-red text-sm text-center -mt-2">{error}</p>
+          <p className="text-danger text-sm text-center -mt-2">{error}</p>
         )}
 
         <Button
@@ -77,7 +77,7 @@ export function LoginForm() {
         <div className="text-center mt-6">
           <button
             type="button"
-            className="text-xs text-gray-400 hover:text-white transition-colors uppercase tracking-wider font-medium"
+            className="text-xs text-text-mid hover:text-text-hi transition-colors uppercase tracking-wider font-medium"
           >
             Forgot Password?
           </button>
@@ -86,7 +86,7 @@ export function LoginForm() {
         <SocialAuthRow label="Or Login with" />
 
         <div className="text-center mt-8 text-sm">
-          <span className="text-brand-orange-light font-medium">Don&apos;t Have An Account?</span>
+          <span className="text-brand-primary-soft font-medium">Don&apos;t Have An Account?</span>
           <button
             type="button"
             onClick={() => router.push('/signup')}

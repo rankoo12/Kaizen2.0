@@ -153,10 +153,16 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
 
     const run = rows[0];
 
-    // Fetch granular step results
+    // Fetch granular step results.
+    // LEFT JOIN test_steps so the raw English text travels with the step result.
+    // Necessary because test_steps rows are immutable (versioned via parent_step_id),
+    // and a run can reference a step row that's no longer in the case's active set —
+    // looking up rawText via the case's current steps would miss those.
     const { rows: stepRows } = await pool.query(
-      `SELECT sr.id, sr.step_id, sr.status, sr.cache_hit, sr.selector_used, sr.duration_ms, sr.error_type, sr.failure_class, sr.healing_event_id, sr.screenshot_key, sr.content_hash, sr.target_hash, sr.user_verdict, sr.resolution_source, sr.similarity_score, sr.dom_candidates, sr.llm_picked_kaizen_id, sr.tokens_used, sr.created_at
+      `SELECT sr.id, sr.step_id, sr.status, sr.cache_hit, sr.selector_used, sr.duration_ms, sr.error_type, sr.failure_class, sr.healing_event_id, sr.screenshot_key, sr.content_hash, sr.target_hash, sr.user_verdict, sr.resolution_source, sr.similarity_score, sr.dom_candidates, sr.llm_picked_kaizen_id, sr.tokens_used, sr.created_at,
+              ts.raw_text AS step_raw_text
        FROM step_results sr
+       LEFT JOIN test_steps ts ON ts.id = sr.step_id
        WHERE sr.run_id = $1
        ORDER BY sr.created_at ASC`,
       [request.params.id]

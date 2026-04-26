@@ -72,6 +72,9 @@ export type DomCandidate = {
 export type StepResult = {
   id: string;
   stepId: string;
+  /** Original natural-language step text. Travels with the step result so
+   *  edits / step-versioning can't desync the inspector display. */
+  rawText: string | null;
   status: RunStatus;
   screenshotKey: string | null;
   durationMs: number | null;

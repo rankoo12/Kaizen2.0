@@ -81,7 +81,7 @@ export function SignupForm() {
         />
 
         {error && (
-          <p className="text-brand-red text-sm text-center -mt-1">{error}</p>
+          <p className="text-danger text-sm text-center -mt-1">{error}</p>
         )}
 
         <Button
@@ -97,7 +97,7 @@ export function SignupForm() {
         <SocialAuthRow label="Or Sign Up with" />
 
         <div className="text-center mt-8 text-sm">
-          <span className="text-brand-pink/80 font-medium">Already Have An Account?</span>
+          <span className="text-brand-accent/80 font-medium">Already Have An Account?</span>
           <button
             type="button"
             onClick={() => router.push('/login')}
