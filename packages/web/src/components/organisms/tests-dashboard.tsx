@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useRouter } from 'next/navigation';
 import {
   Plus, Play, RotateCw, Search as SearchIcon, ChevronDown, Filter, GitCompare,
@@ -592,10 +592,47 @@ function TestCell({
 
 function TestHoverCard({ tc, status, x, y }: { tc: CaseSummary; status: StatusKind; x: number; y: number }) {
   const dur = tc.lastRun?.durationMs;
+  const cardRef = useRef<HTMLDivElement>(null);
+  const [pos, setPos] = useState<{ left: number; top: number; below: boolean }>({
+    left: x,
+    top: y,
+    below: false,
+  });
+
+  // Clamp to viewport once we know the card's measured size. Without this, a
+  // card hovered near the right edge or top edge of the screen renders clipped.
+  useLayoutEffect(() => {
+    const el = cardRef.current;
+    if (!el) return;
+    const rect = el.getBoundingClientRect();
+    const margin = 8;
+    const vw = window.innerWidth;
+    const vh = window.innerHeight;
+
+    // Card is anchored with translate(-50%, -100% - 12px), so its visual box is
+    // [x - rect.width/2, x + rect.width/2] horizontally and
+    // [y - rect.height - 12, y - 12] vertically.
+    const halfW = rect.width / 2;
+    let left = x;
+    if (x - halfW < margin) left = halfW + margin;
+    else if (x + halfW > vw - margin) left = vw - halfW - margin;
+
+    // Vertical: flip below the cell if there isn't room above.
+    const fitsAbove = y - rect.height - 12 >= margin;
+    const top = fitsAbove ? y : y + 12 + 22; // 22 ≈ cell height
+
+    setPos({ left, top, below: !fitsAbove });
+  }, [x, y]);
+
+  const transform = pos.below
+    ? 'translate(-50%, 0)'
+    : 'translate(-50%, calc(-100% - 12px))';
+
   return (
     <div
+      ref={cardRef}
       className="animate-modal-pop pointer-events-none fixed z-50 w-[320px] rounded-xl border border-border-strong bg-surface-elevated/95 backdrop-blur-md p-4 shadow-2xl"
-      style={{ left: x, top: y, transform: 'translate(-50%, calc(-100% - 12px))' }}
+      style={{ left: pos.left, top: pos.top, transform }}
     >
       <div className="flex items-start justify-between mb-2.5">
         <div className="flex-1 pr-2">
