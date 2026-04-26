@@ -110,7 +110,8 @@ export class CachedElementResolver implements IElementResolver {
       // Prefer the embedding computed once by CompositeElementResolver; fall back
       // to computing it here when the composite could not supply one (e.g. a test
       // constructs CachedElementResolver directly).
-      const embedding = stepEmbedding ?? await this.llmGateway.generateEmbedding(`${step.action} ${step.targetDescription ?? ''}`);
+      const textToEmbed = step.targetDescription?.trim() ? step.targetDescription.trim() : step.action;
+      const embedding = stepEmbedding ?? await this.llmGateway.generateEmbedding(textToEmbed);
       const embeddingSQL = toVectorSQL(embedding);
 
       // L3: tenant scope

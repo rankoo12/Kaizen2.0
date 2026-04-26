@@ -41,7 +41,8 @@ export class CompositeElementResolver implements IElementResolver {
         // semantic guard. Skip embedding entirely when targetDescription is null.
         if (!embeddingComputed && idx > 0 && step.targetDescription && this.llmGateway) {
           try {
-            const vec = await this.llmGateway.generateEmbedding(`${step.action} ${step.targetDescription}`);
+            const textToEmbed = step.targetDescription?.trim() ? step.targetDescription.trim() : step.action;
+            const vec = await this.llmGateway.generateEmbedding(textToEmbed);
             enrichedContext = { ...context, stepEmbedding: vec };
           } catch (e: any) {
             this.observability.log('warn', 'composite_resolver.embedding_failed', { error: e.message });

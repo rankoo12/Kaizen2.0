@@ -356,7 +356,7 @@ async function executeStep(
       }
     }
 
-    void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart, selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null, selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0, selectorSet.archetypeName ?? null);
+    await insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart, selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null, selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0, selectorSet.archetypeName ?? null);
     return { status: 'passed', healed: false, afterPng };
   }
 
