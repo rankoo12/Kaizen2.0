@@ -1,127 +1,287 @@
 @import "tailwindcss";
 
 /* ──────────────────────────────────────────────────────────────────────────
- * Theme palettes
+ * Theme palettes (rev 2 — prototype port)
  *
  * Every color token is declared as a CSS custom property on a theme root.
  * Switching themes is a single `data-theme` attribute flip on <html>.
  * Tailwind consumes these via the @theme block below — utilities like
- * `bg-app-bg` and `text-brand-primary` automatically reflect the active theme.
+ * `bg-app-bg`, `text-text-hi`, `border-border-strong` automatically reflect
+ * the active theme.
  *
  * Themes shipped in v1:
- *   - nebula       (default)   warm pink + orange, the flagship mood
- *   - deep-space               cyan + indigo on navy, cooler instrument-panel
- *   - solar-flare              gold + crimson on warm black, high-contrast
+ *   - nebula       (default)   warm dusk, brand-primary orange + accent pink
+ *   - deep-space               cyan + indigo on navy
+ *   - solar-flare              gold + crimson on warm black
+ *
+ * See docs/specs/ui/spec-prototype-port.md for the full token rationale.
  * ────────────────────────────────────────────────────────────────────────── */
 
 :root,
 [data-theme="nebula"] {
   --color-app-bg:             #18121d;
+  --color-app-bg-deep:        #110c14;
   --color-welcome-bg:         #130d17;
-  --color-card-bg:            #231b29;
+  --color-surface:            #1f1828;
+  --color-surface-elevated:   #271d31;
+  --color-surface-sunken:     #140e1a;
   --color-input-bg:           #18121d;
-  --color-border-subtle:      rgba(255, 255, 255, 0.0625);
+
+  --color-border-subtle:      rgba(255, 255, 255, 0.06);
+  --color-border-strong:      rgba(255, 255, 255, 0.10);
+  --color-border-accent:      rgba(213, 96, 28, 0.35);
 
   --color-brand-primary:      #d5601c;
   --color-brand-primary-soft: #e59365;
+  --color-brand-primary-glow: rgba(213, 96, 28, 0.45);
   --color-brand-accent:       #db87af;
   --color-brand-accent-soft:  #ebd1de;
   --color-brand-accent-mid:   #d498b6;
+  --color-brand-accent-glow:  rgba(219, 135, 175, 0.40);
 
-  --color-brand-warning:      #f59e0b;
-  --color-brand-support:      #c17741;
-  --color-brand-danger:       #ef4444;
-  --color-brand-success:      #22c55e;
+  --color-text-hi:            #f5e9d3;
+  --color-text:               #e9dfcf;
+  --color-text-mid:           #b8a99a;
+  --color-text-low:           #7a6f64;
+  --color-text-faint:         #4f4751;
+
+  --color-warning:            #f59e0b;
+  --color-support:            #c17741;
+  --color-danger:             #ef4444;
+  --color-danger-glow:        rgba(239, 68, 68, 0.55);
+  --color-success:            #22c55e;
+  --color-success-glow:       rgba(34, 197, 94, 0.55);
+  --color-info:               #db87af;
+
+  --color-focus-ring:         rgba(213, 96, 28, 0.65);
+
+  --color-neural-a:           #d5601c;
+  --color-neural-b:           #db87af;
+  --color-neural-c:           #8b3fb8;
 }
 
 [data-theme="deep-space"] {
   --color-app-bg:             #0b1220;
+  --color-app-bg-deep:        #060b16;
   --color-welcome-bg:         #070c17;
-  --color-card-bg:            #111a2e;
+  --color-surface:            #111a2e;
+  --color-surface-elevated:   #172238;
+  --color-surface-sunken:     #0a1020;
   --color-input-bg:           #0b1220;
-  --color-border-subtle:      rgba(120, 200, 255, 0.08);
+
+  --color-border-subtle:      rgba(120, 200, 255, 0.06);
+  --color-border-strong:      rgba(120, 200, 255, 0.12);
+  --color-border-accent:      rgba(56, 189, 248, 0.40);
 
   --color-brand-primary:      #38bdf8;
   --color-brand-primary-soft: #7dd3fc;
+  --color-brand-primary-glow: rgba(56, 189, 248, 0.45);
   --color-brand-accent:       #818cf8;
   --color-brand-accent-soft:  #c7d2fe;
   --color-brand-accent-mid:   #a5b4fc;
+  --color-brand-accent-glow:  rgba(129, 140, 248, 0.45);
 
-  --color-brand-warning:      #facc15;
-  --color-brand-support:      #0ea5e9;
-  --color-brand-danger:       #f87171;
-  --color-brand-success:      #34d399;
+  --color-text-hi:            #f1f5fc;
+  --color-text:               #e2e8f0;
+  --color-text-mid:           #94a3b8;
+  --color-text-low:           #64748b;
+  --color-text-faint:         #3f4b5e;
+
+  --color-warning:            #facc15;
+  --color-support:            #0ea5e9;
+  --color-danger:             #f87171;
+  --color-danger-glow:        rgba(248, 113, 113, 0.55);
+  --color-success:            #34d399;
+  --color-success-glow:       rgba(52, 211, 153, 0.55);
+  --color-info:               #818cf8;
+
+  --color-focus-ring:         rgba(56, 189, 248, 0.65);
+
+  --color-neural-a:           #38bdf8;
+  --color-neural-b:           #818cf8;
+  --color-neural-c:           #1e3a8a;
 }
 
 [data-theme="solar-flare"] {
   --color-app-bg:             #1a1208;
+  --color-app-bg-deep:        #120c04;
   --color-welcome-bg:         #130c04;
-  --color-card-bg:            #2a1c0e;
+  --color-surface:            #251a0e;
+  --color-surface-elevated:   #2e2014;
+  --color-surface-sunken:     #160e06;
   --color-input-bg:           #1a1208;
-  --color-border-subtle:      rgba(255, 215, 160, 0.08);
+
+  --color-border-subtle:      rgba(255, 215, 160, 0.06);
+  --color-border-strong:      rgba(255, 215, 160, 0.12);
+  --color-border-accent:      rgba(245, 158, 11, 0.40);
 
   --color-brand-primary:      #f59e0b;
   --color-brand-primary-soft: #fbbf24;
+  --color-brand-primary-glow: rgba(245, 158, 11, 0.50);
   --color-brand-accent:       #ef4444;
   --color-brand-accent-soft:  #fca5a5;
   --color-brand-accent-mid:   #f87171;
+  --color-brand-accent-glow:  rgba(239, 68, 68, 0.45);
 
-  --color-brand-warning:      #fde047;
-  --color-brand-support:      #fb923c;
-  --color-brand-danger:       #dc2626;
-  --color-brand-success:      #84cc16;
+  --color-text-hi:            #fef9e7;
+  --color-text:               #fef3c7;
+  --color-text-mid:           #d6c4a0;
+  --color-text-low:           #8c7556;
+  --color-text-faint:         #5a4a30;
+
+  --color-warning:            #fde047;
+  --color-support:            #fb923c;
+  --color-danger:             #dc2626;
+  --color-danger-glow:        rgba(220, 38, 38, 0.55);
+  --color-success:            #84cc16;
+  --color-success-glow:       rgba(132, 204, 22, 0.55);
+  --color-info:               #f87171;
+
+  --color-focus-ring:         rgba(245, 158, 11, 0.65);
+
+  --color-neural-a:           #f59e0b;
+  --color-neural-b:           #ef4444;
+  --color-neural-c:           #7c2d12;
+}
+
+/* ─── Density ─────────────────────────────────────────────────────────────── */
+:root {
+  --density-pad: 14px;
+  --density-row: 36px;
+  --density-gap: 14px;
+  --radius-sm: 6px;
+  --radius-md: 10px;
+  --radius-lg: 14px;
+  --radius-xl: 20px;
+  --shadow-1: 0 1px 0 rgba(255,255,255,0.02), 0 1px 2px rgba(0,0,0,0.4);
+  --shadow-2: 0 8px 24px rgba(0,0,0,0.35);
+  --shadow-glow-primary: 0 0 24px var(--color-brand-primary-glow);
+  --neural-opacity: 0.55;
+}
+[data-density="comfortable"] {
+  --density-pad: 18px;
+  --density-row: 44px;
+  --density-gap: 18px;
 }
 
 @theme {
-  /* Themed colors — resolved from the active [data-theme] root above */
+  /* Themed colors — every token resolves from the active [data-theme] root.
+     Tailwind v4 reads these directly; bg-surface, text-text-hi, border-border-strong, etc. */
   --color-app-bg:             var(--color-app-bg);
+  --color-app-bg-deep:        var(--color-app-bg-deep);
   --color-welcome-bg:         var(--color-welcome-bg);
-  --color-card-bg:            var(--color-card-bg);
+  --color-surface:            var(--color-surface);
+  --color-surface-elevated:   var(--color-surface-elevated);
+  --color-surface-sunken:     var(--color-surface-sunken);
   --color-input-bg:           var(--color-input-bg);
+
   --color-border-subtle:      var(--color-border-subtle);
+  --color-border-strong:      var(--color-border-strong);
+  --color-border-accent:      var(--color-border-accent);
 
   --color-brand-primary:      var(--color-brand-primary);
   --color-brand-primary-soft: var(--color-brand-primary-soft);
+  --color-brand-primary-glow: var(--color-brand-primary-glow);
   --color-brand-accent:       var(--color-brand-accent);
   --color-brand-accent-soft:  var(--color-brand-accent-soft);
   --color-brand-accent-mid:   var(--color-brand-accent-mid);
+  --color-brand-accent-glow:  var(--color-brand-accent-glow);
 
-  --color-brand-warning:      var(--color-brand-warning);
-  --color-brand-support:      var(--color-brand-support);
-  --color-brand-danger:       var(--color-brand-danger);
-  --color-brand-success:      var(--color-brand-success);
+  --color-text-hi:            var(--color-text-hi);
+  --color-text:               var(--color-text);
+  --color-text-mid:           var(--color-text-mid);
+  --color-text-low:           var(--color-text-low);
+  --color-text-faint:         var(--color-text-faint);
 
-  /* Legacy aliases — kept so existing utilities resolve during migration.
-     Remove once all call sites have moved to the new token names. */
+  --color-warning:            var(--color-warning);
+  --color-support:            var(--color-support);
+  --color-danger:             var(--color-danger);
+  --color-danger-glow:        var(--color-danger-glow);
+  --color-success:            var(--color-success);
+  --color-success-glow:       var(--color-success-glow);
+  --color-info:               var(--color-info);
+
+  --color-focus-ring:         var(--color-focus-ring);
+
+  --color-neural-a:           var(--color-neural-a);
+  --color-neural-b:           var(--color-neural-b);
+  --color-neural-c:           var(--color-neural-c);
+
+  /* Legacy aliases — kept so .old/ archived components and any in-flight call
+     sites still resolve. Removed at step 7 of the migration. */
   --color-brand-orange:       var(--color-brand-primary);
   --color-brand-orange-light: var(--color-brand-primary-soft);
   --color-brand-pink:         var(--color-brand-accent);
   --color-brand-pink-light:   var(--color-brand-accent-soft);
   --color-brand-pink-mid:     var(--color-brand-accent-mid);
-  --color-brand-yellow:       var(--color-brand-warning);
-  --color-brand-red:          var(--color-brand-danger);
-  --color-brand-green:        var(--color-brand-success);
+  --color-brand-yellow:       var(--color-warning);
+  --color-brand-red:          var(--color-danger);
+  --color-brand-green:        var(--color-success);
+  --color-card-bg:            var(--color-surface);
 
-  /* Fonts */
-  --font-sans:    var(--font-inter), Inter, sans-serif;
+  /* Fonts — Inter / Space Grotesk / Manrope only. No new fonts.
+     Both --font-display and --font-space resolve to Space Grotesk so existing
+     `font-space` utility calls still work alongside the new `font-display`. */
+  --font-sans:    var(--font-inter), Inter, ui-sans-serif, system-ui, sans-serif;
+  --font-display: var(--font-space-grotesk), 'Space Grotesk', sans-serif;
   --font-space:   var(--font-space-grotesk), 'Space Grotesk', sans-serif;
+  --font-accent:  var(--font-manrope), Manrope, sans-serif;
   --font-manrope: var(--font-manrope), Manrope, sans-serif;
+  --font-mono:    var(--font-space-grotesk), 'Space Grotesk', ui-monospace, SFMono-Regular, Menlo, monospace;
 }
 
-/* Custom thin scrollbar */
-::-webkit-scrollbar {
-  width: 6px;
-  height: 6px;
+/* ─── Base ────────────────────────────────────────────────────────────────── */
+html, body { height: 100%; }
+body {
+  background: var(--color-app-bg);
+  color: var(--color-text);
+  font-feature-settings: 'cv11', 'ss01';
+  -webkit-font-smoothing: antialiased;
+  letter-spacing: -0.005em;
 }
-::-webkit-scrollbar-track {
-  background: transparent;
-}
+
+/* Every actionable element gets a pointer cursor by default. Disabled / aria-disabled
+   reverts to not-allowed. Anchors with [href] inherit pointer; explicit rule
+   covers <button>, <select>, <summary>, [role="button"]. */
+button:not(:disabled):not([aria-disabled="true"]),
+select:not(:disabled),
+summary,
+[role="button"]:not([aria-disabled="true"]),
+a[href] { cursor: pointer; }
+
+button:disabled,
+button[aria-disabled="true"],
+[role="button"][aria-disabled="true"] { cursor: not-allowed; }
+
+::selection { background: var(--color-brand-primary-glow); color: var(--color-text-hi); }
+
+::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-  background: #332640;
+  background: var(--color-border-strong);
   border-radius: 10px;
 }
+::-webkit-scrollbar-thumb:hover { background: var(--color-border-accent); }
 
-/* Animation: toast drop from top */
+:focus-visible {
+  outline: 2px solid var(--color-focus-ring);
+  outline-offset: 2px;
+  border-radius: 6px;
+}
+
+/* ─── Type role: eyebrow (small caps tracking label) ──────────────────────── */
+.eyebrow {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--color-text-low);
+}
+
+.tabular { font-variant-numeric: tabular-nums; }
+
+/* ─── Existing keyframes (preserved verbatim from v1) ─────────────────────── */
 @keyframes toastDrop {
   0% { opacity: 0; transform: translate(-50%, -20px); }
   10%, 90% { opacity: 1; transform: translate(-50%, 0); }
@@ -129,38 +289,135 @@
 }
 .animate-toast-drop { animation: toastDrop 3.5s forwards; }
 
-/* Animation: modal scale-in */
 @keyframes modalPop {
-  from { opacity: 0; transform: scale(0.95); }
+  from { opacity: 0; transform: scale(0.96); }
   to   { opacity: 1; transform: scale(1); }
 }
-.animate-modal-pop { animation: modalPop 0.2s ease-out forwards; }
+.animate-modal-pop { animation: modalPop 0.22s ease-out forwards; }
 
-/* Animation: pulsing red border (regressions) */
 @keyframes pulseRed {
-  0%, 100% { border-color: rgba(239, 68, 68, 1); }
-  50%       { border-color: rgba(239, 68, 68, 0.2); box-shadow: 0 0 5px rgba(239, 68, 68, 0.2); }
+  0%, 100% { border-color: var(--color-danger); box-shadow: 0 0 0 rgba(0,0,0,0); }
+  50%      { border-color: rgba(239, 68, 68, 0.25); box-shadow: 0 0 12px var(--color-danger-glow); }
 }
-.animate-pulse-red { animation: pulseRed 1.5s infinite; }
+.animate-pulse-red { animation: pulseRed 1.6s infinite; }
 
-/* Animation: glowing green border (improvements) */
 @keyframes glowGreen {
-  0%, 100% { box-shadow: 0 0 5px rgba(34, 197, 94, 0.4); }
-  50%       { box-shadow: 0 0 20px rgba(34, 197, 94, 0.8); }
+  0%, 100% { box-shadow: 0 0 6px var(--color-success-glow); }
+  50%      { box-shadow: 0 0 22px var(--color-success-glow); }
 }
-.animate-glow-green { animation: glowGreen 2s infinite; }
+.animate-glow-green { animation: glowGreen 2.2s infinite; }
 
-/* Step textarea line-rule background */
+@keyframes sweep {
+  0% { left: -150%; }
+  100% { left: 150%; }
+}
+
+/* ─── New keyframes (additions, nothing replaced) ─────────────────────────── */
+@keyframes scan {
+  0%   { transform: translateY(-100%); opacity: 0; }
+  10%  { opacity: 0.6; }
+  100% { transform: translateY(100%); opacity: 0; }
+}
+.animate-scan::after {
+  content: '';
+  position: absolute; inset: 0 0 auto 0; height: 30%;
+  background: linear-gradient(180deg, transparent, var(--color-brand-primary-glow), transparent);
+  animation: scan 1.6s ease-out infinite;
+  pointer-events: none;
+}
+
+@keyframes shimmer {
+  0%   { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+.skeleton {
+  background:
+    linear-gradient(90deg, transparent, var(--color-border-strong), transparent),
+    var(--color-surface);
+  background-size: 200% 100%;
+  background-repeat: no-repeat;
+  animation: shimmer 1.6s infinite;
+}
+
+@keyframes orbit {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+.animate-orbit { animation: orbit 0.8s linear infinite; }
+
+@keyframes healingPulse {
+  0%   { box-shadow: 0 0 0 0 var(--color-brand-accent-glow); }
+  70%  { box-shadow: 0 0 0 14px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+.animate-heal-pulse { animation: healingPulse 1.6s ease-out infinite; }
+
+@keyframes typeBlink {
+  0%, 49%   { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}
+.caret::after {
+  content: '▍';
+  margin-left: 2px;
+  color: var(--color-brand-primary);
+  animation: typeBlink 1s steps(1) infinite;
+}
+
+@keyframes runStart {
+  0%   { transform: scale(1); box-shadow: 0 0 0 0 var(--color-brand-primary-glow); }
+  60%  { transform: scale(0.97); box-shadow: 0 0 0 24px transparent; }
+  100% { transform: scale(1); }
+}
+.animate-run-start { animation: runStart 0.7s ease-out; }
+
+/* ─── Reduced motion ──────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: reduce) {
+  .animate-pulse-red,
+  .animate-glow-green,
+  .animate-heal-pulse,
+  .animate-scan::after,
+  .animate-orbit,
+  .skeleton,
+  .caret::after { animation: none !important; }
+}
+
+/* ─── Step composer line-rule background (preserved) ──────────────────────── */
 .code-input {
   background-image: repeating-linear-gradient(
     transparent,
-    transparent 23px,
-    rgba(255, 255, 255, 0.03) 24px
+    transparent 27px,
+    rgba(255, 255, 255, 0.03) 28px
   );
-  line-height: 24px;
+  line-height: 28px;
 }
 
-/* Glowing Cube Anchors */
+/* ─── Starfield (auth backdrop) ───────────────────────────────────────────── */
+.starfield {
+  position: absolute; inset: 0;
+  background-image:
+    radial-gradient(1px 1px at 20% 30%, rgba(255,255,255,0.55) 50%, transparent 100%),
+    radial-gradient(1px 1px at 70% 60%, rgba(255,255,255,0.4) 50%, transparent 100%),
+    radial-gradient(1px 1px at 40% 80%, rgba(255,255,255,0.35) 50%, transparent 100%),
+    radial-gradient(2px 2px at 85% 20%, rgba(255,255,255,0.5) 50%, transparent 100%),
+    radial-gradient(1px 1px at 10% 70%, rgba(255,255,255,0.3) 50%, transparent 100%);
+  background-size: 600px 400px, 700px 500px, 500px 350px, 800px 600px, 450px 300px;
+  background-repeat: repeat;
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+/* ─── Background vignette layer (used by app shell) ───────────────────────── */
+.bg-vignette {
+  position: fixed;
+  inset: 0;
+  z-index: 1;
+  pointer-events: none;
+  background:
+    radial-gradient(120% 80% at 50% 0%, transparent 0%, var(--color-app-bg) 70%),
+    radial-gradient(80% 60% at 50% 100%, transparent 0%, var(--color-app-bg-deep) 75%);
+}
+
+/* ─── Glowing-cube hover ornament (kept for welcome screen) ───────────────── */
 .glowing-cube {
   width: 16px;
   height: 16px;
@@ -169,29 +426,24 @@
   transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
   border-radius: 2px;
 }
-
 .cube-pink {
-  background-color: #db87af;
-  box-shadow: 0 0 12px 2px rgba(219, 135, 175, 0.7);
+  background-color: var(--color-brand-accent);
+  box-shadow: 0 0 12px 2px var(--color-brand-accent-glow);
 }
-
 .group:hover .cube-pink {
   background-color: #f1a9ca;
-  box-shadow: 0 0 25px 5px rgba(219, 135, 175, 1), inset 0 0 8px rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 25px 5px var(--color-brand-accent), inset 0 0 8px rgba(255, 255, 255, 0.9);
   transform: scale(1.5) rotate(90deg);
 }
-
 .cube-orange {
-  background-color: #d5601c;
-  box-shadow: 0 0 12px 2px rgba(213, 96, 28, 0.7);
+  background-color: var(--color-brand-primary);
+  box-shadow: 0 0 12px 2px var(--color-brand-primary-glow);
 }
-
 .group:hover .cube-orange {
   background-color: #f07b34;
-  box-shadow: 0 0 25px 5px rgba(213, 96, 28, 1), inset 0 0 8px rgba(255, 255, 255, 0.9);
+  box-shadow: 0 0 25px 5px var(--color-brand-primary), inset 0 0 8px rgba(255, 255, 255, 0.9);
   transform: scale(1.5) rotate(90deg);
 }
-
 .shine-effect {
   position: absolute;
   top: 0;
@@ -201,29 +453,10 @@
   background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.8), transparent);
   transform: skewX(-20deg);
 }
-
 .group:hover .shine-effect {
   animation: sweep 0.5s ease-out forwards;
 }
 
-@keyframes sweep {
-  0% {
-    left: -150%;
-  }
-  100% {
-    left: 150%;
-  }
-}
-
-/* Accessibility: honor user's motion preference.
- * Infinite keyframe loops are disabled; one-shot transitions (hover glow,
- * scale, modal pop) still run — users get static feedback without vertigo. */
 @media (prefers-reduced-motion: reduce) {
-  .animate-pulse-red,
-  .animate-glow-green {
-    animation: none !important;
-  }
-  .glowing-cube {
-    transition: none;
-  }
+  .glowing-cube { transition: none; }
 }
