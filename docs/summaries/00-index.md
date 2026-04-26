@@ -2,6 +2,8 @@
 
 Welcome to the **Kaizen 2.0** architecture reference. This project is an AI-powered self-healing UI test automation platform.
 
+> **New here?** Start with [`docs/CLAUDE.md`](../CLAUDE.md) for the orientation + pre-implementation protocol, then come back here for the full spec map.
+
 Use these documents to rapidly understand the components.
 All specs are modular; follow the links to learn more about specific sub-systems.
 
@@ -36,3 +38,12 @@ Full specifications live under `docs/specs/`, grouped by domain:
 - **tests-ux** — Tests dashboard feature specs (comparison mode, etc.): [tests-ux/](../specs/tests-ux/)
 - **workers** — Distributed worker architecture: [workers/](../specs/workers/)
 - **deployment** — Deployment and ops: [deployment/](../specs/deployment/)
+
+### Other reference
+
+- **Known issues** — [docs/known-issues/](../known-issues/) catalogues accepted limitations and unresolved bugs. Read before re-investigating.
+- **UI prototype** — [docs/design/UI/](../design/UI/) is the static HTML/JSX reference that defined the current visual language. Read-only; production code never imports from it.
+- **Recent specs of note**:
+  - UI: [spec-prototype-port.md](../specs/ui/spec-prototype-port.md) — current visual design + token system; [spec-design-fixes-batch.md](../specs/ui/spec-design-fixes-batch.md) — post-port polish.
+  - Identity: [spec-token-limit-enforcement.md](../specs/identity/spec-token-limit-enforcement.md) — tenant token quota enforcement at run-enqueue.
+  - Smart-brain: [spec-archetype-verdict-cooldown.md](../specs/smart-brain/spec-archetype-verdict-cooldown.md), [spec-element-resolver-ambiguous-cache-write.md](../specs/smart-brain/spec-element-resolver-ambiguous-cache-write.md), [spec-element-resolver-cache-semantic-guard.md](../specs/smart-brain/spec-element-resolver-cache-semantic-guard.md) — cache + verdict correctness fixes.

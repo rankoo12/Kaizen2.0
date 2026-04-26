@@ -1,5 +1,13 @@
 You are a collaborator on the Kaizen project. Read everything below before writing a single line of code.
 
+> **Read first:** `docs/CLAUDE.md` (orientation + pre-implementation protocol)
+> **Then:** `docs/summaries/00-index.md` (modular spec map)
+>
+> Sections below labelled "stale" describe an earlier phase of the project
+> and are kept only for historical interface / convention context. Trust
+> `docs/CLAUDE.md`, `docs/summaries/`, and `docs/specs/` over anything
+> here when they disagree.
+
 ─── PROJECT ────────────────────────────────────────────────────────────
 
 Kaizen is an AI-powered SaaS platform for self-healing UI test automation.
@@ -7,8 +15,13 @@ Users write tests in plain English. Kaizen uses an LLM to locate UI elements,
 executes tests in a real Chromium browser via Playwright, and automatically
 heals broken tests when the UI changes — without human intervention.
 
-Source of truth: docs/kaizen-spec-v1.md
-Current branch: feat/core/phase-1-execution-loop
+Source of truth (current): the modular spec tree under `docs/specs/`.
+Source of truth (legacy, retained for historical context only):
+docs/kaizen-spec-v1.md.
+
+Default branch: main. Working branches follow `type/scope/short-description`
+(see Conventions). The "Current branch" line in older versions of this file
+was a snapshot from phase 1 and is no longer accurate.
 
 ─── WORKING METHODOLOGY ────────────────────────────────────────────────
 
@@ -132,32 +145,23 @@ IObservability  — startSpan(name, attrs?) → Span
 - Shared knowledge pool (enterprise opt-in): separate 'shared' Pinecone namespace.
 - Redis keys always prefixed with tenantId.
 
-─── CURRENT STATE ───────────────────────────────────────────────────────
+─── CURRENT STATE (stale — see git log + docs/specs/ for actual state) ──
 
-Completed (committed to main, now on feat/core/phase-1-execution-loop):
-  ✅ All 8 module interfaces in src/modules/*/interfaces.ts
-  ✅ src/types/index.ts — all shared types
-  ✅ db/migrations/001_initial_schema.sql — full schema + RLS
-  ✅ docker-compose.yml — Postgres (pgvector) + Redis for local dev
-  ✅ Dockerfile (API) + Dockerfile.worker (Playwright base image)
-  ✅ package.json, tsconfig.json, jest.config.ts, eslint.config.mjs
-  ✅ scripts/migrate.ts — custom SQL migration runner
-  ✅ src/api/server.ts — Fastify stub with /health
-  ✅ src/workers/worker.ts — BullMQ stub with graceful shutdown
+The "completed / not started" lists previously here were a phase-1
+snapshot and are no longer accurate. All eight interfaces, the
+LLM gateway, billing meter, element resolver, healing engine, worker
+job, full API routes, and the multi-tenant identity layer have shipped
+since. Do **not** treat this section as a checklist.
 
-Not started (Phase 1 work on current branch):
-  ⬜ PinoObservability implementation
-  ⬜ PostgresBillingMeter implementation (stub — emit only)
-  ⬜ RuleBasedCompiler implementation
-  ⬜ DOMPrunerImpl (Pass 1 — AX tree)
-  ⬜ LLMGateway basic implementation
-  ⬜ LLMElementResolver implementation
-  ⬜ PlaywrightExecutionEngine implementation
-  ⬜ BullMQ worker job (end-to-end run orchestration)
-  ⬜ API routes: POST /runs, GET /runs/:id
-  ⬜ DB repository layer (typed Postgres query helpers)
+To learn the current state:
 
-─── PHASE 1 MILESTONE ───────────────────────────────────────────────────
+  - `git log --oneline -30` for recent work
+  - `docs/specs/` for active and shipped feature specs (grouped by domain)
+  - `docs/known-issues/` for accepted limitations
+  - `docs/summaries/` for module-level architecture summaries
+
+─── PHASE 1 MILESTONE (historical) ──────────────────────────────────────
 
 "Run 'open youtube, search for cats, press enter' from a curl command."
 One tenant hardcoded. No auth. No caching (every resolve hits LLM).
+This milestone is long-since shipped and superseded.

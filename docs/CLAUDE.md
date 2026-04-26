@@ -1,5 +1,7 @@
 # Kaizen 2.0 — Claude Code Orientation
 
+> **First read for new agents.** Start here, then jump to `docs/summaries/00-index.md` for the full spec map.
+
 ---
 
 ## Pre-Implementation Protocol
@@ -15,6 +17,7 @@ Run this before writing any code. No exceptions.
 7. **Check `package.json`** — confirm every package you will import is listed. Add missing packages via `npm install` before writing any import.
 8. **Locate the test file** — check the module's `__tests__` directory. Update or create it before declaring the task finished.
 9. **After implementation** — run `npm run typecheck` and `npm run lint` before reporting done.
+10. **Check `docs/known-issues/`** — known bugs and accepted limitations live there. Don't re-investigate something that's already documented as known.
 
 ---
 
@@ -31,8 +34,8 @@ Stack: Next.js 15 (Frontend) + Fastify (Backend) + BullMQ/Redis (Jobs) + Postgre
 
 | Directory | Role |
 |---|---|
-| `packages/web/src/app` | Next.js App Router. Pages, layouts, and the API Proxy interceptor (`/api/proxy`). |
-| `packages/web/src/components` | Atomic Design frontend components (Atoms, Molecules, Organisms). |
+| `packages/web/src/app` | Next.js App Router. Pages, layouts, and the API Proxy interceptor (`/api/proxy`). The `(app)` route group wraps all authenticated routes (`/tests/**`) in a shared `SideRail + TopBar + ShellBackground` shell. |
+| `packages/web/src/components` | Atomic Design frontend components (Atoms, Molecules, Organisms). Archived legacy components live under `<layer>/.old/` and are not imported. |
 | `packages/web/src/hooks` | React data fetching and business logic hooks decoupling state from UI. |
 | `src/api/` | Fastify API application, route handlers, and server entrypoint. |
 | `src/workers/` | BullMQ worker consuming test execution jobs. Instantiates Playwright and the Healing Engine. |
@@ -44,6 +47,10 @@ Stack: Next.js 15 (Frontend) + Fastify (Backend) + BullMQ/Redis (Jobs) + Postgre
 | `src/modules/identity/` | Strict multi-tenant authentication, user, and workspace RBAC structures. |
 | `src/db/` | Database connection pools and pg abstractions. |
 | `src/types/` | Global shared TypeScript interfaces and schemas. |
+| `src/modules/billing-meter/` | Append-only LLM token spend log via `billing_events`. Source of truth for usage / quota enforcement. |
+| `docs/specs/` | Domain-grouped specs. Every non-trivial change ships with a spec here first (SDD). |
+| `docs/known-issues/` | Documented gaps and accepted limitations. Read before re-investigating a bug. |
+| `docs/design/UI/` | Static prototype HTML + JSX used as the visual reference for the current UI design. Read-only — do not import from production code. |
 
 ---
 
@@ -64,7 +71,7 @@ Absolute prohibitions — never produce these regardless of context:
 
 - `.js` files — Use strict TypeScript (`.ts` / `.tsx`) under all circumstances.
 - Direct database calls from Next.js server components — All requests must flow through the API proxy.
-- Hardcoded CSS outside of Tailwind utility classes.
+- Hardcoded CSS outside of Tailwind utility classes. (Exception: design tokens, keyframes, and the small set of base rules in `packages/web/src/app/globals.css`.)
 - Standard `fetch` without authorization headers when communicating with the backend API.
 - Committing the `.env` file or hardcoded secrets.
 - `any` types in TypeScript without a justification comment bypassing strict TS configurations.
