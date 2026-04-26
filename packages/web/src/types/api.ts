@@ -86,6 +86,7 @@ export type StepResult = {
   createdAt: string;
   domCandidates: DomCandidate[] | null;
   llmPickedKaizenId: string | null;
+  userVerdict: 'passed' | 'failed' | null;
 };
 
 export type RunDetail = RunSummary & {

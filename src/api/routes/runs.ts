@@ -393,6 +393,145 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
   );
 
   /**
+   * PATCH /runs/:runId/steps/:stepId/candidate
+   *
+   * Overrides the LLM's chosen element with a human-selected candidate from the
+   * dom_candidates list. Purges the old selector from all cache layers and pins
+   * the new correct selector into selector_cache.
+   */
+  const CandidateBody = z.object({
+    candidateKaizenId: z.string(),
+  });
+
+  app.patch<{ Params: { runId: string; stepId: string } }>(
+    '/runs/:runId/steps/:stepId/candidate',
+    async (request, reply) => {
+      const parsed = CandidateBody.safeParse(request.body);
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'INVALID_REQUEST', details: parsed.error.issues });
+      }
+
+      const { candidateKaizenId } = parsed.data;
+      const { runId, stepId } = request.params;
+      const pool = getPool();
+
+      // 1. Fetch step_results and find the candidate
+      const { rows } = await pool.query(
+        `SELECT sr.id, sr.content_hash, sr.target_hash, sr.selector_used,
+                sr.dom_candidates, r.tenant_id, r.environment_url
+         FROM step_results sr
+         JOIN runs r ON r.id = sr.run_id
+         WHERE sr.id = $1 AND sr.run_id = $2`,
+        [stepId, runId],
+      );
+
+      if (rows.length === 0) {
+        return reply.status(404).send({ error: 'NOT_FOUND' });
+      }
+
+      const stepResult = rows[0];
+      const candidates = stepResult.dom_candidates || [];
+      const candidate = candidates.find((c: any) => c.kaizenId === candidateKaizenId);
+
+      if (!candidate) {
+        return reply.status(404).send({ error: 'CANDIDATE_NOT_FOUND' });
+      }
+
+      // 2. Run failure logic for the OLD selector (purge caches)
+      if (stepResult.target_hash && stepResult.selector_used) {
+        // Purge exact tenant match
+        await pool.query(
+          `DELETE FROM selector_cache
+           WHERE content_hash = $1 AND tenant_id = $2 AND pinned_at IS NULL`,
+          [stepResult.target_hash, stepResult.tenant_id],
+        );
+
+        // Purge shared pool match
+        await pool.query(
+          `DELETE FROM selector_cache
+           WHERE content_hash = $1 AND is_shared = true AND pinned_at IS NULL`,
+          [stepResult.target_hash],
+        );
+
+        // Purge overlapping incorrect semantic matches
+        await pool.query(
+          `DELETE FROM selector_cache
+           WHERE (tenant_id = $1 OR is_shared = true)
+             AND $2 = ANY(
+               SELECT s->>'selector'
+               FROM jsonb_array_elements(selectors::jsonb) AS s
+             )
+             AND pinned_at IS NULL`,
+          [stepResult.tenant_id, stepResult.selector_used],
+        );
+
+        // Delete compiled ast cache
+        if (stepResult.content_hash) {
+          await pool.query(
+            `DELETE FROM compiled_ast_cache WHERE content_hash = $1`,
+            [stepResult.content_hash],
+          );
+        }
+
+        // Evict redis
+        try {
+          const selPattern   = `sel:*:${stepResult.target_hash}:*`;
+          const dedupPattern = `llm:dedup:${stepResult.target_hash}:*`;
+          const keysToDelete: string[] = [];
+          for (const pattern of [selPattern, dedupPattern]) {
+            let cursor = '0';
+            do {
+              const [next, batch] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', '100');
+              cursor = next;
+              keysToDelete.push(...batch);
+            } while (cursor !== '0');
+          }
+          if (keysToDelete.length > 0) {
+            await redis.del(...keysToDelete);
+          }
+        } catch {
+          // Best-effort
+        }
+      }
+
+      // 3. Upsert the NEW selector into selector_cache
+      if (stepResult.target_hash && stepResult.environment_url) {
+        const domain = new URL(stepResult.environment_url).hostname;
+        const newSelectors = [{ type: 'aria', selector: candidate.selector }];
+        
+        await pool.query(
+          `INSERT INTO selector_cache
+             (tenant_id, content_hash, domain, selectors, pinned_at)
+           VALUES ($1, $2, $3, $4, now())
+           ON CONFLICT (tenant_id, content_hash, domain)
+           DO UPDATE SET
+             selectors = EXCLUDED.selectors,
+             pinned_at = EXCLUDED.pinned_at,
+             updated_at = now()`,
+          [
+            stepResult.tenant_id,
+            stepResult.target_hash,
+            domain,
+            JSON.stringify(newSelectors)
+          ]
+        );
+      }
+
+      // 4. Update the step_results row
+      await pool.query(
+        `UPDATE step_results 
+         SET user_verdict = 'passed', 
+             selector_used = $1, 
+             llm_picked_kaizen_id = $2 
+         WHERE id = $3`,
+        [candidate.selector, candidateKaizenId, stepId]
+      );
+
+      return reply.status(200).send({ ok: true, candidate: candidateKaizenId });
+    }
+  );
+
+  /**
    * POST /runs/:id/cancel
    *
    * Signals the worker to stop after the current step finishes.
