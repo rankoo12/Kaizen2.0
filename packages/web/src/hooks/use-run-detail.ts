@@ -36,6 +36,7 @@ export function useRunDetail(runId: string | null | undefined) {
           stepResults: (raw.stepResults || []).map((sr: any): StepResult => ({
             id: sr.id,
             stepId: sr.step_id,
+            rawText: sr.step_raw_text ?? null,
             status: sr.status,
             screenshotKey: sr.screenshot_key || null,
             durationMs: sr.duration_ms || null,
