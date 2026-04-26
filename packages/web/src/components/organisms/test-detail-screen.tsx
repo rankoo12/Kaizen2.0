@@ -63,6 +63,22 @@ export function TestDetailScreen({ caseId }: { caseId: string }) {
     }
   }, [run, activeStepId]);
 
+  // Preload all step screenshots when the run loads. Without this, switching
+  // to a step kicks off a fresh fetch + decode (~300-800ms perceived lag).
+  // We trigger the browser's HTTP cache via new Image() so subsequent <img>
+  // renders in the inspector hit cache instantly.
+  useEffect(() => {
+    if (!run?.stepResults?.length) return;
+    const seen = new Set<string>();
+    for (const sr of run.stepResults) {
+      if (sr.screenshotKey && !seen.has(sr.screenshotKey)) {
+        seen.add(sr.screenshotKey);
+        const img = new Image();
+        img.src = `/api/proxy/media?key=${sr.screenshotKey}`;
+      }
+    }
+  }, [run?.id, run?.stepResults]);
+
   useRunPoller({
     runId: activeRunId,
     onComplete: (r) => {
@@ -149,11 +165,6 @@ export function TestDetailScreen({ caseId }: { caseId: string }) {
     );
   }
 
-  const activeStep = run?.stepResults?.find((s) => s.id === activeStepId) ?? run?.stepResults?.[0] ?? null;
-  const stepText = activeStep
-    ? test.steps.find((s) => s.id === activeStep.stepId)?.rawText ?? ''
-    : '';
-
   return (
     <div className="flex-1 flex flex-col overflow-hidden">
       <TopBar
@@ -216,9 +227,11 @@ export function TestDetailScreen({ caseId }: { caseId: string }) {
           </div>
         </div>
 
-        <StepInspector
-          stepText={stepText}
-          stepResult={activeStep}
+        <StepInspectorList
+          steps={test.steps}
+          stepResults={run?.stepResults ?? []}
+          activeStepId={activeStepId}
+          onSelect={setActiveStepId}
           runId={run?.id ?? null}
           onLightbox={setLightbox}
           onVerdict={() => refetch()}
@@ -260,30 +273,20 @@ function PageHeader({
   saving: boolean;
 }) {
   return (
-    <div className="px-7 pt-5 pb-4 border-b border-border-subtle">
-      <div className="flex items-center gap-3 mb-2">
-        <button
-          onClick={onBack}
-          className="inline-flex items-center justify-center w-7 h-7 rounded-md text-text-mid hover:text-text-hi hover:bg-surface-elevated"
-          aria-label="Back to tests"
-        >
-          <ArrowLeft size={13} />
-        </button>
-        <span className="eyebrow">{test.suiteId ? '' : 'unknown suite'}</span>
-        <ChevronRight size={11} className="text-text-faint" />
-        <span className="font-mono text-[11px] text-text-low">#{test.id.slice(-6)}</span>
-        <div className="flex-1" />
-        <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-surface-sunken border border-border-subtle text-[10px] font-mono">
-          <GitBranch size={9} className="text-text-low" /> <Wip />
-        </span>
-        <span className="text-[11px] text-text-low">
-          {test.updatedAt ? `updated ${formatRelative(test.updatedAt)}` : ''}
-        </span>
-      </div>
+    <div className="px-6 pt-4 pb-3 border-b border-border-subtle">
       <div className="flex items-end justify-between gap-6">
-        <h1 className="font-display text-[28px] font-semibold tracking-tight text-text-hi leading-none">
-          {test.name}
-        </h1>
+        <div className="flex items-center gap-2.5 min-w-0">
+          <button
+            onClick={onBack}
+            className="inline-flex items-center justify-center w-6 h-6 rounded-md text-text-mid hover:text-text-hi hover:bg-surface-elevated shrink-0"
+            aria-label="Back to tests"
+          >
+            <ArrowLeft size={12} />
+          </button>
+          <h1 className="font-display text-[22px] font-semibold tracking-tight text-text-hi leading-none truncate">
+            {test.name}
+          </h1>
+        </div>
         <div className="flex gap-2">
           {editing ? (
             <>
@@ -346,12 +349,12 @@ function RunSummaryStrip({ run, fallback }: { run: RunDetail | null; fallback: R
 
   return (
     <div className="grid border-b border-border-subtle bg-surface-sunken" style={{ gridTemplateColumns: 'auto 1fr 1fr 1fr 1fr 1fr' }}>
-      <div className="flex items-center gap-3 px-5 py-3.5 border-r border-border-subtle min-w-[200px]">
-        <StatusDot status={status} size={10} />
+      <div className="flex items-center gap-2.5 px-4 py-2.5 border-r border-border-subtle min-w-[180px]">
+        <StatusDot status={status} size={8} />
         <div>
           <div className="eyebrow !text-[9px] mb-0.5">{r ? `run #${r.id.slice(-4)}` : 'no runs yet'}</div>
           <div
-            className="font-display tabular text-[18px] font-semibold leading-none capitalize"
+            className="font-display tabular text-[15px] font-semibold leading-none capitalize"
             style={{ color: statusColor(status) }}
           >
             {r ? r.status : '—'}
@@ -369,9 +372,9 @@ function RunSummaryStrip({ run, fallback }: { run: RunDetail | null; fallback: R
 
 function RunCell({ label, value, wip = false }: { label: string; value?: string | null; wip?: boolean }) {
   return (
-    <div className="px-5 py-3.5 border-r border-border-subtle last:border-r-0">
-      <div className="eyebrow !text-[9px] mb-1">{label}</div>
-      <div className="font-mono tabular text-[16px] font-medium text-text-hi">
+    <div className="px-4 py-2.5 border-r border-border-subtle last:border-r-0">
+      <div className="eyebrow !text-[9px] mb-0.5">{label}</div>
+      <div className="font-mono tabular text-[14px] font-medium text-text-hi">
         {wip ? <Wip /> : (value ?? '—')}
       </div>
     </div>
@@ -536,7 +539,7 @@ function StepTimeline({
     <div className="relative">
       <div className="absolute left-[19px] top-2 bottom-2 w-px bg-border-subtle" />
       {stepResults.map((sr, i) => {
-        const stepText = steps.find((s) => s.id === sr.stepId)?.rawText ?? '';
+        const stepText = sr.rawText ?? steps.find((s) => s.id === sr.stepId)?.rawText ?? '';
         const status = statusKind(sr.status);
         const isActive = sr.id === activeStepId;
         const intent = textIntent(stepText);
@@ -546,7 +549,7 @@ function StepTimeline({
             key={sr.id}
             onClick={() => onSelect(sr.id)}
             className={cn(
-              'grid w-full text-left rounded-lg mb-1 px-1 py-2.5 transition-colors',
+              'grid w-full text-left rounded-lg mb-1 px-1 py-2 transition-colors',
               isActive ? 'bg-surface-elevated' : 'hover:bg-surface',
             )}
             style={{ gridTemplateColumns: '40px 1fr', columnGap: 12 }}
@@ -589,7 +592,7 @@ function StepNode({ status }: { status: StatusKind }) {
   const c = stepColor(status);
   return (
     <span
-      className="w-3.5 h-3.5 rounded-full block"
+      className="w-2.5 h-2.5 rounded-full block"
       style={{
         background: status === 'pending' ? 'transparent' : c,
         border: status === 'pending' ? '1px dashed var(--color-text-faint)' : `2px solid var(--color-app-bg)`,
@@ -654,7 +657,7 @@ function GanttDetail({
         const status = statusKind(sr.status);
         const isActive = sr.id === activeStepId;
         const c = stepColor(status);
-        const stepText = steps.find((s) => s.id === sr.stepId)?.rawText ?? '';
+        const stepText = sr.rawText ?? steps.find((s) => s.id === sr.stepId)?.rawText ?? '';
         return (
           <button
             key={sr.id}
@@ -689,12 +692,12 @@ function LogsView({ steps, stepResults }: { steps: CaseDetail['steps']; stepResu
   return (
     <div className="font-mono bg-app-bg-deep border border-border-subtle rounded-lg p-4 text-[11px] leading-relaxed text-text-mid">
       {stepResults.map((sr) => {
-        const intent = textIntent(steps.find((s) => s.id === sr.stepId)?.rawText ?? '');
+        const text = sr.rawText ?? steps.find((s) => s.id === sr.stepId)?.rawText ?? '';
+        const intent = textIntent(text);
         const status = statusKind(sr.status);
         const c = stepColor(status);
         const t = String(cursor).padStart(5, '0');
         cursor += sr.durationMs ?? 0;
-        const text = steps.find((s) => s.id === sr.stepId)?.rawText ?? '';
         return (
           <div key={sr.id} className="mb-1.5">
             <span className="text-text-faint">[{t}ms]</span>{' '}
@@ -771,22 +774,137 @@ function StepsEditor({
   );
 }
 
-// ─── Step inspector (right column) ──────────────────────────────────────────
+// ─── Step inspector list (right column) ─────────────────────────────────────
+//
+// Renders every step's full block stacked vertically.
+//   - Clicking a row in the timeline scrolls this list to that step's block.
+//   - Scrolling this list (via wheel / trackpad) updates activeStepId so the
+//     timeline highlights the step that's currently in view.
+//
+// A "did user just click" ref suppresses the IntersectionObserver-driven
+// update during the smooth-scroll animation kicked off by activeStepId
+// changes — without it the smooth scroll fires intersection events that
+// fight the click and ping-pong the selection.
 
-function StepInspector({
-  stepText, stepResult, runId, onLightbox, onVerdict,
+function StepInspectorList({
+  steps, stepResults, activeStepId, onSelect, runId, onLightbox, onVerdict,
 }: {
-  stepText: string;
-  stepResult: StepResult | null;
+  steps: CaseDetail['steps'];
+  stepResults: StepResult[];
+  activeStepId: string | null;
+  onSelect: (id: string) => void;
   runId: string | null;
   onLightbox: (key: string) => void;
   onVerdict: () => void;
+}) {
+  const containerRef = useRef<HTMLDivElement>(null);
+  // Set true for ~600ms after a click so IntersectionObserver doesn't fight
+  // the smooth-scroll animation (the scroll itself triggers intersection
+  // events which would re-set activeStepId mid-flight).
+  const suppressUntilRef = useRef<number>(0);
+
+  // When activeStepId changes, scroll the matching block into view.
+  useEffect(() => {
+    if (!activeStepId) return;
+    const root = containerRef.current;
+    if (!root) return;
+    const el = root.querySelector<HTMLElement>(`[data-step-id="${activeStepId}"]`);
+    if (!el) return;
+
+    const reduce = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    suppressUntilRef.current = Date.now() + (reduce ? 0 : 600);
+    el.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'start' });
+  }, [activeStepId]);
+
+  // Set activeStepId based on which block is most-visible during scroll.
+  useEffect(() => {
+    const root = containerRef.current;
+    if (!root || stepResults.length === 0) return;
+
+    const blocks = Array.from(root.querySelectorAll<HTMLElement>('[data-step-id]'));
+    if (blocks.length === 0) return;
+
+    // Track the most-visible block. A small Map keyed by id captures the latest
+    // intersection ratio for each entry; on every callback we pick the max.
+    const ratios = new Map<string, number>();
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (Date.now() < suppressUntilRef.current) return;
+        for (const e of entries) {
+          const id = (e.target as HTMLElement).dataset.stepId;
+          if (id) ratios.set(id, e.intersectionRatio);
+        }
+        let topId: string | null = null;
+        let topRatio = 0;
+        for (const [id, ratio] of ratios) {
+          if (ratio > topRatio) { topRatio = ratio; topId = id; }
+        }
+        if (topId && topId !== activeStepId && topRatio > 0.25) {
+          onSelect(topId);
+        }
+      },
+      { root, threshold: [0, 0.25, 0.5, 0.75, 1] },
+    );
+
+    blocks.forEach((b) => observer.observe(b));
+    return () => observer.disconnect();
+  }, [stepResults, activeStepId, onSelect]);
+
+  if (stepResults.length === 0) {
+    return (
+      <div className="overflow-auto px-5 py-5 bg-app-bg">
+        <div className="eyebrow mb-2">step inspector</div>
+        <p className="text-[13px] text-text-mid">No run data yet.</p>
+      </div>
+    );
+  }
+
+  return (
+    <div ref={containerRef} className="overflow-auto px-5 py-4 bg-app-bg">
+      <div className="eyebrow mb-3 sticky top-0 bg-app-bg pb-1 z-10">step inspector</div>
+      <div className="flex flex-col">
+        {stepResults.map((sr, i) => {
+          const stepText = sr.rawText
+            ?? steps.find((s) => s.id === sr.stepId)?.rawText
+            ?? '';
+          const isActive = sr.id === activeStepId;
+          return (
+            <StepInspectorBlock
+              key={sr.id}
+              index={i}
+              stepText={stepText}
+              stepResult={sr}
+              runId={runId}
+              isActive={isActive}
+              onLightbox={onLightbox}
+              onVerdict={onVerdict}
+              onClick={() => onSelect(sr.id)}
+            />
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+
+function StepInspectorBlock({
+  index, stepText, stepResult, runId, isActive, onLightbox, onVerdict, onClick,
+}: {
+  index: number;
+  stepText: string;
+  stepResult: StepResult;
+  runId: string | null;
+  isActive: boolean;
+  onLightbox: (key: string) => void;
+  onVerdict: () => void;
+  onClick: () => void;
 }) {
   const [submitting, setSubmitting] = useState<'passed' | 'failed' | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   async function vote(v: 'passed' | 'failed') {
-    if (!runId || !stepResult) return;
+    if (!runId) return;
     setSubmitting(v);
     setErr(null);
     try {
@@ -804,23 +922,24 @@ function StepInspector({
     }
   }
 
-  if (!stepResult) {
-    return (
-      <div className="overflow-auto px-5 py-5 bg-app-bg">
-        <div className="eyebrow mb-2">step inspector</div>
-        <p className="text-[13px] text-text-mid">No step selected.</p>
-      </div>
-    );
-  }
-
   const status = statusKind(stepResult.status);
   const intent = textIntent(stepText);
 
   return (
-    <div className="overflow-auto px-5 py-5 bg-app-bg">
-      <div className="eyebrow mb-2">step inspector</div>
-      <div className="text-[14px] text-text-hi font-medium mb-1 leading-relaxed">{stepText}</div>
-      <div className="flex items-center gap-2 mb-4 flex-wrap">
+    <div
+      data-step-id={stepResult.id}
+      onClick={onClick}
+      className={cn(
+        'scroll-mt-2 rounded-lg px-3 py-3 mb-2 transition-colors cursor-pointer',
+        isActive
+          ? 'bg-surface-elevated ring-1 ring-border-accent'
+          : 'bg-transparent hover:bg-surface',
+      )}
+    >
+      <div className="flex items-center gap-2 mb-1.5">
+        <span className="font-mono tabular text-[10px] text-text-low shrink-0">
+          step {String(index + 1).padStart(2, '0')}
+        </span>
         <IntentChipMini intent={intent} />
         <span
           className="inline-flex items-center gap-1.5 rounded-full px-2 py-0.5 border font-mono text-[10px] uppercase font-semibold tracking-[0.12em]"
@@ -828,23 +947,28 @@ function StepInspector({
         >
           <StatusDot status={status} size={5} /> {stepResult.status}
         </span>
+        <div className="flex-1" />
         {stepResult.tokens > 0 && (
-          <span className="inline-flex items-center gap-1 rounded-full px-2 py-0.5 border border-brand-primary/30 bg-brand-primary/10 text-brand-primary font-mono text-[10px] tabular">
-            <Zap size={9} /> {stepResult.tokens.toLocaleString()} tokens
+          <span className="inline-flex items-center gap-1 rounded-full px-1.5 py-0.5 border border-brand-primary/30 bg-brand-primary/10 text-brand-primary font-mono text-[10px] tabular">
+            <Zap size={9} /> {stepResult.tokens.toLocaleString()}
           </span>
         )}
         {stepResult.durationMs != null && (
-          <span className="inline-flex items-center rounded-full px-2 py-0.5 border border-border-subtle bg-surface-sunken text-text-mid font-mono text-[10px] tabular">
+          <span className="font-mono text-[10px] text-text-mid tabular">
             {stepResult.durationMs}ms
           </span>
         )}
       </div>
 
-      <div className="eyebrow mb-1.5">screenshot</div>
+      <div className="text-[13px] text-text-hi font-medium mb-2 leading-relaxed">{stepText}</div>
+
       {stepResult.screenshotKey ? (
         <button
-          onClick={() => stepResult.screenshotKey && onLightbox(stepResult.screenshotKey)}
-          className="w-full mb-4 rounded-lg overflow-hidden bg-app-bg-deep border border-border-subtle hover:border-border-accent transition-colors"
+          onClick={(e) => {
+            e.stopPropagation();
+            if (stepResult.screenshotKey) onLightbox(stepResult.screenshotKey);
+          }}
+          className="w-full mb-2 rounded-lg overflow-hidden bg-app-bg-deep border border-border-subtle hover:border-border-accent transition-colors"
         >
           <img
             src={`/api/proxy/media?key=${stepResult.screenshotKey}`}
@@ -857,100 +981,89 @@ function StepInspector({
           </div>
         </button>
       ) : (
-        <div className="mb-4 rounded-lg border border-border-subtle bg-app-bg-deep py-8 grid place-items-center text-text-low">
+        <div className="mb-2 rounded-lg border border-border-subtle bg-app-bg-deep py-6 grid place-items-center text-text-low">
           <Wip label="NO SCREENSHOT" />
         </div>
       )}
 
       {status === 'healed' && (
-        <>
-          <div className="eyebrow mb-1.5 text-brand-accent">self-heal trace</div>
-          <div className="mb-4 px-3 py-2.5 rounded-md bg-brand-accent/[0.04] border border-brand-accent/20 text-[12px] text-brand-accent">
-            Selector recovered · <Wip label="DIFF WIP" />
-          </div>
-        </>
+        <div className="mb-2 px-3 py-2 rounded-md bg-brand-accent/[0.04] border border-brand-accent/20 text-[11px] text-brand-accent">
+          Selector recovered · <Wip label="DIFF WIP" />
+        </div>
       )}
 
       {status === 'failed' && stepResult.errorType && (
-        <>
-          <div className="eyebrow mb-1.5 text-danger">failure trace</div>
-          <div className="mb-4 px-3 py-2.5 rounded-md bg-danger/[0.04] border border-danger/30">
-            <div className="text-[12px] text-danger font-medium mb-1">{stepResult.errorType}</div>
-            {stepResult.failureClass && (
-              <div className="font-mono text-[11px] text-text leading-relaxed">{stepResult.failureClass}</div>
-            )}
-          </div>
-        </>
+        <div className="mb-2 px-3 py-2 rounded-md bg-danger/[0.04] border border-danger/30">
+          <div className="text-[11px] text-danger font-medium mb-0.5">{stepResult.errorType}</div>
+          {stepResult.failureClass && (
+            <div className="font-mono text-[10px] text-text leading-relaxed">{stepResult.failureClass}</div>
+          )}
+        </div>
       )}
 
-      <div className="eyebrow mb-1.5">resolution</div>
-      <div className="mb-4 px-3 py-2.5 rounded-md bg-surface-sunken border border-border-subtle">
+      <div className="mb-2 px-3 py-2 rounded-md bg-surface-sunken border border-border-subtle">
         {stepResult.selectorUsed ? (
           <div className="font-mono text-[10px] text-text-mid break-all">{stepResult.selectorUsed}</div>
         ) : (
           <Wip />
         )}
         {stepResult.resolutionSource && (
-          <div className="eyebrow !text-[9px] mt-1.5">via {stepResult.resolutionSource}</div>
+          <div className="eyebrow !text-[9px] mt-1">via {stepResult.resolutionSource}</div>
         )}
       </div>
 
-      {/* LLM candidates (preserved feature) */}
       {stepResult.domCandidates && stepResult.domCandidates.length > 0 && (
-        <>
-          <div className="eyebrow mb-1.5 text-brand-primary">llm candidates</div>
-          <div className="mb-4 flex flex-col gap-1.5">
-            {stepResult.domCandidates.map((c) => {
-              const picked = c.kaizenId === stepResult.llmPickedKaizenId;
-              return (
-                <div
-                  key={c.kaizenId}
-                  className={cn(
-                    'rounded-md px-2.5 py-2 border font-mono text-[10px] leading-relaxed',
-                    picked
-                      ? 'border-brand-primary/50 bg-brand-primary/10 text-brand-primary'
-                      : 'border-border-subtle bg-surface-sunken text-text-mid',
-                  )}
-                >
-                  <div className="flex items-start justify-between gap-2">
-                    <span>
-                      <span className="text-text-low">[{c.kaizenId}]</span>{' '}
-                      <span className={picked ? 'text-brand-primary' : 'text-text'}>{c.role}</span>
-                      {': '}
-                      <span className="text-text-hi">&quot;{c.name}&quot;</span>
+        <div className="mb-2 flex flex-col gap-1">
+          <div className="eyebrow text-brand-primary">llm candidates</div>
+          {stepResult.domCandidates.map((c) => {
+            const picked = c.kaizenId === stepResult.llmPickedKaizenId;
+            return (
+              <div
+                key={c.kaizenId}
+                className={cn(
+                  'rounded-md px-2 py-1.5 border font-mono text-[10px] leading-relaxed',
+                  picked
+                    ? 'border-brand-primary/50 bg-brand-primary/10 text-brand-primary'
+                    : 'border-border-subtle bg-surface-sunken text-text-mid',
+                )}
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <span>
+                    <span className="text-text-low">[{c.kaizenId}]</span>{' '}
+                    <span className={picked ? 'text-brand-primary' : 'text-text'}>{c.role}</span>
+                    {': '}
+                    <span className="text-text-hi">&quot;{c.name}&quot;</span>
+                  </span>
+                  {picked && (
+                    <span className="shrink-0 text-[9px] font-bold bg-brand-primary/20 text-brand-primary px-1.5 py-px rounded uppercase">
+                      picked
                     </span>
-                    {picked && (
-                      <span className="shrink-0 text-[9px] font-bold bg-brand-primary/20 text-brand-primary px-1.5 py-px rounded uppercase">
-                        picked
-                      </span>
-                    )}
-                  </div>
-                  <div className="mt-1 text-text-low truncate">{c.selector}</div>
+                  )}
                 </div>
-              );
-            })}
-          </div>
-        </>
+                <div className="mt-1 text-text-low truncate">{c.selector}</div>
+              </div>
+            );
+          })}
+        </div>
       )}
 
-      {/* Verdict buttons (preserved) */}
       <div className="grid grid-cols-2 gap-2">
         <button
-          onClick={() => vote('passed')}
+          onClick={(e) => { e.stopPropagation(); vote('passed'); }}
           disabled={!runId || !!submitting}
           className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-semibold border bg-surface-elevated text-success border-success/30 hover:bg-success/10 disabled:opacity-50"
         >
           {submitting === 'passed' ? <Loader2 size={11} className="animate-orbit" /> : <Check size={11} />} Mark pass
         </button>
         <button
-          onClick={() => vote('failed')}
+          onClick={(e) => { e.stopPropagation(); vote('failed'); }}
           disabled={!runId || !!submitting}
           className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-semibold border bg-surface-elevated text-danger border-danger/30 hover:bg-danger/10 disabled:opacity-50"
         >
           {submitting === 'failed' ? <Loader2 size={11} className="animate-orbit" /> : <X size={11} />} Mark fail
         </button>
       </div>
-      {err && <div className="mt-2 text-[11px] text-danger font-mono">{err}</div>}
+      {err && <div className="mt-1.5 text-[11px] text-danger font-mono">{err}</div>}
     </div>
   );
 }
