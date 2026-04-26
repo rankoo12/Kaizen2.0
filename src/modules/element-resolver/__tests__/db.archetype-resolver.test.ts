@@ -309,24 +309,24 @@ describe('DBArchetypeResolver', () => {
     // prime cache so the next call is the cooldown SELECT
     await resolver.match(makeCandidate({ role: 'button', name: 'Log in' }), 'click');
 
-    const set = await resolver.getCooldownArchetypes({
+    const { archetypes } = await resolver.getCooldownArchetypes({
       tenantId: 'tenant-A',
       domain: 'example.com',
       targetHash: 'th-1',
     });
-    expect(set.has('login_button')).toBe(true);
-    expect(set.has('submit_button')).toBe(true);
-    expect(set.has('email_input')).toBe(false);
+    expect(archetypes.has('login_button')).toBe(true);
+    expect(archetypes.has('submit_button')).toBe(true);
+    expect(archetypes.has('email_input')).toBe(false);
   });
 
   it('getCooldownArchetypes returns empty set when DB read fails', async () => {
     mockQuery.mockRejectedValueOnce(new Error('connection refused'));
-    const set = await resolver.getCooldownArchetypes({
+    const { archetypes } = await resolver.getCooldownArchetypes({
       tenantId: 'tenant-A',
       domain: 'example.com',
       targetHash: 'th-1',
     });
-    expect(set.size).toBe(0);
+    expect(archetypes.size).toBe(0);
     expect(obs.log).toHaveBeenCalledWith(
       'warn',
       'archetype_resolver.cooldown_read_failed',
@@ -369,12 +369,12 @@ describe('DBArchetypeResolver', () => {
       .mockResolvedValueOnce({ rows: [] });
     await resolver.match(makeCandidate({ role: 'button', name: 'Log in' }), 'click');
 
-    const setA = await resolver.getCooldownArchetypes({
+    const { archetypes: setA } = await resolver.getCooldownArchetypes({
       tenantId: 'tenant-A',
       domain: 'example.com',
       targetHash: 'th-1',
     });
-    const setB = await resolver.getCooldownArchetypes({
+    const { archetypes: setB } = await resolver.getCooldownArchetypes({
       tenantId: 'tenant-B',
       domain: 'example.com',
       targetHash: 'th-1',
