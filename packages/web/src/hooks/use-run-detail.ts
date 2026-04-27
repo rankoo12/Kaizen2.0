@@ -1,10 +1,15 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import type { RunDetail, StepResult } from '@/types/api';
 
 export function useRunDetail(runId: string | null | undefined) {
   const [data, setData] = useState<RunDetail | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
+  const [tick, setTick] = useState(0);
+
+  const refetch = useCallback(() => {
+    setTick((t) => t + 1);
+  }, []);
 
   useEffect(() => {
     if (!runId) {
@@ -36,7 +41,7 @@ export function useRunDetail(runId: string | null | undefined) {
           stepResults: (raw.stepResults || []).map((sr: any): StepResult => ({
             id: sr.id,
             stepId: sr.step_id,
-            rawText: sr.step_raw_text ?? null,
+            rawText: sr.rawText ?? sr.step_raw_text ?? null,
             status: sr.status,
             screenshotKey: sr.screenshot_key || null,
             durationMs: sr.duration_ms || null,
@@ -48,6 +53,7 @@ export function useRunDetail(runId: string | null | undefined) {
             createdAt: sr.created_at,
             domCandidates: sr.dom_candidates || null,
             llmPickedKaizenId: sr.llm_picked_kaizen_id || null,
+            userVerdict: sr.user_verdict || null,
           })),
         };
 
@@ -60,7 +66,7 @@ export function useRunDetail(runId: string | null | undefined) {
     };
 
     fetchDetail();
-  }, [runId]);
+  }, [runId, tick]);
 
-  return { data, isLoading, error };
+  return { data, isLoading, error, refetch };
 }

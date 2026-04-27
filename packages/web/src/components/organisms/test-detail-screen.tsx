@@ -54,7 +54,7 @@ export function TestDetailScreen({ caseId }: { caseId: string }) {
   }, [test]);
 
   const displayRunId = activeRunId ?? test?.recentRuns?.[0]?.id ?? null;
-  const { data: run } = useRunDetail(displayRunId);
+  const { data: run, refetch: refetchRun } = useRunDetail(displayRunId);
 
   // Auto-select the first step result when run loads
   useEffect(() => {
@@ -234,7 +234,7 @@ export function TestDetailScreen({ caseId }: { caseId: string }) {
           onSelect={setActiveStepId}
           runId={run?.id ?? null}
           onLightbox={setLightbox}
-          onVerdict={() => refetch()}
+          onVerdict={() => { refetch(); refetchRun(); }}
         />
       </div>
 
@@ -900,7 +900,7 @@ function StepInspectorBlock({
   onVerdict: () => void;
   onClick: () => void;
 }) {
-  const [submitting, setSubmitting] = useState<'passed' | 'failed' | null>(null);
+  const [submitting, setSubmitting] = useState<'passed' | 'failed' | string | null>(null);
   const [err, setErr] = useState<string | null>(null);
 
   async function vote(v: 'passed' | 'failed') {
@@ -921,6 +921,25 @@ function StepInspectorBlock({
       setSubmitting(null);
     }
   }
+
+  const selectCandidate = async (kaizenId: string) => {
+    if (!runId || submitting) return;
+    setSubmitting(kaizenId);
+    setErr(null);
+    try {
+      const res = await fetch(`/api/proxy/runs/${runId}/steps/${stepResult.id}/candidate`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ candidateKaizenId: kaizenId }),
+      });
+      if (!res.ok) throw new Error('Failed to select candidate');
+      onVerdict();
+    } catch (e: any) {
+      setErr(e.message);
+    } finally {
+      setSubmitting(null);
+    }
+  };
 
   const status = statusKind(stepResult.status);
   const intent = textIntent(stepText);
@@ -1018,13 +1037,17 @@ function StepInspectorBlock({
           {stepResult.domCandidates.map((c) => {
             const picked = c.kaizenId === stepResult.llmPickedKaizenId;
             return (
-              <div
+              <button
                 key={c.kaizenId}
+                onClick={(e) => { e.stopPropagation(); selectCandidate(c.kaizenId); }}
+                disabled={picked || !!submitting}
                 className={cn(
-                  'rounded-md px-2 py-1.5 border font-mono text-[10px] leading-relaxed',
+                  'rounded-md px-2 py-1.5 border font-mono text-[10px] leading-relaxed text-left transition-colors w-full',
                   picked
                     ? 'border-brand-primary/50 bg-brand-primary/10 text-brand-primary'
-                    : 'border-border-subtle bg-surface-sunken text-text-mid',
+                    : 'border-border-subtle bg-surface-sunken text-text-mid hover:border-text-low hover:bg-surface-elevated',
+                  submitting === c.kaizenId && 'opacity-50 cursor-not-allowed',
+                  submitting && submitting !== c.kaizenId && 'opacity-50'
                 )}
               >
                 <div className="flex items-start justify-between gap-2">
@@ -1034,14 +1057,16 @@ function StepInspectorBlock({
                     {': '}
                     <span className="text-text-hi">&quot;{c.name}&quot;</span>
                   </span>
-                  {picked && (
+                  {submitting === c.kaizenId ? (
+                    <Loader2 size={12} className="animate-orbit text-brand-primary shrink-0" />
+                  ) : picked && (
                     <span className="shrink-0 text-[9px] font-bold bg-brand-primary/20 text-brand-primary px-1.5 py-px rounded uppercase">
                       picked
                     </span>
                   )}
                 </div>
                 <div className="mt-1 text-text-low truncate">{c.selector}</div>
-              </div>
+              </button>
             );
           })}
         </div>
@@ -1050,17 +1075,27 @@ function StepInspectorBlock({
       <div className="grid grid-cols-2 gap-2">
         <button
           onClick={(e) => { e.stopPropagation(); vote('passed'); }}
-          disabled={!runId || !!submitting}
-          className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-semibold border bg-surface-elevated text-success border-success/30 hover:bg-success/10 disabled:opacity-50"
+          disabled={!runId || !!submitting || stepResult.userVerdict === 'passed'}
+          className={cn(
+            "inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-semibold border disabled:opacity-50",
+            stepResult.userVerdict === 'passed' 
+              ? "bg-success text-app-bg-deep border-success opacity-100" 
+              : "bg-surface-elevated text-success border-success/30 hover:bg-success/10"
+          )}
         >
-          {submitting === 'passed' ? <Loader2 size={11} className="animate-orbit" /> : <Check size={11} />} Mark pass
+          {submitting === 'passed' ? <Loader2 size={11} className="animate-orbit" /> : <Check size={11} />} {stepResult.userVerdict === 'passed' ? 'Marked Pass' : 'Mark pass'}
         </button>
         <button
           onClick={(e) => { e.stopPropagation(); vote('failed'); }}
-          disabled={!runId || !!submitting}
-          className="inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-semibold border bg-surface-elevated text-danger border-danger/30 hover:bg-danger/10 disabled:opacity-50"
+          disabled={!runId || !!submitting || stepResult.userVerdict === 'failed'}
+          className={cn(
+            "inline-flex items-center justify-center gap-1.5 px-2.5 py-1.5 rounded-md text-[11px] font-semibold border disabled:opacity-50",
+            stepResult.userVerdict === 'failed'
+              ? "bg-danger text-app-bg-deep border-danger opacity-100"
+              : "bg-surface-elevated text-danger border-danger/30 hover:bg-danger/10"
+          )}
         >
-          {submitting === 'failed' ? <Loader2 size={11} className="animate-orbit" /> : <X size={11} />} Mark fail
+          {submitting === 'failed' ? <Loader2 size={11} className="animate-orbit" /> : <X size={11} />} {stepResult.userVerdict === 'failed' ? 'Marked Fail' : 'Mark fail'}
         </button>
       </div>
       {err && <div className="mt-1.5 text-[11px] text-danger font-mono">{err}</div>}

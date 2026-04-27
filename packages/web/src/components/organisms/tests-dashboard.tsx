@@ -609,38 +609,47 @@ function TestHoverCard({ tc, status, x, y }: { tc: CaseSummary; status: StatusKi
     const vw = window.innerWidth;
     const vh = window.innerHeight;
 
-    // Card is anchored with translate(-50%, -100% - 12px), so its visual box is
-    // [x - rect.width/2, x + rect.width/2] horizontally and
-    // [y - rect.height - 12, y - 12] vertically.
     const halfW = rect.width / 2;
     let left = x;
     if (x - halfW < margin) left = halfW + margin;
     else if (x + halfW > vw - margin) left = vw - halfW - margin;
 
-    // Vertical: flip below the cell if there isn't room above.
-    const fitsAbove = y - rect.height - 12 >= margin;
-    let top = fitsAbove ? y : y + 12 + 22; // 22 ≈ cell height
-    if (top + rect.height > vh - margin) top = vh - rect.height - margin;
+    // y is rect.top of the cell. Cell height is ~44px in list view actually, wait,
+    // list view rows are larger than 22. Let's use an approx 40px cell height.
+    const cellH = 40;
+    
+    // Attempt to position above the cell
+    let cardTop = y - rect.height - 12;
+    let below = false;
 
-    setPos({ left, top, below: !fitsAbove });
+    if (cardTop < margin) {
+      // Doesn't fit above, flip below
+      cardTop = y + cellH + 12;
+      below = true;
+      
+      // If it also doesn't fit below, just clamp it to the bottom
+      if (cardTop + rect.height > vh - margin) {
+        cardTop = vh - rect.height - margin;
+      }
+    }
+
+    setPos({ left, top: cardTop, below });
   }, [x, y]);
-
-  const transform = pos.below
-    ? 'translate(-50%, 0)'
-    : 'translate(-50%, calc(-100% - 12px))';
 
   return (
     <div
       ref={cardRef}
       className="animate-modal-pop pointer-events-none fixed z-50 w-[320px] rounded-xl border border-border-strong bg-surface-elevated/95 backdrop-blur-md p-4 shadow-2xl"
-      style={{ left: pos.left, top: pos.top, transform }}
+      style={{ left: pos.left, top: pos.top, transform: 'translate(-50%, 0)' }}
     >
-      <div className="flex items-start justify-between mb-2.5">
-        <div className="flex-1 pr-2">
+      <div className="flex items-start justify-between gap-3 mb-2.5">
+        <div className="flex-1 min-w-0">
           <div className="eyebrow !text-[9px] mb-1">#{tc.id.slice(-6)}</div>
-          <div className="text-[13px] font-medium text-text-hi leading-tight">{tc.name}</div>
+          <div className="text-[13px] font-medium text-text-hi leading-tight truncate">{tc.name}</div>
         </div>
-        <StatusChip status={status} />
+        <div className="mt-0.5 shrink-0">
+          <StatusChip status={status} />
+        </div>
       </div>
 
       <div className="grid grid-cols-2 gap-2 mb-2.5">
@@ -651,13 +660,13 @@ function TestHoverCard({ tc, status, x, y }: { tc: CaseSummary; status: StatusKi
       <div className="eyebrow !text-[9px] mb-1.5">last 12 runs</div>
       <div className="h-[18px]"><Wip /></div>
 
-      <div className="mt-3 pt-2.5 border-t border-border-subtle flex justify-between text-[11px]">
-        <span className="text-text-low">
+      <div className="mt-3 pt-2.5 border-t border-border-subtle flex justify-between gap-3 text-[11px]">
+        <span className="text-text-low shrink-0">
           {tc.lastRun?.completedAt
             ? new Date(tc.lastRun.completedAt).toLocaleTimeString()
             : 'Never run'}
         </span>
-        <span className="font-mono text-text-mid">{tc.baseUrl}</span>
+        <span className="font-mono text-text-mid truncate">{tc.baseUrl}</span>
       </div>
     </div>
   );
