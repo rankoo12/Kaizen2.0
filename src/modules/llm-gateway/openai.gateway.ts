@@ -57,6 +57,25 @@ function scoreAndRankCandidates(candidates: CandidateNode[], target: string): Ca
     .map(({ c }) => c);
 }
 
+/**
+ * Picks the most-stable identifier attribute available on a candidate so the
+ * LLM can disambiguate elements whose accessible name is empty. Tried in
+ * priority order: data-qa, data-testid, data-test, id, name. Returns null if
+ * none are present.
+ *
+ * Spec: docs/specs/dom-pruner/spec-empty-name-disambiguation.md
+ */
+export function pickIdentifierAttribute(
+  attributes: Record<string, string>,
+): { key: string; value: string } | null {
+  const order = ['data-qa', 'data-testid', 'data-test', 'id', 'name'] as const;
+  for (const key of order) {
+    const value = attributes[key];
+    if (value) return { key, value };
+  }
+  return null;
+}
+
 export class OpenAIGateway implements ILLMGateway {
   private openai: OpenAI;
 
@@ -181,6 +200,17 @@ Return only valid JSON.`,
           const displayName = c.name || c.textContent || c.attributes['placeholder'] || '';
           const isAmbiguous = (nameCounts.get(displayName.toLowerCase().trim()) ?? 0) > 1;
           const contextSuffix = isAmbiguous && c.parentContext ? `  (in: "${c.parentContext}")` : '';
+          if (!displayName) {
+            // No accessible name and no inner text — fall through to identifier
+            // attributes so the LLM can still disambiguate. Without this, every
+            // empty-name candidate renders as `""` and the LLM has nothing to
+            // pick on. See docs/specs/dom-pruner/spec-empty-name-disambiguation.md.
+            const attrHint = pickIdentifierAttribute(c.attributes);
+            if (attrHint) {
+              return `[${c.kaizenId}] ${c.role}  (${attrHint.key}: "${attrHint.value}")${contextSuffix}`;
+            }
+            this.observability.increment('llm.candidate_empty_name');
+          }
           return `[${c.kaizenId}] ${c.role}: "${displayName}"${contextSuffix}`;
         })
         .join('\n');
