@@ -1,4 +1,4 @@
-import { OpenAIGateway } from '../openai.gateway';
+import { OpenAIGateway, pickIdentifierAttribute } from '../openai.gateway';
 import type { IBillingMeter } from '../../billing-meter/interfaces';
 import type { IObservability } from '../../observability/interfaces';
 
@@ -139,5 +139,93 @@ describe('OpenAIGateway', () => {
     mockCreateEmbedding.mockRejectedValueOnce(new Error('embedding failed'));
     await expect(gateway.generateEmbedding('text')).rejects.toThrow('embedding failed');
     expect(mockObservability.log).toHaveBeenCalledWith('error', 'llm.generateEmbedding_failed', expect.any(Object));
+  });
+
+  // ── Empty-name disambiguation regression coverage ──────────────────────────
+  // Spec: docs/specs/dom-pruner/spec-empty-name-disambiguation.md
+  describe('resolveElement prompt builder — empty-name disambiguation', () => {
+    function makeCandidate(overrides: Partial<{
+      kaizenId: string; role: string; name: string; textContent: string;
+      attributes: Record<string, string>;
+    }> = {}) {
+      return {
+        kaizenId: overrides.kaizenId ?? 'kz-1',
+        role: overrides.role ?? 'textbox',
+        name: overrides.name ?? '',
+        cssSelector: '',
+        xpath: '',
+        attributes: overrides.attributes ?? {},
+        textContent: overrides.textContent ?? '',
+        isVisible: true,
+        similarityScore: 1,
+      };
+    }
+
+    function captureUserPrompt() {
+      const call = mockCreateCompletion.mock.calls.at(-1);
+      const messages = call?.[0]?.messages ?? [];
+      return messages.find((m: any) => m.role === 'user')?.content ?? '';
+    }
+
+    it('renders identifier-attr clause when accessible name is empty', async () => {
+      mockCreateCompletion.mockResolvedValueOnce({
+        choices: [{ message: { content: JSON.stringify({ kaizenId: 'kz-28' }) } }],
+        usage: { total_tokens: 10, prompt_tokens: 8, completion_tokens: 2 },
+      });
+
+      const candidates = [
+        makeCandidate({ kaizenId: 'kz-27', name: 'City * Zipcode *' }),
+        makeCandidate({ kaizenId: 'kz-28', name: '', attributes: { id: 'zipcode', name: 'zipcode', 'data-qa': 'zipcode' } }),
+      ];
+      const step = { action: 'type', targetDescription: 'zipcode', rawText: 'type 12345 in zipcode', targetHash: 'h1' } as any;
+
+      await gateway.resolveElement(step, candidates as any, 'tenant-1');
+
+      const userPrompt = captureUserPrompt();
+      expect(userPrompt).toContain('[kz-28] textbox  (data-qa: "zipcode")');
+      // Non-empty candidate stays in the legacy `: "name"` shape.
+      expect(userPrompt).toContain('[kz-27] textbox: "City * Zipcode *"');
+    });
+
+    it('falls back to "" only when no identifier attributes are present', async () => {
+      mockCreateCompletion.mockResolvedValueOnce({
+        choices: [{ message: { content: JSON.stringify({ kaizenId: 'kz-9' }) } }],
+        usage: { total_tokens: 10, prompt_tokens: 8, completion_tokens: 2 },
+      });
+
+      const candidates = [
+        makeCandidate({ kaizenId: 'kz-9', name: '', attributes: { class: 'pretty' } }),
+      ];
+      const step = { action: 'click', targetDescription: 'icon', rawText: 'click the icon', targetHash: 'h2' } as any;
+
+      await gateway.resolveElement(step, candidates as any, 'tenant-1');
+
+      expect(captureUserPrompt()).toContain('[kz-9] textbox: ""');
+      expect(mockObservability.increment).toHaveBeenCalledWith('llm.candidate_empty_name');
+    });
+  });
+
+  describe('pickIdentifierAttribute', () => {
+    it('returns null when no identifier attribute is present', () => {
+      expect(pickIdentifierAttribute({ class: 'foo', placeholder: 'bar' })).toBeNull();
+    });
+
+    it('prefers data-qa over data-testid, data-test, id, name', () => {
+      expect(pickIdentifierAttribute({
+        'data-qa': 'q', 'data-testid': 't', 'data-test': 'd', id: 'i', name: 'n',
+      })).toEqual({ key: 'data-qa', value: 'q' });
+    });
+
+    it('falls through priority chain when higher-priority keys are absent', () => {
+      expect(pickIdentifierAttribute({ id: 'foo', name: 'bar' }))
+        .toEqual({ key: 'id', value: 'foo' });
+      expect(pickIdentifierAttribute({ name: 'bar' }))
+        .toEqual({ key: 'name', value: 'bar' });
+    });
+
+    it('skips keys whose value is the empty string', () => {
+      expect(pickIdentifierAttribute({ 'data-qa': '', id: 'real-id' }))
+        .toEqual({ key: 'id', value: 'real-id' });
+    });
   });
 });

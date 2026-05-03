@@ -117,13 +117,27 @@ export class PlaywrightDOMPruner implements IDOMPruner {
         }
 
         if (!accessibleName) {
-          // Check for wrapping label
+          // Check for wrapping label.
+          // Guard: if the wrapping label contains MORE than one form control,
+          // its visible text is shared between siblings and would produce a
+          // misleading merged accessible name (e.g. two inputs both named
+          // "City * Zipcode *"). Skip the assignment and let the input fall
+          // through to its identifier attributes — the LLM gateway will
+          // surface those when displayName is empty.
+          // Spec: docs/specs/dom-pruner/spec-empty-name-disambiguation.md
           const wrappingLabel = el.closest('label');
           if (wrappingLabel) {
-            // Clone to remove the input text (the input itself has no text)
-            const clone = wrappingLabel.cloneNode(true) as HTMLElement;
-            clone.querySelectorAll('input, textarea, select').forEach((n) => n.remove());
-            accessibleName = (clone.textContent || '').trim().replace(/\s+/g, ' ');
+            const wrappedControls = wrappingLabel.querySelectorAll('input, textarea, select');
+            if (wrappedControls.length <= 1) {
+              const clone = wrappingLabel.cloneNode(true) as HTMLElement;
+              clone.querySelectorAll('input, textarea, select').forEach((n) => n.remove());
+              accessibleName = (clone.textContent || '').trim().replace(/\s+/g, ' ');
+            } else {
+              // Mark on the element so the Node-side observability can detect
+              // that this candidate intentionally has no accessible name due
+              // to a multi-input wrapping label, not because of a bug.
+              el.setAttribute('data-kaizen-wrapping-label-skipped', String(wrappedControls.length));
+            }
           }
         }
 
