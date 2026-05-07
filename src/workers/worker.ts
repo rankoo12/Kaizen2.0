@@ -129,6 +129,11 @@ async function isCancelled(runId: string): Promise<boolean> {
 
 async function processRun(payload: RunJobPayload): Promise<void> {
   const { runId, tenantId, compiledSteps, baseUrl } = payload;
+  // stepIds[i] back-references compiledSteps[i] to its test_steps row id.
+  // Optional in the payload for backwards-compat with pre-spec queue jobs;
+  // when absent, the worker still runs but writes NULL step_ids — matching
+  // legacy behaviour. Spec: docs/specs/workers/spec-live-run-updates.md §5.1.
+  const stepIds: (string | null)[] = payload.stepIds ?? [];
   const span = obs.startSpan('worker.processRun', { runId, tenantId });
 
   await markRunRunning(runId);
@@ -148,9 +153,9 @@ async function processRun(payload: RunJobPayload): Promise<void> {
     loopResult = await runStepLoop(runId, compiledSteps, {
       isCancelled,
       executeStep: (step, stepIndex, previousAfterPng) =>
-        executeStep(step, page, tenantId, runId, domain, stepIndex, previousAfterPng),
+        executeStep(step, page, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null),
       recordSkippedSteps: (steps, startIndex, reason) =>
-        recordSkippedSteps(tenantId, runId, steps, startIndex, reason),
+        recordSkippedSteps(tenantId, runId, steps, startIndex, reason, stepIds),
       onStepFailed: (stepIndex, step) => {
         logger.warn({ event: 'step_failed', runId, action: step.action, rawText: step.rawText });
         // Stop-on-fail observability — fired every time the loop bails on
@@ -198,16 +203,21 @@ async function insertStepResult(
   tokensUsed: number,
   archetypeName: string | null = null,
   errorType: string | null = null,
+  stepId: string | null = null,
 ): Promise<string | null> {
   try {
+    // step_id back-references the test_steps row this result came from. Lets
+    // the runs API LEFT JOIN test_steps and surface the original step text in
+    // the timeline. Nullable for backwards-compat with pre-spec queue jobs.
+    // Spec: docs/specs/workers/spec-live-run-updates.md §5.1.3
     const { rows } = await getPool().query<{ id: string }>(
       `INSERT INTO step_results
-         (tenant_id, run_id, content_hash, target_hash, status, selector_used,
+         (tenant_id, run_id, step_id, content_hash, target_hash, status, selector_used,
           screenshot_key, duration_ms, resolution_source, similarity_score,
           dom_candidates, llm_picked_kaizen_id, tokens_used, archetype_name, error_type)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
        RETURNING id`,
-      [tenantId, runId, step.contentHash, step.targetHash, status, selectorUsed,
+      [tenantId, runId, stepId, step.contentHash, step.targetHash, status, selectorUsed,
        screenshotKey, durationMs, resolutionSource, similarityScore,
        domCandidates ? JSON.stringify(domCandidates) : null,
        llmPickedKaizenId, tokensUsed, archetypeName, errorType],
@@ -231,6 +241,7 @@ async function recordSkippedSteps(
   compiledSteps: StepAST[],
   startIndex: number,
   reason: 'prior_step_failed',
+  stepIds: (string | null)[] = [],
 ): Promise<void> {
   for (let i = startIndex; i < compiledSteps.length; i++) {
     await insertStepResult(
@@ -246,6 +257,7 @@ async function recordSkippedSteps(
       0,       // tokensUsed
       null,    // archetypeName
       reason,  // errorType — carries the skip reason
+      stepIds[i] ?? null,  // stepId — back-reference to test_steps for timeline display
     ).catch((e: any) => obs.log('warn', 'worker.skip_record_failed', { error: e.message, stepIndex: i }));
   }
 }
@@ -278,6 +290,7 @@ async function executeStep(
   domain: string,
   stepIndex: number,
   previousAfterPng?: Buffer | null,
+  stepId: string | null = null,
 ): Promise<{ status: 'passed' | 'failed'; healed: boolean; afterPng: Buffer | null }> {
   const resolutionContext = { tenantId, domain, page, pageUrl: page.url() };
   const stepStart = Date.now();
@@ -310,6 +323,7 @@ async function executeStep(
       Date.now() - stepStart, null, null, null, null, 0,
       null,
       challenge.type,
+      stepId,
     );
     return { status: 'failed', healed: false, afterPng };
   }
@@ -356,7 +370,7 @@ async function executeStep(
       }
     }
 
-    void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart, selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null, selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0, selectorSet.archetypeName ?? null);
+    void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart, selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null, selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0, selectorSet.archetypeName ?? null, null, stepId);
     return { status: 'passed', healed: false, afterPng };
   }
 
@@ -379,6 +393,8 @@ async function executeStep(
     selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null,
     selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0,
     selectorSet.archetypeName ?? null,
+    null,    // errorType
+    stepId,
   );
 
   const classifiedFailure: ClassifiedFailure = {

@@ -531,8 +531,12 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       );
       if (caseRows.length === 0) return null;
 
-      const { rows: stepRows } = await client.query<{ raw_text: string }>(
-        `SELECT ts.raw_text
+      // Select ts.id alongside raw_text so the worker can populate
+      // step_results.step_id — without it, runs.ts can't LEFT JOIN to recover
+      // the step's natural-language text for the timeline display.
+      // Spec: docs/specs/workers/spec-live-run-updates.md §5.1.1
+      const { rows: stepRows } = await client.query<{ id: string; raw_text: string }>(
+        `SELECT ts.id, ts.raw_text
          FROM test_case_steps tcs
          JOIN test_steps ts ON ts.id = tcs.step_id
          WHERE tcs.case_id = $1 AND tcs.is_active = true
@@ -540,7 +544,11 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
         [caseId],
       );
 
-      return { ...caseRows[0], steps: stepRows.map((r) => r.raw_text) };
+      return {
+        ...caseRows[0],
+        steps:   stepRows.map((r) => r.raw_text),
+        stepIds: stepRows.map((r) => r.id),
+      };
     });
 
     if (!caseData) return reply.status(404).send({ error: 'CASE_NOT_FOUND' });
@@ -581,7 +589,16 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
     );
     const runId = rows[0].id;
 
-    await queue.add('run', { runId, tenantId, compiledSteps, baseUrl });
+    await queue.add('run', {
+      runId,
+      tenantId,
+      compiledSteps,
+      // Parallel array: stepIds[i] is the test_steps.id corresponding to
+      // compiledSteps[i]. The worker writes step_results.step_id from this so
+      // the runs API can LEFT JOIN test_steps and surface the original text.
+      stepIds: caseData.stepIds,
+      baseUrl,
+    });
 
     return reply.status(202).send({ runId, status: 'queued' });
   });
