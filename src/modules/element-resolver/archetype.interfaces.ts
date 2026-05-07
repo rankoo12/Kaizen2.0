@@ -57,4 +57,16 @@ export interface IArchetypeResolver {
     archetypeName: string,
     selectorUsed: string,
   ): Promise<void>;
+
+  /**
+   * Read-only consult: returns the top selector currently stored in the
+   * tenant-scoped selector_cache for this (tenant, domain, target_hash), or
+   * null if no row exists / cache read failed. The archetype resolver uses
+   * this to detect when its archetype-derived match disagrees with a
+   * cached human-verified or LLM-resolved selector — in which case it
+   * returns MISS and lets the chain fall through to the cache layer.
+   *
+   * Spec: docs/specs/smart-brain/spec-archetype-cooldown-permanence.md §4.3.
+   */
+  peekCachedTopSelector(key: ArchetypeFailureKey): Promise<string | null>;
 }
