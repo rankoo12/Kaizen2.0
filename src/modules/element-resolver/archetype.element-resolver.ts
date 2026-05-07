@@ -19,8 +19,13 @@ import type { IDOMPruner } from '../dom-pruner/interfaces';
 import type { IObservability } from '../observability/interfaces';
 import type { IArchetypeResolver } from './archetype.interfaces';
 
+interface PlaywrightLocatorLike {
+  count(): Promise<number>;
+}
+
 interface PlaywrightPageLike {
   $(selector: string): Promise<unknown>;
+  locator(selector: string): PlaywrightLocatorLike;
 }
 
 const MISS: SelectorSet = {
@@ -174,11 +179,24 @@ export class ArchetypeElementResolver implements IElementResolver {
         continue;
       }
 
-      // Validate the ARIA selector against the live DOM before committing
+      // Validate the ARIA selector against the live DOM before committing.
+      //
+      // Uniqueness check: count() must equal exactly 1. A selector that hits
+      // 0 elements is missing on the page; a selector that hits >1 is
+      // ambiguous (e.g. role=textbox[name="Email Address"] on a page with
+      // both a login email and a signup email input). In both cases we let
+      // the chain fall through — cache may have a more specific selector,
+      // and the LLM can disambiguate via parent context that the keyword
+      // ranker can't see.
+      //
+      // Spec: docs/specs/smart-brain/spec-archetype-cooldown-permanence.md §4.2.
       try {
-        const handle = await page.$(match.selector);
-        if (handle === null) {
-          this.observability.increment('resolver.archetype_dom_miss', { archetype: match.archetypeName });
+        const count = await page.locator(match.selector).count();
+        if (count !== 1) {
+          this.observability.increment('resolver.archetype_dom_miss', {
+            archetype: match.archetypeName,
+            reason: count === 0 ? 'no_match' : 'ambiguous',
+          });
           continue; // try next candidate
         }
       } catch (e: any) {
@@ -188,6 +206,33 @@ export class ArchetypeElementResolver implements IElementResolver {
           error: e.message,
         });
         continue; // try next candidate
+      }
+
+      // Cache peek (defense in depth): if selector_cache holds a different
+      // selector for this same target than the one archetype just produced,
+      // defer to the cache layer. Cache may have a human-verified pin or an
+      // LLM-resolved row that's more specific than what archetype matched.
+      // The chain has [Archetype, Cached, LLM] — without this peek, archetype
+      // always wins on first match and the cache row is dead weight.
+      //
+      // Spec: docs/specs/smart-brain/spec-archetype-cooldown-permanence.md §4.3.
+      try {
+        const cachedTop = await this.archetypeResolver.peekCachedTopSelector({
+          tenantId: context.tenantId,
+          domain: context.domain,
+          targetHash: step.targetHash,
+        });
+        if (cachedTop && cachedTop !== match.selector) {
+          this.observability.increment('archetype_resolver.deferred_to_cache', {
+            archetype: match.archetypeName,
+          });
+          return MISS;
+        }
+      } catch (e: any) {
+        // Peek is best-effort. A failure here means we proceed with archetype.
+        this.observability.log('warn', 'archetype_resolver.cache_peek_threw', {
+          error: e.message,
+        });
       }
 
       this.observability.increment('resolver.cache_hit', { source: 'archetype' });

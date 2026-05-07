@@ -203,14 +203,19 @@ export class DBArchetypeResolver implements IArchetypeResolver {
 
   async getCooldownArchetypes(key: ArchetypeFailureKey): Promise<{ archetypes: Set<string>; selectors: Set<string> }> {
     try {
+      // Spec: docs/specs/smart-brain/spec-archetype-cooldown-permanence.md §4.1
+      //
+      // Rows live forever when expires_at IS NULL (user verdict=fail =
+      // ground truth) and expire on schedule when expires_at is set
+      // (worker-side / non-user failures keep the rolling 24h auto-rehab).
       const { rows } = await getPool().query<{ archetype_name: string; selector_used: string }>(
         `SELECT archetype_name, selector_used
            FROM archetype_failures
           WHERE tenant_id = $1
             AND domain = $2
             AND target_hash = $3
-            AND created_at > now() - ($4 || ' hours')::interval`,
-        [key.tenantId, key.domain, key.targetHash, String(ARCHETYPE_FAILURE_COOLDOWN_HOURS)],
+            AND (expires_at IS NULL OR expires_at > now())`,
+        [key.tenantId, key.domain, key.targetHash],
       );
       return {
         archetypes: new Set(rows.map((r) => r.archetype_name)),
@@ -224,19 +229,59 @@ export class DBArchetypeResolver implements IArchetypeResolver {
     }
   }
 
+  async peekCachedTopSelector(key: ArchetypeFailureKey): Promise<string | null> {
+    try {
+      // Mirror cached.element-resolver.ts::fetchByHash visibility rules:
+      // pinned rows always wins, otherwise require non-trivial confidence.
+      const { rows } = await getPool().query<{ selectors: Array<{ selector: string }> }>(
+        `SELECT selectors
+           FROM selector_cache
+          WHERE content_hash = $1
+            AND domain = $2
+            AND tenant_id = $3
+            AND (pinned_at IS NOT NULL OR confidence_score > 0.4)
+          ORDER BY pinned_at DESC NULLS LAST
+          LIMIT 1`,
+        [key.targetHash, key.domain, key.tenantId],
+      );
+      if (rows.length === 0) return null;
+      const top = rows[0].selectors?.[0]?.selector ?? null;
+      return top;
+    } catch (e: any) {
+      this.observability.log('warn', 'archetype_resolver.cache_peek_failed', {
+        error: e.message,
+      });
+      return null;
+    }
+  }
+
   async recordFailure(
     key: ArchetypeFailureKey,
     archetypeName: string,
     selectorUsed: string,
   ): Promise<void> {
     try {
+      // Worker-side / non-user failures keep the 24h rolling auto-rehab.
+      // The verdict route writes expires_at = NULL for user-marked-fail
+      // (= permanent block, ground truth).
+      // Spec: docs/specs/smart-brain/spec-archetype-cooldown-permanence.md §4.1
       await getPool().query(
         `INSERT INTO archetype_failures
-           (tenant_id, domain, target_hash, archetype_name, selector_used, created_at)
-         VALUES ($1, $2, $3, $4, $5, now())
+           (tenant_id, domain, target_hash, archetype_name, selector_used, created_at, expires_at)
+         VALUES ($1, $2, $3, $4, $5, now(), now() + ($6 || ' hours')::interval)
          ON CONFLICT (tenant_id, domain, target_hash, archetype_name)
-         DO UPDATE SET selector_used = EXCLUDED.selector_used, created_at = now()`,
-        [key.tenantId, key.domain, key.targetHash, archetypeName, selectorUsed],
+         DO UPDATE SET
+           selector_used = EXCLUDED.selector_used,
+           created_at    = now(),
+           -- never downgrade a permanent (NULL) block to a rolling expiry.
+           expires_at    = CASE
+             WHEN archetype_failures.expires_at IS NULL THEN NULL
+             ELSE EXCLUDED.expires_at
+           END`,
+        [
+          key.tenantId, key.domain, key.targetHash, archetypeName, selectorUsed,
+          String(ARCHETYPE_FAILURE_COOLDOWN_HOURS),
+        ],
       );
       this.observability.increment('archetype_resolver.record_failure');
     } catch (e: any) {
