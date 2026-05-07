@@ -38,7 +38,7 @@ Stack: Next.js 15 (Frontend) + Fastify (Backend) + BullMQ/Redis (Jobs) + Postgre
 | `packages/web/src/components` | Atomic Design frontend components (Atoms, Molecules, Organisms). Archived legacy components live under `<layer>/.old/` and are not imported. |
 | `packages/web/src/hooks` | React data fetching and business logic hooks decoupling state from UI. |
 | `src/api/` | Fastify API application, route handlers, and server entrypoint. |
-| `src/workers/` | BullMQ worker consuming test execution jobs. Instantiates Playwright and the Healing Engine. |
+| `src/workers/` | BullMQ worker consuming test execution jobs. Instantiates Playwright and the Healing Engine. Receives a `RunJobPayload` whose `stepIds[i]` is parallel to `compiledSteps[i]` and gets written to `step_results.step_id` so the runs API can recover the step's natural-language text. |
 | `src/modules/test-compiler/` | Compiles English to JSON ASTs using L1/L2 caches and LLM fallbacks. |
 | `src/modules/execution-engine/` | Playwright automation wrappers interacting with the browser based on AST outputs. |
 | `src/modules/healing-engine/` | Chain of Responsibility failure recovery matrix for broken selectors. |

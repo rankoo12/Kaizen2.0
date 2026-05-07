@@ -328,7 +328,7 @@ function PageHeader({
                 style={{ boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.15)' }}
               >
                 {running ? <Loader2 size={11} className="animate-orbit" /> : <Play size={11} />}
-                Run again
+                Run
               </button>
             </>
           )}
