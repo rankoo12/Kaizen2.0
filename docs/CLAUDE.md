@@ -42,7 +42,7 @@ Stack: Next.js 15 (Frontend) + Fastify (Backend) + BullMQ/Redis (Jobs) + Postgre
 | `src/modules/test-compiler/` | Compiles English to JSON ASTs using L1/L2 caches and LLM fallbacks. |
 | `src/modules/execution-engine/` | Playwright automation wrappers interacting with the browser based on AST outputs. |
 | `src/modules/healing-engine/` | Chain of Responsibility failure recovery matrix for broken selectors. |
-| `src/modules/element-resolver/` | Maps natural language targets into concrete, ranked robust DOM selectors. |
+| `src/modules/element-resolver/` | Maps natural language targets into concrete, ranked robust DOM selectors. Composite chain: `[ArchetypeElementResolver (L0), CachedElementResolver (L1–L4 = Redis + Postgres exact + pgvector tenant + pgvector shared), LLMElementResolver (L5)]`. Archetype runs first but consults `selector_cache` via a peek and defers when cache disagrees. User verdict=fail writes a permanent block (`archetype_failures.expires_at = NULL`); worker-side failures use a 24h rolling expiry. |
 | `src/modules/llm-gateway/` | Abstraction layers over OpenAI/Anthropic APIs, handling token billing via `PostgresBillingMeter`. |
 | `src/modules/identity/` | Strict multi-tenant authentication, user, and workspace RBAC structures. |
 | `src/db/` | Database connection pools and pg abstractions. |
