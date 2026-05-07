@@ -356,21 +356,26 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
             // Best-effort — Postgres rows are already gone; Redis TTL will expire naturally.
           }
 
-          // 5. Archetype cooldown: if the step was resolved at L0, record a row
-          //    in archetype_failures so the resolver skips this archetype for
-          //    the same (tenant, domain, target_hash) until the 24h window elapses.
-          //    This closes the cross-process gap — the resolver instance lives in
-          //    the worker, the verdict arrives at the API, and without this write
-          //    user "fail" clicks on L0 hits had no effect.
+          // 5. Archetype cooldown: if the step was resolved at L0, record a
+          //    PERMANENT row in archetype_failures (expires_at = NULL) so the
+          //    resolver skips this archetype + selector for the same
+          //    (tenant, domain, target_hash) forever. A user verdict=fail is
+          //    treated as ground truth — unlike the worker-side recordFailure
+          //    path, which keeps the 24h rolling auto-rehab.
+          //
+          //    Spec: docs/specs/smart-brain/spec-archetype-cooldown-permanence.md §4.1.
           if (stepResult.archetype_name && stepResult.selector_used && stepResult.environment_url) {
             try {
               const cooldownDomain = new URL(stepResult.environment_url).hostname;
               await pool.query(
                 `INSERT INTO archetype_failures
-                   (tenant_id, domain, target_hash, archetype_name, selector_used)
-                 VALUES ($1, $2, $3, $4, $5)
+                   (tenant_id, domain, target_hash, archetype_name, selector_used, expires_at)
+                 VALUES ($1, $2, $3, $4, $5, NULL)
                  ON CONFLICT (tenant_id, domain, target_hash, archetype_name)
-                 DO UPDATE SET selector_used = EXCLUDED.selector_used, created_at = now()`,
+                 DO UPDATE SET
+                   selector_used = EXCLUDED.selector_used,
+                   created_at    = now(),
+                   expires_at    = NULL`, // upgrade rolling cooldown to permanent
                 [
                   stepResult.tenant_id,
                   cooldownDomain,
