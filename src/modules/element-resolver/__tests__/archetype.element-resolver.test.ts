@@ -22,10 +22,21 @@ const makeStep = (overrides: Partial<StepAST> = {}): StepAST => ({
   ...overrides,
 });
 
+/**
+ * Builds a minimal Playwright page-like mock that returns a fixed locator
+ * count for every selector. Mirrors the runtime archetype resolver: it only
+ * calls `page.locator(selector).count()` for live-DOM uniqueness.
+ */
+const makePageMock = (locatorCount: number = 1): { locator: jest.Mock } => ({
+  locator: jest.fn().mockReturnValue({
+    count: jest.fn().mockResolvedValue(locatorCount),
+  }),
+});
+
 const makeContext = (pageMock?: object): ResolutionContext => ({
   tenantId: '00000000-0000-0000-0000-000000000001',
   domain: 'example.com',
-  page: pageMock ?? { $: jest.fn().mockResolvedValue({}) },
+  page: pageMock ?? makePageMock(1),
 });
 
 const makeCandidate = (overrides: Partial<CandidateNode> = {}): CandidateNode => ({
@@ -59,6 +70,7 @@ describe('ArchetypeElementResolver', () => {
       match: jest.fn().mockResolvedValue(makeMatch()),
       getCooldownArchetypes: jest.fn().mockResolvedValue({ archetypes: new Set(), selectors: new Set() }),
       recordFailure: jest.fn().mockResolvedValue(undefined),
+      peekCachedTopSelector: jest.fn().mockResolvedValue(null),
     };
     obs = makeObservability();
     resolver = new ArchetypeElementResolver(domPruner, archetypeResolver, obs);
@@ -68,7 +80,7 @@ describe('ArchetypeElementResolver', () => {
 
   // 1. Returns SelectorSet with resolutionSource: 'archetype' on full hit
   it('returns SelectorSet with resolutionSource "archetype" when archetype matches and DOM is valid', async () => {
-    const pageMock = { $: jest.fn().mockResolvedValue({}) }; // non-null → element found
+    const pageMock = makePageMock(1); // non-null → element found
     const result = await resolver.resolve(makeStep(), makeContext(pageMock));
 
     expect(result.selectors).toHaveLength(1);
@@ -82,12 +94,15 @@ describe('ArchetypeElementResolver', () => {
 
   // 2. Returns empty SelectorSet when archetype matches but selector not in DOM
   it('returns empty SelectorSet when archetype matches but selector not found in DOM', async () => {
-    const pageMock = { $: jest.fn().mockResolvedValue(null) }; // null → not in DOM
+    const pageMock = makePageMock(0); // 0 matches → not in DOM
     const result = await resolver.resolve(makeStep(), makeContext(pageMock));
 
     expect(result.selectors).toHaveLength(0);
     expect(result.resolutionSource).toBeNull();
-    expect(obs.increment).toHaveBeenCalledWith('resolver.archetype_dom_miss', { archetype: 'login_button' });
+    expect(obs.increment).toHaveBeenCalledWith('resolver.archetype_dom_miss', {
+      archetype: 'login_button',
+      reason: 'no_match',
+    });
   });
 
   // 3. Returns empty SelectorSet when no archetype matches (fallthrough)
@@ -102,7 +117,7 @@ describe('ArchetypeElementResolver', () => {
 
   // 4. tokensUsed is always 0
   it('tokensUsed is always 0', async () => {
-    const pageMock = { $: jest.fn().mockResolvedValue({}) };
+    const pageMock = makePageMock(1);
     const result = await resolver.resolve(makeStep(), makeContext(pageMock));
     expect(result.tokensUsed).toBe(0);
   });
@@ -135,7 +150,7 @@ describe('ArchetypeElementResolver', () => {
     const signIn  = makeCandidate({ role: 'button', name: 'Sign in' });
     domPruner.prune.mockResolvedValue([passkey, signIn]);
 
-    const pageMock = { $: jest.fn().mockResolvedValue({}) };
+    const pageMock = makePageMock(1);
     const result = await resolver.resolve(makeStep({ targetDescription: 'sign in button' }), makeContext(pageMock));
 
     expect(result.resolutionSource).toBeNull();
@@ -166,7 +181,7 @@ describe('ArchetypeElementResolver', () => {
       return null;
     });
 
-    const pageMock = { $: jest.fn().mockResolvedValue({}) };
+    const pageMock = makePageMock(1);
     const step = makeStep({ action: 'type', targetDescription: 'username field' });
     const result = await resolver.resolve(step, makeContext(pageMock));
 
@@ -188,14 +203,29 @@ describe('ArchetypeElementResolver', () => {
 
     archetypeResolver.match.mockResolvedValue(makeMatch());
 
-    const pageMock = {
-      $: jest.fn().mockResolvedValue(null), // DOM miss
-    };
+    const pageMock = makePageMock(0); // DOM miss → 0 matches
 
     const result = await resolver.resolve(makeStep(), makeContext(pageMock));
 
     expect(result.resolutionSource).toBeNull();
     expect(obs.increment).toHaveBeenCalledWith('resolver.archetype_dom_miss', expect.any(Object));
+  });
+
+  // Spec: docs/specs/smart-brain/spec-archetype-cooldown-permanence.md §4.2
+  // Ambiguous matches (selector resolves to >1 elements) must be rejected.
+  // This is the actual root cause of the automationexercise repro: the
+  // selector role=textbox[name="Email Address"] resolves to TWO inputs
+  // (login + signup) and the old `page.$()` check accepted the first match.
+  it('rejects archetype match when selector resolves to multiple elements (ambiguous)', async () => {
+    const pageMock = makePageMock(2); // 2 matches → ambiguous
+    const result = await resolver.resolve(makeStep(), makeContext(pageMock));
+
+    expect(result.selectors).toHaveLength(0);
+    expect(result.resolutionSource).toBeNull();
+    expect(obs.increment).toHaveBeenCalledWith('resolver.archetype_dom_miss', {
+      archetype: 'login_button',
+      reason: 'ambiguous',
+    });
   });
 
   // Extra: recordSuccess is a no-op
@@ -229,7 +259,7 @@ describe('ArchetypeElementResolver', () => {
       return null;
     });
 
-    const pageMock = { $: jest.fn().mockResolvedValue({}) };
+    const pageMock = makePageMock(1);
     const step = makeStep({
       action: 'type',
       targetDescription: 'type rankoo in the username field',
@@ -243,7 +273,7 @@ describe('ArchetypeElementResolver', () => {
   // AT-4: user marks the step failed → next run skips the cooldowned archetype.
   it('AT-4: cooldown skip — archetype on cooldown is bypassed', async () => {
     archetypeResolver.getCooldownArchetypes.mockResolvedValue({ archetypes: new Set(['login_button']), selectors: new Set() });
-    const pageMock = { $: jest.fn().mockResolvedValue({}) };
+    const pageMock = makePageMock(1);
     const result = await resolver.resolve(makeStep(), makeContext(pageMock));
 
     expect(result.resolutionSource).toBeNull();
@@ -260,7 +290,7 @@ describe('ArchetypeElementResolver', () => {
       archetypes: new Set(),
       selectors: new Set(['role=button[name="Log in"]'])
     });
-    const pageMock = { $: jest.fn().mockResolvedValue({}) };
+    const pageMock = makePageMock(1);
     const result = await resolver.resolve(makeStep(), makeContext(pageMock));
 
     expect(result.resolutionSource).toBeNull();
@@ -277,7 +307,7 @@ describe('ArchetypeElementResolver', () => {
   // step_results.archetype_name — the verdict route reads that column to
   // write the archetype_failures cooldown row (cross-process fix, S4).
   it('surfaces archetypeName on the SelectorSet for persistence by the worker', async () => {
-    const pageMock = { $: jest.fn().mockResolvedValue({}) };
+    const pageMock = makePageMock(1);
     const result = await resolver.resolve(makeStep(), makeContext(pageMock));
     expect(result.archetypeName).toBe('login_button');
   });
@@ -286,7 +316,7 @@ describe('ArchetypeElementResolver', () => {
   // owns the archetype_failures write path because it runs in the API process
   // while this resolver lives in the worker process.
   it('recordFailure is a no-op (verdict route owns the cooldown write path)', async () => {
-    const pageMock = { $: jest.fn().mockResolvedValue({}) };
+    const pageMock = makePageMock(1);
     const step = makeStep();
     const ctx = makeContext(pageMock);
     await resolver.resolve(step, ctx);
@@ -315,7 +345,7 @@ describe('ArchetypeElementResolver', () => {
       makeMatch({ archetypeName: 'email_input', selector: 'role=textbox[name="Email Address"]' }),
     );
 
-    const pageMock = { $: jest.fn().mockResolvedValue({}) };
+    const pageMock = makePageMock(1);
     const step = makeStep({ action: 'type', targetDescription: 'type x in email' });
     const result = await resolver.resolve(step, makeContext(pageMock));
 
@@ -340,11 +370,54 @@ describe('ArchetypeElementResolver', () => {
     });
     domPruner.prune.mockResolvedValue([winner, loser]);
 
-    const pageMock = { $: jest.fn().mockResolvedValue({}) };
+    const pageMock = makePageMock(1);
     const step = makeStep({ action: 'type', targetDescription: 'type x in the login username field' });
     const result = await resolver.resolve(step, makeContext(pageMock));
 
     expect(result.resolutionSource).toBe('archetype');
     expect(obs.increment).not.toHaveBeenCalledWith('archetype_resolver.top_tie_skip');
+  });
+
+  // ── Cache peek (Phase B / spec §4.3) ──────────────────────────────────────
+  // After archetype validates uniqueness, it consults selector_cache for the
+  // same target. If cache holds a different top selector, archetype returns
+  // MISS and lets the chain fall through to the cached resolver.
+
+  it('cache peek: returns MISS when cached top selector differs from archetype match', async () => {
+    archetypeResolver.peekCachedTopSelector.mockResolvedValue('#zipcode');
+    const result = await resolver.resolve(makeStep(), makeContext(makePageMock(1)));
+
+    expect(result.resolutionSource).toBeNull();
+    expect(result.selectors).toHaveLength(0);
+    expect(obs.increment).toHaveBeenCalledWith('archetype_resolver.deferred_to_cache', {
+      archetype: 'login_button',
+    });
+  });
+
+  it('cache peek: archetype proceeds when cached top selector matches its match', async () => {
+    archetypeResolver.peekCachedTopSelector.mockResolvedValue('role=button[name="Log in"]');
+    const result = await resolver.resolve(makeStep(), makeContext(makePageMock(1)));
+
+    expect(result.resolutionSource).toBe('archetype');
+    expect(result.selectors[0].selector).toBe('role=button[name="Log in"]');
+  });
+
+  it('cache peek: archetype proceeds when cache has no row for this target', async () => {
+    archetypeResolver.peekCachedTopSelector.mockResolvedValue(null);
+    const result = await resolver.resolve(makeStep(), makeContext(makePageMock(1)));
+
+    expect(result.resolutionSource).toBe('archetype');
+  });
+
+  it('cache peek: archetype proceeds when peek throws (best-effort)', async () => {
+    archetypeResolver.peekCachedTopSelector.mockRejectedValue(new Error('db down'));
+    const result = await resolver.resolve(makeStep(), makeContext(makePageMock(1)));
+
+    expect(result.resolutionSource).toBe('archetype');
+    expect(obs.log).toHaveBeenCalledWith(
+      'warn',
+      'archetype_resolver.cache_peek_threw',
+      expect.objectContaining({ error: 'db down' }),
+    );
   });
 });

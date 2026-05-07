@@ -343,7 +343,9 @@ describe('DBArchetypeResolver', () => {
     );
     expect(mockQuery).toHaveBeenCalledWith(
       expect.stringContaining('ON CONFLICT'),
-      ['tenant-A', 'example.com', 'th-1', 'login_button', 'role=button[name="Log in"]'],
+      // 6th param is the rolling-cooldown duration in hours; user-driven verdicts
+      // (handled in the API route, not here) write expires_at = NULL instead.
+      ['tenant-A', 'example.com', 'th-1', 'login_button', 'role=button[name="Log in"]', '24'],
     );
     expect(obs.increment).toHaveBeenCalledWith('archetype_resolver.record_failure');
   });
@@ -386,6 +388,105 @@ describe('DBArchetypeResolver', () => {
     const [, paramsB] = mockQuery.mock.calls[2];
     expect(paramsA[0]).toBe('tenant-A');
     expect(paramsB[0]).toBe('tenant-B');
+  });
+
+  // ── expires_at semantics (Phase B / spec §4.1) ────────────────────────────
+  // The cooldown query MUST honor expires_at: rows with expires_at IS NULL
+  // are permanent (user verdict=fail), rows with expires_at in the past are
+  // expired (rolling auto-rehab elapsed), rows with expires_at in the future
+  // are still active.
+
+  it('cooldown query includes both archetype_name and selector_used', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: makeArchetypeRows() })
+      .mockResolvedValueOnce({
+        rows: [
+          { archetype_name: 'login_button', selector_used: 'role=button[name="Log in"]' },
+          { archetype_name: 'submit_button', selector_used: 'role=button[name="Submit"]' },
+        ],
+      });
+    await resolver.match(makeCandidate({ role: 'button', name: 'Log in' }), 'click');
+
+    const result = await resolver.getCooldownArchetypes({
+      tenantId: 'tenant-A',
+      domain: 'example.com',
+      targetHash: 'th-1',
+    });
+
+    expect(result.archetypes.has('login_button')).toBe(true);
+    expect(result.archetypes.has('submit_button')).toBe(true);
+    expect(result.selectors.has('role=button[name="Log in"]')).toBe(true);
+    expect(result.selectors.has('role=button[name="Submit"]')).toBe(true);
+  });
+
+  it('cooldown query filters by expires_at (NULL OR expires_at > now())', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: makeArchetypeRows() })
+      .mockResolvedValueOnce({ rows: [] });
+    await resolver.match(makeCandidate({ role: 'button', name: 'Log in' }), 'click');
+
+    await resolver.getCooldownArchetypes({
+      tenantId: 'tenant-A',
+      domain: 'example.com',
+      targetHash: 'th-1',
+    });
+
+    // Inspect the SQL — the cooldown SELECT is the second call (first warmed the archetype cache).
+    const [sql, params] = mockQuery.mock.calls[1];
+    expect(sql).toContain('expires_at IS NULL OR expires_at > now()');
+    // Should NOT use the old time-window filter that auto-rehabbed user verdicts after 24h.
+    expect(sql).not.toContain("created_at > now() -");
+    // Three params: tenantId, domain, targetHash (no hours param anymore).
+    expect(params).toEqual(['tenant-A', 'example.com', 'th-1']);
+  });
+
+  it('recordFailure writes a rolling expires_at (now() + 24 hours) for non-user failures', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    await resolver.recordFailure(
+      { tenantId: 'tenant-A', domain: 'example.com', targetHash: 'th-1' },
+      'login_button',
+      'role=button[name="Log in"]',
+    );
+    const [sql, params] = mockQuery.mock.calls[0];
+    expect(sql).toContain('expires_at');
+    // The rolling expiry uses string interpolation of the cooldown hours param.
+    expect(sql).toContain("now() + ($6 || ' hours')::interval");
+    expect(params[5]).toBe('24');
+    // ON CONFLICT branch must never downgrade a permanent (NULL) block back to rolling.
+    expect(sql).toContain('WHEN archetype_failures.expires_at IS NULL THEN NULL');
+  });
+
+  // ── peekCachedTopSelector (Phase B / spec §4.3) ───────────────────────────
+
+  it('peekCachedTopSelector returns the first selector when a row exists', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ selectors: [{ selector: '#zipcode', strategy: 'css' }, { selector: '[data-qa="zipcode"]' }] }],
+    });
+    const result = await resolver.peekCachedTopSelector({
+      tenantId: 'tenant-A', domain: 'example.com', targetHash: 'th-1',
+    });
+    expect(result).toBe('#zipcode');
+  });
+
+  it('peekCachedTopSelector returns null when no row exists', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    const result = await resolver.peekCachedTopSelector({
+      tenantId: 'tenant-A', domain: 'example.com', targetHash: 'th-1',
+    });
+    expect(result).toBeNull();
+  });
+
+  it('peekCachedTopSelector returns null on DB error and logs', async () => {
+    mockQuery.mockRejectedValueOnce(new Error('connection refused'));
+    const result = await resolver.peekCachedTopSelector({
+      tenantId: 'tenant-A', domain: 'example.com', targetHash: 'th-1',
+    });
+    expect(result).toBeNull();
+    expect(obs.log).toHaveBeenCalledWith(
+      'warn',
+      'archetype_resolver.cache_peek_failed',
+      expect.any(Object),
+    );
   });
 
   // Selector escaping: double quotes in accessible name are escaped
