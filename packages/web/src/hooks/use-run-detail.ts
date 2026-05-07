@@ -1,11 +1,18 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import type { RunDetail, StepResult } from '@/types/api';
+import { TERMINAL_RUN_STATUSES } from '@/types/api';
+
+const LIVE_POLL_INTERVAL_MS = 2000;
 
 export function useRunDetail(runId: string | null | undefined) {
   const [data, setData] = useState<RunDetail | null>(null);
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState<Error | null>(null);
   const [tick, setTick] = useState(0);
+  // Single-flight guard: if a fetch is already in flight when the live-poll
+  // interval fires, skip — don't queue. Prevents stacking when the API
+  // takes longer than the interval.
+  const inFlightRef = useRef(false);
 
   const refetch = useCallback(() => {
     setTick((t) => t + 1);
@@ -18,6 +25,8 @@ export function useRunDetail(runId: string | null | undefined) {
     }
 
     const fetchDetail = async () => {
+      if (inFlightRef.current) return;
+      inFlightRef.current = true;
       setIsLoading(true);
       setError(null);
       try {
@@ -62,11 +71,33 @@ export function useRunDetail(runId: string | null | undefined) {
         setError(err instanceof Error ? err : new Error('Unknown error'));
       } finally {
         setIsLoading(false);
+        inFlightRef.current = false;
       }
     };
 
     fetchDetail();
   }, [runId, tick]);
+
+  // Live polling: while the loaded run is in a non-terminal status, refetch
+  // every LIVE_POLL_INTERVAL_MS so the timeline / inspector list / summary
+  // strip update as the worker writes step_results rows.
+  //
+  // - Skips when the document tab is hidden (no point polling in background).
+  // - Stops automatically when the run reaches a terminal status.
+  //
+  // Spec: docs/specs/workers/spec-live-run-updates.md §5.2.
+  useEffect(() => {
+    const status = data?.status;
+    if (!runId || !status) return;
+    if (TERMINAL_RUN_STATUSES.includes(status)) return;
+
+    const interval = window.setInterval(() => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      setTick((t) => t + 1);
+    }, LIVE_POLL_INTERVAL_MS);
+
+    return () => window.clearInterval(interval);
+  }, [runId, data?.status]);
 
   return { data, isLoading, error, refetch };
 }
