@@ -179,6 +179,11 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
     useCheck = false,
   ): Promise<void> {
     switch (step.action) {
+      // click_random resolves to a concrete element in the worker (a random
+      // candidate is chosen and handed to the engine as a single selector);
+      // dispatch is then identical to a plain click.
+      // Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §2.3
+      case 'click_random':
       case 'click': {
         // Prefer the caller's hint (from candidates metadata), but also inspect the
         // live DOM in case the step came from cache where llmPickedKaizenId is absent.
@@ -245,6 +250,23 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
       case 'assert_visible': {
         const visible = await page.isVisible(selector);
         if (!visible) throw new Error(`Element not visible: ${selector}`);
+        break;
+      }
+
+      case 'assert_text': {
+        // Content assertion: the element's text must CONTAIN the expected value.
+        // Containment (not strict equality) because real UI containers wrap the
+        // value of interest in surrounding chrome (labels, prices, quantities).
+        // Comparison is case-insensitive and whitespace-normalised.
+        // Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §1.2
+        if (step.value == null) throw new Error('assert_text action requires StepAST.value');
+        const actual = await page.$eval(selector, (el) => (el.textContent ?? '').trim());
+        const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
+        if (!norm(actual).includes(norm(step.value))) {
+          throw new Error(
+            `assert_text failed: expected element to contain "${step.value}" but got "${actual}".`,
+          );
+        }
         break;
       }
 

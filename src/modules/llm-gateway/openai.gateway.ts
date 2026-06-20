@@ -114,7 +114,7 @@ export class OpenAIGateway implements ILLMGateway {
             role: 'system',
             content: `You are a UI test compiler. Extract the user's intent into a JSON object matching this schema exactly:
 {
-  "action": "navigate" | "click" | "type" | "select" | "assert_visible" | "wait" | "press_key" | "scroll",
+  "action": "navigate" | "click" | "click_random" | "type" | "select" | "assert_visible" | "assert_text" | "wait" | "press_key" | "scroll",
   "targetDescription": "string | null",
   "value": "string | null",
   "url": "string | null"
@@ -122,9 +122,12 @@ export class OpenAIGateway implements ILLMGateway {
 
 Action rules:
 - "click"  : buttons, links, radio buttons, checkboxes, tabs, toggles — any element the user taps/checks/selects that is NOT a <select> dropdown
+- "click_random": choosing/clicking ONE arbitrary element from a group of similar elements, when the user says "random", "any", "a" + plural (e.g. "select a random product", "pick any item", "add a product to cart"). Put the kind of element in targetDescription (e.g. "a product link", "an item add-to-cart button").
 - "select" : ONLY for <select> dropdown elements (e.g. "choose from dropdown", "pick from list")
 - "type"   : filling a text input or textarea
 - "navigate": going to a URL
+- "assert_visible": verifying an element is present/visible WITHOUT checking its text (e.g. "verify the cart icon is shown")
+- "assert_text": verifying an element's TEXT contains/shows/matches an expected value. Put the element in targetDescription and the expected text in value. Examples: "validate the email appears in the header" → targetDescription: "the header", value: "the email"; "verify the item name matches the one selected" → targetDescription: "the item name", value: "{{selectedItem}}". Preserve {{variable}} tokens verbatim in value.
 
 Radio buttons and checkboxes MUST use "click", never "select".
 

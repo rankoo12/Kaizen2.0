@@ -24,6 +24,7 @@ describe('PlaywrightExecutionEngine', () => {
       waitForSelector: jest.fn(),
       waitForTimeout: jest.fn(),
       evaluate: jest.fn(),
+      $eval: jest.fn(),
       keyboard: { press: jest.fn() },
     };
 
@@ -152,14 +153,12 @@ describe('PlaywrightExecutionEngine', () => {
       expect(mockObservability.increment).toHaveBeenCalledWith('engine.selector_failed', { strategy: 'data-testid' });
     });
 
-    it('returns AllSelectorsFailed when every selector throws', async () => {
+    it('throws the last selector error when every selector fails', async () => {
+      // executeStep re-throws the real Playwright error (not a generic fallback)
+      // so the worker's failure classifier picks the right healing strategy.
       mockPage.click.mockRejectedValue(new Error('ElementNotFound'));
 
-      const result = await engine.executeStep(clickStep, twoSelectors, mockPage);
-
-      expect(result.status).toBe('failed');
-      expect(result.errorType).toBe('AllSelectorsFailed');
-      expect(result.selectorUsed).toBeNull();
+      await expect(engine.executeStep(clickStep, twoSelectors, mockPage)).rejects.toThrow('ElementNotFound');
       expect(mockPage.click).toHaveBeenCalledTimes(2);
     });
 
@@ -231,13 +230,63 @@ describe('PlaywrightExecutionEngine', () => {
       expect(result.status).toBe('passed');
     });
 
-    it('fails when the element is not visible', async () => {
+    it('throws when the element is not visible', async () => {
       mockPage.isVisible.mockResolvedValueOnce(false);
 
-      const result = await engine.executeStep(assertStep, selectorSet, mockPage);
+      await expect(engine.executeStep(assertStep, selectorSet, mockPage)).rejects.toThrow('Element not visible');
+    });
+  });
 
-      expect(result.status).toBe('failed');
-      expect(result.errorType).toBe('AllSelectorsFailed');
+  // ─── assert_text ───────────────────────────────────────────────────────────────
+
+  describe('assert_text', () => {
+    const makeStep = (value: string | null): StepAST => ({
+      action: 'assert_text',
+      targetDescription: 'the header',
+      value,
+      url: null,
+      rawText: 'verify the header contains the email',
+      contentHash: 'at1',
+      targetHash: 'test-target-hash',
+    });
+    const selectorSet: SelectorSet = {
+      selectors: [{ selector: '.header', strategy: 'css', confidence: 0.85 }],
+      fromCache: false,
+      cacheSource: null,
+      resolutionSource: null,
+      similarityScore: null,
+    };
+
+    it('passes when the element text contains the expected substring', async () => {
+      mockPage.$eval.mockResolvedValueOnce('Welcome, test@example.com  |  Log out');
+
+      const result = await engine.executeStep(makeStep('test@example.com'), selectorSet, mockPage);
+
+      expect(result.status).toBe('passed');
+    });
+
+    it('matches case-insensitively and ignores whitespace differences', async () => {
+      mockPage.$eval.mockResolvedValueOnce('  HELLO   WORLD  ');
+
+      const result = await engine.executeStep(makeStep('hello world'), selectorSet, mockPage);
+
+      expect(result.status).toBe('passed');
+    });
+
+    it('throws when the expected substring is absent (last selector error propagates)', async () => {
+      // With a single selector, the dispatch error is re-thrown by executeStep so
+      // the worker's failure classifier receives the real assertion message.
+      mockPage.$eval.mockResolvedValue('Log in   Register');
+
+      await expect(
+        engine.executeStep(makeStep('test@example.com'), selectorSet, mockPage),
+      ).rejects.toThrow(/expected element to contain "test@example.com"/);
+    });
+
+    it('throws when value is null', async () => {
+      await expect(
+        engine.executeStep(makeStep(null), selectorSet, mockPage),
+      ).rejects.toThrow(/requires StepAST\.value/);
     });
   });
 

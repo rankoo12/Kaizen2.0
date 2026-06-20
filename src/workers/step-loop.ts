@@ -1,4 +1,5 @@
-import type { StepAST } from '../types';
+import type { RunContext, StepAST } from '../types';
+import { createRunContext } from './run-context';
 
 /**
  * Spec ref: docs/specs/workers/spec-worker-stop-on-step-failure.md
@@ -18,6 +19,7 @@ export type StepLoopDeps = {
     step: StepAST,
     stepIndex: number,
     previousAfterPng: Buffer | null,
+    runContext: RunContext,
   ) => Promise<{ status: StepLoopStatus; healed: boolean; afterPng: Buffer | null }>;
   recordSkippedSteps: (
     compiledSteps: StepAST[],
@@ -46,6 +48,9 @@ export async function runStepLoop(
   let cancelled = false;
   let stepsExecuted = 0;
   let previousAfterPng: Buffer | null = null;
+  // Run-scoped variable memory: steps capture values into it and reference them
+  // in later steps via {{name}} tokens. Lives for the duration of this loop only.
+  const runContext = createRunContext();
 
   for (let i = 0; i < compiledSteps.length; i++) {
     if (await deps.isCancelled(runId)) {
@@ -55,7 +60,7 @@ export async function runStepLoop(
     }
 
     const step = compiledSteps[i];
-    const { status, healed, afterPng } = await deps.executeStep(step, i, previousAfterPng);
+    const { status, healed, afterPng } = await deps.executeStep(step, i, previousAfterPng, runContext);
     previousAfterPng = afterPng;
     stepsExecuted = i + 1;
 

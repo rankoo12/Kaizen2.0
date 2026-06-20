@@ -165,6 +165,20 @@ describe('runStepLoop — stop-on-fail', () => {
     expect(executeStep.mock.calls[2][2]).toBe(png2);          // third step: png from step 2
   });
 
+  it('passes one shared runContext to every step (run-scoped variable memory)', async () => {
+    const steps = makeSteps(3);
+    const executeStep = jest.fn().mockResolvedValue({ status: 'passed', healed: false, afterPng: null });
+    const deps = makeDeps({ executeStep });
+
+    await runStepLoop('run-ctx', steps, deps);
+
+    const ctx0 = executeStep.mock.calls[0][3];
+    expect(ctx0).toHaveProperty('variables');
+    // Same object reference handed to every step so captures persist across them.
+    expect(executeStep.mock.calls[1][3]).toBe(ctx0);
+    expect(executeStep.mock.calls[2][3]).toBe(ctx0);
+  });
+
   it('empty step list short-circuits with passed=true and stepsExecuted=0', async () => {
     const result = await runStepLoop('run-8', [], makeDeps());
     expect(result.runPassed).toBe(true);

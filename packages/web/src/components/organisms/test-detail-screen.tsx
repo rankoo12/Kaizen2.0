@@ -6,7 +6,7 @@ import {
   ArrowLeft, ChevronRight, Play, Copy, GitBranch, GitCompare, Image as ImageIcon,
   Loader2, X, Check, AlertTriangle, Trash2, Plus, Save, ListIcon as ListIc,
   BarChart2, Terminal, Zap, MousePointerClick, Type as TypeIcon, Navigation,
-  History as HistoryIc, Cpu,
+  History as HistoryIc, Cpu, Bookmark, Link2,
 } from 'lucide-react';
 import type { CaseDetail, RunDetail, RunStatus, StepResult, RunSummary } from '@/types/api';
 import { useCaseDetail } from '@/hooks/use-case-detail';
@@ -17,6 +17,7 @@ import { StatusDot, type StatusKind } from '@/components/atoms/status-dot';
 import { Wip } from '@/components/atoms/wip';
 import { Toast } from '@/components/atoms/toast';
 import { cn } from '@/lib/cn';
+import { resolutionTier } from '@/lib/resolution-source';
 
 type Viz = 'timeline' | 'gantt' | 'logs';
 type ToastState = { msg: string; kind: 'info' | 'success' | 'danger' } | null;
@@ -622,10 +623,13 @@ function textIntent(text: string) {
   if (t.startsWith('type') || t.startsWith('enter ') || t.startsWith('fill')) {
     return { label: 'TYPE',   icon: TypeIcon,          color: 'var(--color-brand-primary)', border: 'rgba(213,96,28,0.3)',   bg: 'rgba(213,96,28,0.08)' };
   }
+  if (t.includes('random') || t.startsWith('select ') || t.startsWith('pick ') || t.startsWith('choose ')) {
+    return { label: 'PICK',   icon: MousePointerClick, color: 'var(--color-brand-accent)',  border: 'rgba(219,135,175,0.3)', bg: 'rgba(219,135,175,0.08)' };
+  }
   if (t.startsWith('click') || t.startsWith('press') || t.startsWith('tap')) {
     return { label: 'CLICK',  icon: MousePointerClick, color: 'var(--color-brand-primary)', border: 'rgba(213,96,28,0.3)',   bg: 'rgba(213,96,28,0.08)' };
   }
-  if (t.startsWith('verify') || t.startsWith('expect') || t.startsWith('check') || t.startsWith('assert')) {
+  if (t.startsWith('verify') || t.startsWith('validate') || t.startsWith('expect') || t.startsWith('check') || t.startsWith('assert')) {
     return { label: 'ASSERT', icon: Check,             color: 'var(--color-success)',       border: 'rgba(34,197,94,0.3)',   bg: 'rgba(34,197,94,0.08)' };
   }
   if (t.startsWith('wait')) {
@@ -860,6 +864,13 @@ function StepInspectorList({
     );
   }
 
+  // Map of every variable captured during this run → its value, so an asserting
+  // step that references {{var}} in its original text can show the linkage.
+  const capturedVars: Record<string, string> = {};
+  for (const sr of stepResults) {
+    if (sr.capturedName && sr.capturedValue) capturedVars[sr.capturedName] = sr.capturedValue;
+  }
+
   return (
     <div ref={containerRef} className="overflow-auto px-5 bg-app-bg pb-4">
       <div className="eyebrow mb-3 sticky top-0 bg-app-bg pt-4 pb-2 z-10">step inspector</div>
@@ -877,6 +888,7 @@ function StepInspectorList({
               stepResult={sr}
               runId={runId}
               isActive={isActive}
+              capturedVars={capturedVars}
               onLightbox={onLightbox}
               onVerdict={onVerdict}
               onClick={() => onSelect(sr.id)}
@@ -888,14 +900,24 @@ function StepInspectorList({
   );
 }
 
+/** Variable names referenced by `{{token}}` in a step's original NL text. */
+function referencedVars(text: string): string[] {
+  const out: string[] = [];
+  const re = /\{\{\s*([\w.]+)\s*\}\}/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) out.push(m[1]);
+  return out;
+}
+
 function StepInspectorBlock({
-  index, stepText, stepResult, runId, isActive, onLightbox, onVerdict, onClick,
+  index, stepText, stepResult, runId, isActive, capturedVars, onLightbox, onVerdict, onClick,
 }: {
   index: number;
   stepText: string;
   stepResult: StepResult;
   runId: string | null;
   isActive: boolean;
+  capturedVars: Record<string, string>;
   onLightbox: (key: string) => void;
   onVerdict: () => void;
   onClick: () => void;
@@ -1026,10 +1048,49 @@ function StepInspectorBlock({
         ) : (
           <Wip />
         )}
-        {stepResult.resolutionSource && (
-          <div className="eyebrow !text-[9px] mt-1">via {stepResult.resolutionSource}</div>
-        )}
+        {(() => {
+          const tier = resolutionTier(stepResult.resolutionSource);
+          if (!tier) return null;
+          return (
+            <div className="flex items-center gap-1.5 mt-1.5">
+              <span className="eyebrow !text-[9px]">resolved via</span>
+              <span
+                className="inline-flex items-center gap-1 rounded px-1.5 py-px font-mono text-[9px] font-semibold uppercase tracking-[0.1em] border border-brand-primary/30 bg-brand-primary/10 text-brand-primary"
+                title={tier.cached ? 'Cache hit — no LLM call' : 'Resolved by live LLM call'}
+              >
+                {tier.code} · {tier.label}
+              </span>
+              {tier.cached && (
+                <span className="font-mono text-[9px] text-success">cached</span>
+              )}
+            </div>
+          );
+        })()}
       </div>
+
+      {stepResult.capturedName && stepResult.capturedValue && (
+        <div className="mb-2 px-3 py-2 rounded-md bg-brand-accent/[0.05] border border-brand-accent/25">
+          <div className="flex items-center gap-1.5 mb-0.5">
+            <Bookmark size={10} className="text-brand-accent" />
+            <span className="eyebrow !text-[9px] text-brand-accent">captured</span>
+            <code className="font-mono text-[10px] text-brand-accent">{`{{${stepResult.capturedName}}}`}</code>
+          </div>
+          <div className="font-mono text-[11px] text-text-hi break-words">&quot;{stepResult.capturedValue}&quot;</div>
+        </div>
+      )}
+
+      {referencedVars(stepText)
+        .filter((name) => capturedVars[name] !== undefined)
+        .map((name) => (
+          <div key={name} className="mb-2 px-3 py-2 rounded-md bg-success/[0.05] border border-success/25">
+            <div className="flex items-center gap-1.5 mb-0.5">
+              <Link2 size={10} className="text-success" />
+              <span className="eyebrow !text-[9px] text-success">asserted against</span>
+              <code className="font-mono text-[10px] text-success">{`{{${name}}}`}</code>
+            </div>
+            <div className="font-mono text-[11px] text-text-hi break-words">&quot;{capturedVars[name]}&quot;</div>
+          </div>
+        ))}
 
       {stepResult.domCandidates && stepResult.domCandidates.length > 0 && (
         <div className="mb-2 flex flex-col gap-1">

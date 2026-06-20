@@ -38,6 +38,8 @@ import { CompositeElementResolver } from '../modules/element-resolver/composite.
 import type { IElementResolver } from '../modules/element-resolver/interfaces';
 import { DBArchetypeResolver } from '../modules/element-resolver/db.archetype-resolver';
 import { ArchetypeElementResolver } from '../modules/element-resolver/archetype.element-resolver';
+import { pickRandomCandidate } from '../modules/element-resolver/random-element.selector';
+import { interpolateStep } from './run-context';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
 import { PageChallengeDetector } from '../modules/execution-engine/challenge-detector';
 import { HealingEngine } from '../modules/healing-engine/healing-engine';
@@ -52,7 +54,7 @@ import { ScreenshotService } from '../modules/media/screenshot.service';
 import { getPool, closePool } from '../db/pool';
 import { createRedisConnection, RUNS_QUEUE_NAME } from '../queue';
 import type { RunJobPayload } from '../queue';
-import type { StepAST, ClassifiedFailure, SelectorSet } from '../types';
+import type { StepAST, ClassifiedFailure, SelectorSet, RunContext } from '../types';
 
 // ─── Module Setup ─────────────────────────────────────────────────────────────
 
@@ -152,8 +154,8 @@ async function processRun(payload: RunJobPayload): Promise<void> {
   try {
     loopResult = await runStepLoop(runId, compiledSteps, {
       isCancelled,
-      executeStep: (step, stepIndex, previousAfterPng) =>
-        executeStep(step, page, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null),
+      executeStep: (step, stepIndex, previousAfterPng, runContext) =>
+        executeStep(step, page, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext),
       recordSkippedSteps: (steps, startIndex, reason) =>
         recordSkippedSteps(tenantId, runId, steps, startIndex, reason, stepIds),
       onStepFailed: (stepIndex, step) => {
@@ -204,23 +206,29 @@ async function insertStepResult(
   archetypeName: string | null = null,
   errorType: string | null = null,
   stepId: string | null = null,
+  capturedName: string | null = null,
+  capturedValue: string | null = null,
 ): Promise<string | null> {
   try {
     // step_id back-references the test_steps row this result came from. Lets
     // the runs API LEFT JOIN test_steps and surface the original step text in
     // the timeline. Nullable for backwards-compat with pre-spec queue jobs.
     // Spec: docs/specs/workers/spec-live-run-updates.md §5.1.3
+    // captured_name/value record a run-scoped variable captured by this step.
+    // Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §3.5
     const { rows } = await getPool().query<{ id: string }>(
       `INSERT INTO step_results
          (tenant_id, run_id, step_id, content_hash, target_hash, status, selector_used,
           screenshot_key, duration_ms, resolution_source, similarity_score,
-          dom_candidates, llm_picked_kaizen_id, tokens_used, archetype_name, error_type)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+          dom_candidates, llm_picked_kaizen_id, tokens_used, archetype_name, error_type,
+          captured_name, captured_value)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
        RETURNING id`,
       [tenantId, runId, stepId, step.contentHash, step.targetHash, status, selectorUsed,
        screenshotKey, durationMs, resolutionSource, similarityScore,
        domCandidates ? JSON.stringify(domCandidates) : null,
-       llmPickedKaizenId, tokensUsed, archetypeName, errorType],
+       llmPickedKaizenId, tokensUsed, archetypeName, errorType,
+       capturedName, capturedValue],
     );
     return rows[0]?.id ?? null;
   } catch (e: any) {
@@ -283,7 +291,7 @@ async function fetchLastGoodScreenshot(
 }
 
 async function executeStep(
-  step: StepAST,
+  rawStep: StepAST,
   page: Page,
   tenantId: string,
   runId: string,
@@ -291,9 +299,17 @@ async function executeStep(
   stepIndex: number,
   previousAfterPng?: Buffer | null,
   stepId: string | null = null,
+  runContext: RunContext = { variables: {} },
 ): Promise<{ status: 'passed' | 'failed'; healed: boolean; afterPng: Buffer | null }> {
+  // Resolve {{variable}} tokens captured by earlier steps before doing anything
+  // else, so resolution, execution, and persistence all see the concrete values.
+  // Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §3.4
+  const step = interpolateStep(rawStep, runContext);
   const resolutionContext = { tenantId, domain, page, pageUrl: page.url() };
   const stepStart = Date.now();
+  // Accessible name of the element chosen by a click_random step — captured into
+  // the run context for later {{variable}} reference (Gap C wires the store).
+  let randomPickName: string | null = null;
 
   // ── AX snapshot + before screenshot ──────────────────────────────────────
   // page.accessibility is deprecated in Playwright 1.44+ but still functional;
@@ -330,10 +346,43 @@ async function executeStep(
 
   // ── Resolve selectors ─────────────────────────────────────────────────────
   // navigate and press_key act on the page/keyboard, not a specific DOM element.
-  const needsElement = step.action !== 'navigate' && step.action !== 'press_key' && step.action !== 'wait';
-  const selectorSet: SelectorSet = needsElement
-    ? await resolver.resolve(step, resolutionContext)
-    : { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+  let selectorSet: SelectorSet;
+  if (step.action === 'click_random') {
+    // click_random does not go through the single-element resolver chain — it
+    // prunes ALL matching candidates and picks one at random (seeded by
+    // runId+stepIndex so the run is replayable). The chosen candidate's name is
+    // surfaced for capture (Gap C) and persisted for the run details page.
+    // Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §2
+    const candidates = await domPruner.prune(page, step.targetDescription ?? '');
+    const pick = pickRandomCandidate(candidates, `${runId}:${stepIndex}`);
+    if (pick) {
+      const entries = pick.candidate.selectorCandidates?.length
+        ? pick.candidate.selectorCandidates
+        : [{ selector: pick.candidate.cssSelector, strategy: 'css' as const, confidence: 0.5 }];
+      randomPickName = pick.candidate.name || pick.candidate.textContent || null;
+      obs.increment('worker.click_random_picked', { poolSize: String(pick.poolSize) });
+      selectorSet = {
+        selectors: entries,
+        fromCache: false,
+        cacheSource: null,
+        resolutionSource: null,
+        similarityScore: null,
+        candidates: [{
+          kaizenId: pick.candidate.kaizenId ?? '',
+          role: pick.candidate.role,
+          name: pick.candidate.name,
+          selector: pick.candidate.cssSelector,
+        }],
+      };
+    } else {
+      selectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+    }
+  } else {
+    const needsElement = step.action !== 'navigate' && step.action !== 'press_key' && step.action !== 'wait';
+    selectorSet = needsElement
+      ? await resolver.resolve(step, resolutionContext)
+      : { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+  }
 
   let stepError: Error | null = null;
   let result: Awaited<ReturnType<typeof engine.executeStep>>;
@@ -352,6 +401,22 @@ async function executeStep(
   // ── Success path ──────────────────────────────────────────────────────────
   // navigate and press_key pass with selectorUsed: null — check status only
   if (result.status === 'passed') {
+    // ── Capture: store the resolved element's text into the run context so a
+    // later step can reference it via {{captureAs}}. For click_random the name
+    // is already known (randomPickName); otherwise read it from the live element.
+    let capturedValue: string | null = null;
+    if (step.captureAs) {
+      capturedValue = randomPickName;
+      if (capturedValue == null && result.selectorUsed) {
+        capturedValue = await page
+          .$eval(result.selectorUsed, (el) => (el.textContent ?? '').trim())
+          .catch(() => null);
+      }
+      if (capturedValue != null) {
+        runContext.variables[step.captureAs] = capturedValue;
+        obs.log('info', 'worker.captured_value', { name: step.captureAs, value: capturedValue });
+      }
+    }
     if (result.selectorUsed) {
       await resolver.recordSuccess(step.targetHash, domain, result.selectorUsed).catch((e: any) =>
         obs.log('warn', 'worker.record_success_failed', { error: e.message }),
@@ -370,7 +435,7 @@ async function executeStep(
       }
     }
 
-    void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart, selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null, selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0, selectorSet.archetypeName ?? null, null, stepId);
+    void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart, selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null, selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0, selectorSet.archetypeName ?? null, null, stepId, step.captureAs ?? null, capturedValue);
     return { status: 'passed', healed: false, afterPng };
   }
 
