@@ -122,7 +122,9 @@ export class OpenAIGateway implements ILLMGateway {
 
 Action rules:
 - "click"  : buttons, links, radio buttons, checkboxes, tabs, toggles — any element the user taps/checks/selects that is NOT a <select> dropdown
-- "click_random": choosing/clicking ONE arbitrary element from a group of similar elements, when the user says "random", "any", "a" + plural (e.g. "select a random product", "pick any item", "add a product to cart"). Put the kind of element in targetDescription (e.g. "a product link", "an item add-to-cart button").
+- "click_random": choosing/clicking ONE arbitrary element from a group of similar elements, when the user says "random", "any", "a" + plural (e.g. "select a random product", "pick any item", "add a random product to the cart"). Put the kind of element to CLICK in targetDescription — pick the element that performs the user's intent:
+    * "select/open a random product" → targetDescription: "a product link"
+    * "add a random product to the cart" / "select a random product and add to cart" → targetDescription: "an add to cart button" (clicking the button is what adds the item; the product NAME is captured automatically from the button's card for any later {{selectedItem}} match)
 - "select" : ONLY for <select> dropdown elements (e.g. "choose from dropdown", "pick from list")
 - "type"   : filling a text input or textarea
 - "navigate": going to a URL

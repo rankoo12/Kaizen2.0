@@ -2,6 +2,7 @@ import {
   seededIndex,
   eligibleCandidates,
   pickRandomCandidate,
+  resolveCardTitle,
 } from '../random-element.selector';
 import type { CandidateNode } from '../../../types';
 
@@ -101,5 +102,62 @@ describe('pickRandomCandidate', () => {
       Array.from({ length: 8 }, (_, i) => pickRandomCandidate(products, `run-1:${i}`)!.candidate.name),
     );
     expect(names.size).toBeGreaterThan(1);
+  });
+
+  it('never picks site-chrome (e.g. footer Twitter) when nothing scored', () => {
+    // No candidate lexically matches → falls back to non-chrome pool.
+    const pool = [
+      makeCandidate({ name: 'Twitter', similarityScore: 0 }),
+      makeCandidate({ name: 'Facebook', similarityScore: 0 }),
+      makeCandidate({ name: 'Search', similarityScore: 0, role: 'button' }),
+      makeCandidate({ name: '3rd Album', similarityScore: 0 }),
+      makeCandidate({ name: 'Health Book', similarityScore: 0 }),
+    ];
+    const names = new Set(
+      Array.from({ length: 16 }, (_, i) => pickRandomCandidate(pool, `r:${i}`)!.candidate.name),
+    );
+    expect(names.has('Twitter')).toBe(false);
+    expect(names.has('Facebook')).toBe(false);
+    expect(names.has('Search')).toBe(false);
+  });
+});
+
+describe('eligibleCandidates — chrome filtering', () => {
+  it('drops footer/nav chrome when no candidate scored', () => {
+    const pool = [
+      makeCandidate({ name: 'Twitter', similarityScore: 0 }),
+      makeCandidate({ name: 'Shopping cart (0)', similarityScore: 0 }),
+      makeCandidate({ name: 'Real Product', similarityScore: 0 }),
+    ];
+    const out = eligibleCandidates(pool);
+    expect(out.map((c) => c.name)).toEqual(['Real Product']);
+  });
+
+  it('keeps scored candidates as-is even if some look like chrome', () => {
+    const pool = [
+      makeCandidate({ name: 'Search', similarityScore: 2 }),
+      makeCandidate({ name: 'Other', similarityScore: 0 }),
+    ];
+    // Lexical score wins — we trust the pruner's relevance signal.
+    expect(eligibleCandidates(pool).map((c) => c.name)).toEqual(['Search']);
+  });
+});
+
+describe('resolveCardTitle', () => {
+  // Simulate $eval by running the passed fn against a fake element tree.
+  const makePage = (impl: (selector: string) => string | null) => ({
+    $eval: async <T,>(selector: string, _fn: (el: Element) => T): Promise<T> =>
+      impl(selector) as unknown as T,
+  });
+
+  it('returns the card title resolved in-browser', async () => {
+    const page = makePage(() => '3rd Album');
+    const title = await resolveCardTitle(page, 'input.add-to-cart');
+    expect(title).toBe('3rd Album');
+  });
+
+  it('returns null and swallows $eval errors (caller falls back)', async () => {
+    const page = { $eval: async () => { throw new Error('detached'); } };
+    expect(await resolveCardTitle(page, 'x')).toBeNull();
   });
 });
