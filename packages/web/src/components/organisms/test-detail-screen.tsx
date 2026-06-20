@@ -6,7 +6,7 @@ import {
   ArrowLeft, ChevronRight, Play, Copy, GitBranch, GitCompare, Image as ImageIcon,
   Loader2, X, Check, AlertTriangle, Trash2, Plus, Save, ListIcon as ListIc,
   BarChart2, Terminal, Zap, MousePointerClick, Type as TypeIcon, Navigation,
-  History as HistoryIc, Cpu, Bookmark, Link2,
+  History as HistoryIc, Cpu, Bookmark, Link2, Wrench, ChevronDown,
 } from 'lucide-react';
 import type { CaseDetail, RunDetail, RunStatus, StepResult, RunSummary } from '@/types/api';
 import { useCaseDetail } from '@/hooks/use-case-detail';
@@ -21,6 +21,19 @@ import { resolutionTier } from '@/lib/resolution-source';
 
 type Viz = 'timeline' | 'gantt' | 'logs';
 type ToastState = { msg: string; kind: 'info' | 'success' | 'danger' } | null;
+
+// Generated form-data tokens the per-step tools menu can insert. Mirrors
+// FORM_DATA_TOKENS in src/modules/test-data/generate.ts — the API seeds these
+// into the run context so {{token}} resolves to unique values each run.
+const FORM_DATA_TOKENS: { token: string; label: string }[] = [
+  { token: 'firstName', label: 'First name' },
+  { token: 'lastName',  label: 'Last name' },
+  { token: 'email',     label: 'Email' },
+  { token: 'password',  label: 'Password' },
+  { token: 'phone',     label: 'Phone' },
+  { token: 'company',   label: 'Company' },
+  { token: 'username',  label: 'Username' },
+];
 
 // ─── Page ────────────────────────────────────────────────────────────────────
 
@@ -112,6 +125,26 @@ export function TestDetailScreen({ caseId }: { caseId: string }) {
     }
   }, [caseId]);
 
+  const [duplicating, setDuplicating] = useState(false);
+  const duplicate = useCallback(async () => {
+    setDuplicating(true);
+    try {
+      const res = await fetch(`/api/proxy/cases/${caseId}/duplicate`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({}),
+      });
+      if (!res.ok) throw new Error();
+      const { case: clone } = (await res.json()) as { case: { id: string } };
+      showToast('Duplicated — opening copy…', 'success');
+      router.push(`/tests/${clone.id}`);
+    } catch {
+      showToast('Failed to duplicate.', 'danger');
+    } finally {
+      setDuplicating(false);
+    }
+  }, [caseId, router]);
+
   const saveSteps = useCallback(async () => {
     if (!test) return;
     const active = localSteps.map((s) => s.trim()).filter(Boolean);
@@ -184,6 +217,8 @@ export function TestDetailScreen({ caseId }: { caseId: string }) {
         onToggleEdit={() => setEditing((v) => !v)}
         onSave={saveSteps}
         saving={saving}
+        onDuplicate={duplicate}
+        duplicating={duplicating}
       />
 
       <RunSummaryStrip run={run ?? null} fallback={test.recentRuns?.[0] ?? null} />
@@ -262,7 +297,7 @@ export function TestDetailScreen({ caseId }: { caseId: string }) {
 // ─── Page header ─────────────────────────────────────────────────────────────
 
 function PageHeader({
-  test, onBack, onRun, running, editing, onToggleEdit, onSave, saving,
+  test, onBack, onRun, running, editing, onToggleEdit, onSave, saving, onDuplicate, duplicating,
 }: {
   test: CaseDetail;
   onBack: () => void;
@@ -272,6 +307,8 @@ function PageHeader({
   onToggleEdit: () => void;
   onSave: () => void;
   saving: boolean;
+  onDuplicate: () => void;
+  duplicating: boolean;
 }) {
   return (
     <div className="px-6 pt-4 pb-3 border-b border-border-subtle">
@@ -314,6 +351,14 @@ function PageHeader({
                 className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs bg-surface-elevated border border-border-strong text-text hover:text-text-hi"
               >
                 <Copy size={12} /> Edit steps
+              </button>
+              <button
+                onClick={onDuplicate}
+                disabled={duplicating}
+                title="Duplicate this test (steps only, no run history)"
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs bg-surface-elevated border border-border-strong text-text hover:text-text-hi disabled:opacity-60"
+              >
+                {duplicating ? <Loader2 size={12} className="animate-orbit" /> : <Copy size={12} />} Duplicate
               </button>
               <button
                 disabled
@@ -754,26 +799,109 @@ function StepsEditor({
         </div>
         <div className="flex flex-col gap-1.5">
           {steps.map((s, i) => (
-            <div key={i} className="flex items-center gap-2">
-              <span className="font-mono tabular text-[10px] text-text-low w-6 text-right">{String(i + 1).padStart(2, '0')}</span>
-              <input
-                ref={i === steps.length - 1 ? lastRef : undefined}
-                value={s}
-                onChange={(e) => onChange(steps.map((p, j) => (j === i ? e.target.value : p)))}
-                placeholder="Describe the action…"
-                className="flex-1 bg-surface border border-border-strong rounded-md px-3 py-1.5 text-[13px] text-text outline-none focus:border-brand-primary"
-              />
-              <button
-                onClick={() => onChange(steps.filter((_, j) => j !== i))}
-                className="text-text-mid hover:text-danger px-1.5"
-                title="Remove step"
-              >
-                <Trash2 size={12} />
-              </button>
-            </div>
+            <StepRow
+              key={i}
+              index={i}
+              value={s}
+              inputRef={i === steps.length - 1 ? lastRef : undefined}
+              onChange={(next) => onChange(steps.map((p, j) => (j === i ? next : p)))}
+              onRemove={() => onChange(steps.filter((_, j) => j !== i))}
+            />
           ))}
         </div>
       </div>
+    </div>
+  );
+}
+
+// ─── Step row (editor) with variable-tools inserter ─────────────────────────
+
+function StepRow({
+  index, value, inputRef, onChange, onRemove,
+}: {
+  index: number;
+  value: string;
+  inputRef?: React.RefObject<HTMLInputElement | null>;
+  onChange: (next: string) => void;
+  onRemove: () => void;
+}) {
+  const localRef = useRef<HTMLInputElement | null>(null);
+  const ref = inputRef ?? localRef;
+  const [menuOpen, setMenuOpen] = useState(false);
+
+  // Insert {{token}} at the caret (or append) and keep focus.
+  const insertToken = (token: string) => {
+    const el = ref.current;
+    const snippet = `{{${token}}}`;
+    if (!el) { onChange(value + snippet); setMenuOpen(false); return; }
+    const start = el.selectionStart ?? value.length;
+    const end = el.selectionEnd ?? value.length;
+    const next = value.slice(0, start) + snippet + value.slice(end);
+    onChange(next);
+    setMenuOpen(false);
+    requestAnimationFrame(() => {
+      el.focus();
+      const caret = start + snippet.length;
+      el.setSelectionRange(caret, caret);
+    });
+  };
+
+  // Close the menu on outside click.
+  useEffect(() => {
+    if (!menuOpen) return;
+    const close = () => setMenuOpen(false);
+    window.addEventListener('click', close);
+    return () => window.removeEventListener('click', close);
+  }, [menuOpen]);
+
+  return (
+    <div className="flex items-center gap-2">
+      <span className="font-mono tabular text-[10px] text-text-low w-6 text-right">{String(index + 1).padStart(2, '0')}</span>
+      <input
+        ref={ref}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        placeholder="Describe the action…"
+        className="flex-1 bg-surface border border-border-strong rounded-md px-3 py-1.5 text-[13px] text-text outline-none focus:border-brand-primary"
+      />
+      <div className="relative">
+        <button
+          type="button"
+          onClick={(e) => { e.stopPropagation(); setMenuOpen((v) => !v); }}
+          className="inline-flex items-center gap-1 text-text-mid hover:text-text-hi px-1.5"
+          title="Insert generated variable"
+        >
+          <Wrench size={12} />
+          <ChevronDown size={10} />
+        </button>
+        {menuOpen && (
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="absolute right-0 top-full mt-1 z-30 w-44 rounded-md border border-border-strong bg-surface-elevated shadow-xl py-1"
+          >
+            <div className="eyebrow !text-[9px] px-3 py-1 text-text-low">insert variable</div>
+            {FORM_DATA_TOKENS.map(({ token, label }) => (
+              <button
+                key={token}
+                type="button"
+                onClick={() => insertToken(token)}
+                className="w-full flex items-center justify-between px-3 py-1.5 text-left text-[12px] text-text hover:bg-surface"
+              >
+                <span>{label}</span>
+                <code className="font-mono text-[10px] text-brand-accent">{`{{${token}}}`}</code>
+              </button>
+            ))}
+          </div>
+        )}
+      </div>
+      <button
+        type="button"
+        onClick={onRemove}
+        className="text-text-mid hover:text-danger px-1.5"
+        title="Remove step"
+      >
+        <Trash2 size={12} />
+      </button>
     </div>
   );
 }
