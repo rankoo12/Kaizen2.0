@@ -273,8 +273,28 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
         const elText = await page.$eval(selector, (el) => (el.textContent ?? '').trim()).catch(() => '');
         if (norm(elText).includes(needle)) break;
 
-        const bodyText = await page.$eval('body', (el) => (el.textContent ?? '').trim()).catch(() => '');
-        if (norm(bodyText).includes(needle)) {
+        // Whole-page fallback, retried — the value may still be rendering after a
+        // navigation (e.g. the cart table loads just after "click shopping cart").
+        // Poll the body a few times before giving up to absorb that race.
+        let bodyText = '';
+        let bodyHit = false;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          bodyText = await page.$eval('body', (el) => (el.textContent ?? '').trim()).catch(() => '');
+          if (norm(bodyText).includes(needle)) { bodyHit = true; break; }
+          await page.waitForTimeout(400);
+        }
+
+        // Diagnostic: surface exactly what we compared so a failing assertion is
+        // debuggable from logs (is the needle un-interpolated? is the value
+        // actually on the page?). Truncated to keep logs sane.
+        this.observability.log('info', 'engine.assert_text_check', {
+          rawValue: step.value,
+          needle,
+          elTextSample: elText.slice(0, 120),
+          bodyHasNeedle: bodyHit,
+          bodyLen: bodyText.length,
+        });
+        if (bodyHit) {
           this.observability.increment('engine.assert_text_page_fallback');
           break;
         }
