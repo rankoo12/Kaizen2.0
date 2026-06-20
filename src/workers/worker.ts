@@ -38,7 +38,8 @@ import { CompositeElementResolver } from '../modules/element-resolver/composite.
 import type { IElementResolver } from '../modules/element-resolver/interfaces';
 import { DBArchetypeResolver } from '../modules/element-resolver/db.archetype-resolver';
 import { ArchetypeElementResolver } from '../modules/element-resolver/archetype.element-resolver';
-import { pickRandomCandidate, resolveCardTitle } from '../modules/element-resolver/random-element.selector';
+import { pickRandomCandidate, resolveCardTitle, seededIndex } from '../modules/element-resolver/random-element.selector';
+import { findRepeatedTargets } from '../modules/element-resolver/random-target';
 import { interpolateStep } from './run-context';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
 import { PageChallengeDetector } from '../modules/execution-engine/challenge-detector';
@@ -348,40 +349,54 @@ async function executeStep(
   // navigate and press_key act on the page/keyboard, not a specific DOM element.
   let selectorSet: SelectorSet;
   if (step.action === 'click_random') {
-    // click_random does not go through the single-element resolver chain — it
-    // prunes ALL matching candidates and picks one at random (seeded by
-    // runId+stepIndex so the run is replayable). The chosen candidate's name is
-    // surfaced for capture (Gap C) and persisted for the run details page.
+    // click_random does NOT go through the single-element resolver chain. It
+    // queries the live page directly for the repeated control the target names
+    // (e.g. add-to-cart buttons), picks ONE by a seeded index (runId+stepIndex →
+    // replayable), and reads that element's product-card title so a later step
+    // can assert the cart against it.
     // Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §2
-    const candidates = await domPruner.prune(page, step.targetDescription ?? '');
-    const pick = pickRandomCandidate(candidates, `${runId}:${stepIndex}`);
-    if (pick) {
-      const entries = pick.candidate.selectorCandidates?.length
-        ? pick.candidate.selectorCandidates
-        : [{ selector: pick.candidate.cssSelector, strategy: 'css' as const, confidence: 0.5 }];
-      // Capture the *item title* from the picked element's product card — when
-      // the pick is an "Add to cart" button, its own text ("Add to cart") is
-      // useless for a later cart match; the card title is the product name that
-      // appears in the cart. Falls back to the element's accessible name.
-      // Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §2
-      const cardTitle = await resolveCardTitle(page, pick.candidate.cssSelector);
-      randomPickName = cardTitle || pick.candidate.name || pick.candidate.textContent || null;
-      obs.increment('worker.click_random_picked', { poolSize: String(pick.poolSize) });
+    const target = step.targetDescription ?? '';
+    const matches = await findRepeatedTargets(page, target);
+    if (matches.length > 0) {
+      const idx = seededIndex(`${runId}:${stepIndex}`, matches.length);
+      const chosen = matches[idx];
+      randomPickName = chosen.title;
+      obs.increment('worker.click_random_picked', { poolSize: String(matches.length), source: 'direct' });
       selectorSet = {
-        selectors: entries,
+        selectors: [{ selector: chosen.selector, strategy: 'css' as const, confidence: 0.9 }],
         fromCache: false,
         cacheSource: null,
         resolutionSource: null,
         similarityScore: null,
-        candidates: [{
-          kaizenId: pick.candidate.kaizenId ?? '',
-          role: pick.candidate.role,
-          name: pick.candidate.name,
-          selector: pick.candidate.cssSelector,
-        }],
+        candidates: [{ kaizenId: '', role: 'button', name: chosen.title ?? target, selector: chosen.selector }],
       };
     } else {
-      selectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+      // Fallback: nothing matched the direct selectors — prune + score + pick.
+      const candidates = await domPruner.prune(page, target);
+      const pick = pickRandomCandidate(candidates, `${runId}:${stepIndex}`, target);
+      if (pick) {
+        const entries = pick.candidate.selectorCandidates?.length
+          ? pick.candidate.selectorCandidates
+          : [{ selector: pick.candidate.cssSelector, strategy: 'css' as const, confidence: 0.5 }];
+        const cardTitle = await resolveCardTitle(page, pick.candidate.cssSelector);
+        randomPickName = cardTitle || pick.candidate.name || pick.candidate.textContent || null;
+        obs.increment('worker.click_random_picked', { poolSize: String(pick.poolSize), source: 'pruned' });
+        selectorSet = {
+          selectors: entries,
+          fromCache: false,
+          cacheSource: null,
+          resolutionSource: null,
+          similarityScore: null,
+          candidates: [{
+            kaizenId: pick.candidate.kaizenId ?? '',
+            role: pick.candidate.role,
+            name: pick.candidate.name,
+            selector: pick.candidate.cssSelector,
+          }],
+        };
+      } else {
+        selectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+      }
     }
   } else {
     const needsElement = step.action !== 'navigate' && step.action !== 'press_key' && step.action !== 'wait';

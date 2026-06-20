@@ -48,29 +48,43 @@ describe('seededIndex', () => {
 describe('eligibleCandidates', () => {
   it('prefers visible candidates', () => {
     const pool = [
-      makeCandidate({ name: 'visible', isVisible: true }),
-      makeCandidate({ name: 'hidden', isVisible: false }),
+      makeCandidate({ name: 'Visible Product', isVisible: true }),
+      makeCandidate({ name: 'Hidden Product', isVisible: false }),
     ];
     const result = eligibleCandidates(pool);
     expect(result).toHaveLength(1);
-    expect(result[0].name).toBe('visible');
+    expect(result[0].name).toBe('Visible Product');
   });
 
-  it('prefers candidates the pruner scored as relevant', () => {
+  it('ranks by lexical overlap with the target (ignores constant pruner score)', () => {
+    // The pruner sets similarityScore=1.0 for everyone; it must NOT decide ranking.
     const pool = [
-      makeCandidate({ name: 'match', similarityScore: 2 }),
-      makeCandidate({ name: 'noise', similarityScore: 0 }),
+      makeCandidate({ name: 'Add to cart', role: 'button', attributes: { value: 'Add to cart' }, similarityScore: 1 }),
+      makeCandidate({ name: '3rd Album', role: 'link', similarityScore: 1 }),
     ];
-    const result = eligibleCandidates(pool);
-    expect(result.map((c) => c.name)).toEqual(['match']);
+    const result = eligibleCandidates(pool, 'add to cart button');
+    expect(result.map((c) => c.name)).toEqual(['Add to cart']);
   });
 
-  it('falls back to the full pool when nothing scored', () => {
+  it('keeps all top-scoring matches (multiple add-to-cart buttons)', () => {
     const pool = [
-      makeCandidate({ name: 'a', similarityScore: 0 }),
-      makeCandidate({ name: 'b', similarityScore: 0 }),
+      makeCandidate({ name: 'Add to cart', role: 'button', attributes: { value: 'Add to cart' } }),
+      makeCandidate({ name: 'Add to cart', role: 'button', attributes: { value: 'Add to cart' } }),
+      makeCandidate({ name: 'Some Product', role: 'link' }),
     ];
-    expect(eligibleCandidates(pool)).toHaveLength(2);
+    const result = eligibleCandidates(pool, 'add to cart button');
+    expect(result).toHaveLength(2);
+  });
+
+  it('falls back to all non-chrome candidates when the target matches nothing', () => {
+    const pool = [
+      makeCandidate({ name: 'Twitter' }),
+      makeCandidate({ name: '3rd Album' }),
+      makeCandidate({ name: 'Health Book' }),
+    ];
+    // "a random product" has no matchable tokens → non-chrome fallback.
+    const result = eligibleCandidates(pool, 'a random product');
+    expect(result.map((c) => c.name).sort()).toEqual(['3rd Album', 'Health Book']);
   });
 });
 
@@ -123,24 +137,26 @@ describe('pickRandomCandidate', () => {
 });
 
 describe('eligibleCandidates — chrome filtering', () => {
-  it('drops footer/nav chrome when no candidate scored', () => {
+  it('drops footer/nav chrome when the target matches nothing', () => {
     const pool = [
-      makeCandidate({ name: 'Twitter', similarityScore: 0 }),
-      makeCandidate({ name: 'Shopping cart (0)', similarityScore: 0 }),
-      makeCandidate({ name: 'Real Product', similarityScore: 0 }),
+      makeCandidate({ name: 'Twitter' }),
+      makeCandidate({ name: 'Shopping cart (0)' }),
+      makeCandidate({ name: 'Real Product' }),
     ];
-    const out = eligibleCandidates(pool);
+    const out = eligibleCandidates(pool, 'a random product');
     expect(out.map((c) => c.name)).toEqual(['Real Product']);
   });
 
-  it('keeps scored candidates as-is even if some look like chrome', () => {
+  it('drops chrome even when it would lexically match the target', () => {
+    // "Search" is chrome and must never be picked, even for a "search"-y target.
     const pool = [
-      makeCandidate({ name: 'Search', similarityScore: 2 }),
-      makeCandidate({ name: 'Other', similarityScore: 0 }),
+      makeCandidate({ name: 'Search', role: 'button' }),
+      makeCandidate({ name: 'Camera Product', role: 'link' }),
     ];
-    // Lexical score wins — we trust the pruner's relevance signal.
-    expect(eligibleCandidates(pool).map((c) => c.name)).toEqual(['Search']);
+    const out = eligibleCandidates(pool, 'search for a product');
+    expect(out.map((c) => c.name)).not.toContain('Search');
   });
+
 });
 
 describe('resolveCardTitle', () => {
