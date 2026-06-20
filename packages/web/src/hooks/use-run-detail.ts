@@ -63,6 +63,8 @@ export function useRunDetail(runId: string | null | undefined) {
             domCandidates: sr.dom_candidates || null,
             llmPickedKaizenId: sr.llm_picked_kaizen_id || null,
             userVerdict: sr.user_verdict || null,
+            capturedName: sr.captured_name || null,
+            capturedValue: sr.captured_value || null,
           })),
         };
 

@@ -14,9 +14,11 @@
 export type StepAction =
   | 'navigate'
   | 'click'
+  | 'click_random'
   | 'type'
   | 'select'
   | 'assert_visible'
+  | 'assert_text'
   | 'wait'
   | 'press_key'
   | 'scroll';
@@ -42,6 +44,14 @@ export type StepAST = {
    * step gets an instant cache hit and never calls the LLM resolver again.
    */
   targetHash: string;
+  /**
+   * When set, after this step's action succeeds the worker stores the resolved
+   * element's text into the run-scoped variable of this name, so a later step
+   * can reference it via a `{{name}}` token. `click_random` sets this implicitly
+   * (e.g. 'selectedItem'); any step may set it explicitly.
+   * Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §3.3
+   */
+  captureAs?: string | null;
 };
 
 // ─── DOM Pruning ─────────────────────────────────────────────────────────────
@@ -165,6 +175,18 @@ export type ResolutionContext = {
    * Undefined when targetDescription is null (navigate/wait) — guard skipped.
    */
   stepEmbedding?: number[];
+};
+
+/**
+ * Run-scoped key/value memory threaded through the step loop. Steps capture
+ * values into it (via StepAST.captureAs) and reference them in later steps via
+ * `{{name}}` tokens in value/targetDescription. Lives only for the duration of
+ * one run in worker memory; captured values are persisted per-step in
+ * step_results for the run details page.
+ * Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §3.2
+ */
+export type RunContext = {
+  variables: Record<string, string>;
 };
 
 // ─── Accessibility tree ───────────────────────────────────────────────────────

@@ -87,6 +87,10 @@ export type StepResult = {
   domCandidates: DomCandidate[] | null;
   llmPickedKaizenId: string | null;
   userVerdict: 'passed' | 'failed' | null;
+  /** Run-scoped variable captured by this step (null when nothing was captured). */
+  capturedName: string | null;
+  /** The value captured into capturedName. */
+  capturedValue: string | null;
 };
 
 export type RunDetail = RunSummary & {
