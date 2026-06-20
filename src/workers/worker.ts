@@ -41,6 +41,7 @@ import { ArchetypeElementResolver } from '../modules/element-resolver/archetype.
 import { pickRandomCandidate, resolveCardTitle, seededIndex } from '../modules/element-resolver/random-element.selector';
 import { findRepeatedTargets } from '../modules/element-resolver/random-target';
 import { interpolateStep } from './run-context';
+import { RunLogger } from './run-logger';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
 import { PageChallengeDetector } from '../modules/execution-engine/challenge-detector';
 import { HealingEngine } from '../modules/healing-engine/healing-engine';
@@ -153,6 +154,11 @@ async function processRun(payload: RunJobPayload): Promise<void> {
   await markRunRunning(runId);
   logger.info({ event: 'run_started', runId, tenantId, stepCount: compiledSteps.length });
 
+  // Persisted chronological run log → powers the full-run report.
+  // Spec: docs/specs/tests-ux/spec-run-report-view.md
+  const runLog = new RunLogger(tenantId, runId, obs);
+  runLog.log('run', `Run started · ${compiledSteps.length} step(s) · ${baseUrl}`, { data: { baseUrl, stepCount: compiledSteps.length } });
+
   // Enforcement: Docker environments absolutely require headless: true without xvfb
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ baseURL: baseUrl });
@@ -167,7 +173,7 @@ async function processRun(payload: RunJobPayload): Promise<void> {
     loopResult = await runStepLoop(runId, compiledSteps, {
       isCancelled,
       executeStep: (step, stepIndex, previousAfterPng, runContext) =>
-        executeStep(step, page, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext),
+        executeStep(step, page, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext, runLog),
       recordSkippedSteps: (steps, startIndex, reason) =>
         recordSkippedSteps(tenantId, runId, steps, startIndex, reason, stepIds),
       onStepFailed: (stepIndex, step) => {
@@ -196,6 +202,9 @@ async function processRun(payload: RunJobPayload): Promise<void> {
   const { runPassed, anyHealed, cancelled } = loopResult;
   const finalStatus = cancelled ? 'cancelled' : runPassed ? (anyHealed ? 'healed' : 'passed') : 'failed';
   await markRunComplete(runId, finalStatus);
+
+  runLog.log('run', `Run ${finalStatus}`, { level: finalStatus === 'failed' ? 'error' : 'info', data: { status: finalStatus } });
+  await runLog.flush();
 
   obs.increment('worker.run_completed', { status: finalStatus });
   logger.info({ event: 'run_completed', runId, status: finalStatus });
@@ -312,11 +321,16 @@ async function executeStep(
   previousAfterPng?: Buffer | null,
   stepId: string | null = null,
   runContext: RunContext = { variables: {} },
+  runLog?: RunLogger,
 ): Promise<{ status: 'passed' | 'failed'; healed: boolean; afterPng: Buffer | null }> {
   // Resolve {{variable}} tokens captured by earlier steps before doing anything
   // else, so resolution, execution, and persistence all see the concrete values.
   // Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §3.4
   const step = interpolateStep(rawStep, runContext);
+  runLog?.log('resolve', `step ${String(stepIndex + 1).padStart(2, '0')} · ${step.action} · "${step.rawText}"`, {
+    stepIndex,
+    data: { action: step.action, target: step.targetDescription, value: step.value },
+  });
   const resolutionContext = { tenantId, domain, page, pageUrl: page.url() };
   const stepStart = Date.now();
   // Accessible name of the element chosen by a click_random step — captured into
@@ -353,6 +367,8 @@ async function executeStep(
       challenge.type,
       stepId,
     );
+    runLog?.log('execute', `step ${String(stepIndex + 1).padStart(2, '0')} blocked by ${challenge.type} challenge`, { stepIndex, level: 'error', data: { challenge: challenge.type } });
+    await runLog?.flush();
     return { status: 'failed', healed: false, afterPng };
   }
 
@@ -435,6 +451,13 @@ async function executeStep(
   // write-side guard. Re-verify every run.
   const isAssertion = step.action === 'assert_text' || step.action === 'assert_visible';
 
+  if (selectorSet.resolutionSource) {
+    runLog?.log('resolve', `resolved via ${selectorSet.resolutionSource}${selectorSet.tokensUsed ? ` · ${selectorSet.tokensUsed} tok` : ''}`, {
+      stepIndex,
+      data: { source: selectorSet.resolutionSource, tokens: selectorSet.tokensUsed ?? 0, similarity: selectorSet.similarityScore },
+    });
+  }
+
   let stepError: Error | null = null;
   let result: Awaited<ReturnType<typeof engine.executeStep>>;
 
@@ -444,6 +467,13 @@ async function executeStep(
     result = { status: 'failed', selectorUsed: null, durationMs: 0, errorType: null, errorMessage: e.message ?? null, screenshotKey: null, domSnapshotKey: null };
     stepError = e;
   }
+
+  runLog?.log(isAssertion ? 'assert' : 'execute',
+    result.status === 'passed'
+      ? `${isAssertion ? 'asserted' : step.action} ✓${result.selectorUsed ? ` · ${result.selectorUsed}` : ''} · ${result.durationMs}ms`
+      : `${step.action} ✗ ${result.errorType ?? ''} ${result.errorMessage ?? ''}`.trim(),
+    { stepIndex, level: result.status === 'passed' ? 'info' : 'error', data: { status: result.status, selector: result.selectorUsed, durationMs: result.durationMs } },
+  );
 
   // ── After screenshot (upload and get key) ─────────────────────────────────
   const afterPng = await page.screenshot({ type: 'png' }).catch(() => null);
@@ -470,6 +500,7 @@ async function executeStep(
       if (capturedValue != null) {
         runContext.variables[captureKey] = capturedValue;
         obs.log('info', 'worker.captured_value', { name: captureKey, value: capturedValue });
+        runLog?.log('capture', `captured {{${captureKey}}} = "${capturedValue}"`, { stepIndex, data: { name: captureKey, value: capturedValue } });
       }
     }
     // Never cache assertion selectors (they verify per-run state and can embed
@@ -497,6 +528,7 @@ async function executeStep(
     }
 
     void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart, selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null, selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0, selectorSet.archetypeName ?? null, null, stepId, captureKey, capturedValue);
+    await runLog?.flush();
     return { status: 'passed', healed: false, afterPng };
   }
 
@@ -531,6 +563,8 @@ async function executeStep(
     previousSelector: selectorSet.selectors[0]?.selector ?? '',
   };
 
+  runLog?.log('heal', `step ${String(stepIndex + 1).padStart(2, '0')} failed (${failureClass}) — attempting heal`, { stepIndex, level: 'warn', data: { failureClass } });
+
   const healingResult = await healingEngine.heal(classifiedFailure, { tenantId, runId, page });
 
   if (healingResult.succeeded) {
@@ -549,9 +583,13 @@ async function executeStep(
         [healingResult.newSelector, stepResultId],
       ).catch((e: any) => obs.log('warn', 'worker.healed_update_failed', { error: e.message }));
     }
+    runLog?.log('heal', `healed via ${healingResult.strategyUsed} → ${healingResult.newSelector}`, { stepIndex, data: { strategy: healingResult.strategyUsed, newSelector: healingResult.newSelector } });
+    await runLog?.flush();
     return { status: 'passed', healed: true, afterPng };
   }
 
+  runLog?.log('heal', `heal failed (${failureClass})`, { stepIndex, level: 'error', data: { failureClass } });
+  await runLog?.flush();
   return { status: 'failed', healed: false, afterPng };
 }
 

@@ -6,7 +6,7 @@ import {
   ArrowLeft, ChevronRight, Play, Copy, GitBranch, GitCompare, Image as ImageIcon,
   Loader2, X, Check, AlertTriangle, Trash2, Plus, Save, ListIcon as ListIc,
   BarChart2, Terminal, Zap, MousePointerClick, Type as TypeIcon, Navigation,
-  History as HistoryIc, Cpu, Bookmark, Link2, Wrench, ChevronDown,
+  History as HistoryIc, Cpu, Bookmark, Link2, Wrench, ChevronDown, FileText,
 } from 'lucide-react';
 import type { CaseDetail, RunDetail, RunStatus, StepResult, RunSummary } from '@/types/api';
 import { useCaseDetail } from '@/hooks/use-case-detail';
@@ -221,7 +221,7 @@ export function TestDetailScreen({ caseId }: { caseId: string }) {
         duplicating={duplicating}
       />
 
-      <RunSummaryStrip run={run ?? null} fallback={test.recentRuns?.[0] ?? null} />
+      <RunSummaryStrip run={run ?? null} fallback={test.recentRuns?.[0] ?? null} caseId={caseId} runId={displayRunId} />
 
       <div className="flex-1 grid overflow-hidden" style={{ gridTemplateColumns: '220px 1fr 380px' }}>
         <RunHistoryRail runs={test.recentRuns ?? []} active={displayRunId} onSelect={(id) => { setActiveRunId(null); setActiveStepId(null); /* render last historical run */ /* (the rail acts on recentRuns; selecting persists locally only) */ }} />
@@ -386,7 +386,7 @@ function PageHeader({
 
 // ─── Run summary strip ───────────────────────────────────────────────────────
 
-function RunSummaryStrip({ run, fallback }: { run: RunDetail | null; fallback: RunSummary | null }) {
+function RunSummaryStrip({ run, fallback, caseId, runId }: { run: RunDetail | null; fallback: RunSummary | null; caseId: string; runId: string | null }) {
   const r = run ?? fallback;
   const status: StatusKind = r ? statusKind(r.status) : 'pending';
   const dur = r?.durationMs ?? null;
@@ -394,7 +394,7 @@ function RunSummaryStrip({ run, fallback }: { run: RunDetail | null; fallback: R
   const heals = run?.stepResults.filter((s) => s.status === 'healed').length ?? 0;
 
   return (
-    <div className="grid border-b border-border-subtle bg-surface-sunken" style={{ gridTemplateColumns: 'auto 1fr 1fr 1fr 1fr 1fr' }}>
+    <div className="grid border-b border-border-subtle bg-surface-sunken items-center" style={{ gridTemplateColumns: 'auto 1fr 1fr 1fr 1fr 1fr auto' }}>
       <div className="flex items-center gap-2.5 px-4 py-2.5 border-r border-border-subtle min-w-[180px]">
         <StatusDot status={status} size={8} />
         <div>
@@ -412,6 +412,16 @@ function RunSummaryStrip({ run, fallback }: { run: RunDetail | null; fallback: R
       <RunCell label="Self-heals" value={`${heals}`} />
       <RunCell label="Tokens" value={tokens.toLocaleString()} />
       <RunCell label="When" value={r?.completedAt ? formatRelative(r.completedAt) : null} />
+      <div className="px-4 py-2.5">
+        {runId ? (
+          <a
+            href={`/tests/${caseId}/runs/${runId}/report`}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-xs bg-surface-elevated border border-border-strong text-text hover:text-text-hi whitespace-nowrap"
+          >
+            <FileText size={12} /> Full report
+          </a>
+        ) : null}
+      </div>
     </div>
   );
 }

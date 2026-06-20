@@ -208,6 +208,77 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
     return reply.send(run);
   });
 
+  /**
+   * GET /runs/:id/report
+   *
+   * Full-run report data: the persisted chronological event log (run_events,
+   * ordered) plus a derived LLM decision summary. Powers the dedicated run
+   * report view. Tenant-scoped via the run's tenant.
+   * Spec: docs/specs/tests-ux/spec-run-report-view.md
+   */
+  app.get<{ Params: { id: string } }>('/runs/:id/report', async (request, reply) => {
+    const pool = getPool();
+    const runId = request.params.id;
+
+    const { rows: runRows } = await pool.query(
+      `SELECT id, tenant_id, status, environment_url, triggered_by, created_at, completed_at, started_at
+       FROM runs WHERE id = $1`,
+      [runId],
+    );
+    if (runRows.length === 0) return reply.status(404).send({ error: 'RUN_NOT_FOUND' });
+    const run = runRows[0];
+
+    const { rows: events } = await pool.query(
+      `SELECT seq, step_index, level, phase, message, data, created_at
+       FROM run_events WHERE run_id = $1 ORDER BY seq ASC`,
+      [runId],
+    );
+
+    // LLM decision summary, derived from step_results.
+    const { rows: llmSteps } = await pool.query(
+      `SELECT sr.step_id, sr.resolution_source, sr.tokens_used, sr.llm_picked_kaizen_id, sr.dom_candidates,
+              ts.raw_text AS step_raw_text
+       FROM step_results sr
+       LEFT JOIN test_steps ts ON ts.id = sr.step_id
+       WHERE sr.run_id = $1
+       ORDER BY sr.created_at ASC`,
+      [runId],
+    );
+
+    const totalTokens = llmSteps.reduce((s: number, r: any) => s + Number(r.tokens_used || 0), 0);
+    const llmCount = llmSteps.filter((r: any) => r.resolution_source === 'llm').length;
+    const cacheCount = llmSteps.filter((r: any) => r.resolution_source && r.resolution_source !== 'llm').length;
+
+    return reply.send({
+      run: {
+        id: run.id, status: run.status, environmentUrl: run.environment_url,
+        triggeredBy: run.triggered_by, createdAt: run.created_at,
+        startedAt: run.started_at, completedAt: run.completed_at,
+      },
+      log: events.map((e: any) => ({
+        seq: e.seq, stepIndex: e.step_index, level: e.level, phase: e.phase,
+        message: e.message, data: e.data, at: e.created_at,
+      })),
+      llmSummary: {
+        totalTokens,
+        llmResolvedSteps: llmCount,
+        cacheResolvedSteps: cacheCount,
+        steps: llmSteps
+          .filter((r: any) => r.resolution_source === 'llm')
+          .map((r: any) => {
+            const cands = r.dom_candidates || [];
+            const picked = cands.find((c: any) => c.kaizenId === r.llm_picked_kaizen_id) || null;
+            return {
+              rawText: r.step_raw_text ?? null,
+              tokens: Number(r.tokens_used || 0),
+              candidateCount: cands.length,
+              chosen: picked ? { role: picked.role, name: picked.name } : null,
+            };
+          }),
+      },
+    });
+  });
+
   const screenshots = new (require('../../modules/media/screenshot.service').ScreenshotService)(obs);
 
   /**
