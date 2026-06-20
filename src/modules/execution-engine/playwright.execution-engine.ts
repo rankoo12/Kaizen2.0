@@ -90,7 +90,7 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
       let lastError: Error | null = null;
       for (const entry of selectorSet.selectors) {
         try {
-          await this.dispatchAction(effectiveStep, entry.selector, pw, useCheck);
+          const matched = await this.dispatchAction(effectiveStep, entry.selector, pw, useCheck);
 
           this.observability.increment('engine.step_passed', {
             action: step.action,
@@ -99,7 +99,9 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
 
           return {
             status: 'passed',
-            selectorUsed: entry.selector,
+            // For assertions, report the element that actually contained the
+            // value (matched), not the broad query selector ("body").
+            selectorUsed: matched ?? entry.selector,
             errorType: null,
             errorMessage: null,
             durationMs: Date.now() - start,
@@ -172,12 +174,18 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
    * Dispatches a selector-based action against the live page.
    * Throws on failure so the caller can try the next selector.
    */
+  /**
+   * Executes the step's action against `selector`. Returns a more specific
+   * selector string for assertions (the element that actually contained the
+   * asserted text) so the run details page shows the matched element rather than
+   * the broad query selector; returns void for all other actions.
+   */
   private async dispatchAction(
     step: StepAST,
     selector: string,
     page: PlaywrightPageLike,
     useCheck = false,
-  ): Promise<void> {
+  ): Promise<string | void> {
     switch (step.action) {
       // click_random resolves to a concrete element in the worker (a random
       // candidate is chosen and handed to the engine as a single selector);
@@ -270,38 +278,55 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
         const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
         const needle = norm(step.value);
 
-        const elText = await page.$eval(selector, (el) => (el.textContent ?? '').trim()).catch(() => '');
-        if (norm(elText).includes(needle)) break;
-
-        // Whole-page fallback, retried — the value may still be rendering after a
-        // navigation (e.g. the cart table loads just after "click shopping cart").
-        // Poll the body a few times before giving up to absorb that race.
-        let bodyText = '';
-        let bodyHit = false;
+        // Locate the INNERMOST element whose text contains the value, anywhere on
+        // the page (retried for render races after a navigation). Returning the
+        // specific matched element — rather than the broad "body" query — lets the
+        // run details page show exactly where the value was found (e.g. the cart
+        // row link), instead of an opaque "body".
+        // Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §1.2
+        let match: { selector: string; text: string } | null = null;
         for (let attempt = 0; attempt < 5; attempt++) {
-          bodyText = await page.$eval('body', (el) => (el.textContent ?? '').trim()).catch(() => '');
-          if (norm(bodyText).includes(needle)) { bodyHit = true; break; }
+          match = await page.$eval(
+            'body',
+            (root: Element, search: string) => {
+              const tidy = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
+              const lc = (s: string) => tidy(s).toLowerCase();
+              const all = Array.from(root.querySelectorAll<Element>('*'));
+              // Innermost = the deepest element that still contains the needle.
+              for (let i = all.length - 1; i >= 0; i--) {
+                const el = all[i];
+                if (lc(el.textContent ?? '').includes(search)) {
+                  // Build a readable, unique-ish selector for the matched element.
+                  let sel = el.tagName.toLowerCase();
+                  if (el.id) sel = `#${el.id}`;
+                  else {
+                    const cls = (el.getAttribute('class') ?? '').trim().split(/\s+/).filter(Boolean)[0];
+                    if (cls) sel += `.${cls}`;
+                  }
+                  return { selector: sel, text: tidy(el.textContent).slice(0, 200) };
+                }
+              }
+              return null;
+            },
+            needle,
+          ).catch(() => null);
+          if (match) break;
           await page.waitForTimeout(400);
         }
 
-        // Diagnostic: surface exactly what we compared so a failing assertion is
-        // debuggable from logs (is the needle un-interpolated? is the value
-        // actually on the page?). Truncated to keep logs sane.
         this.observability.log('info', 'engine.assert_text_check', {
           rawValue: step.value,
           needle,
-          elTextSample: elText.slice(0, 120),
-          bodyHasNeedle: bodyHit,
-          bodyLen: bodyText.length,
+          found: match?.selector ?? null,
         });
-        if (bodyHit) {
-          this.observability.increment('engine.assert_text_page_fallback');
-          break;
+
+        if (match) {
+          this.observability.increment('engine.assert_text_matched');
+          return match.selector; // surfaced as selectorUsed on the run details page
         }
 
         throw new Error(
-          `assert_text failed: "${step.value}" not found in the target element or on the page. ` +
-          `Element text was "${elText.slice(0, 200)}".`,
+          `assert_text failed: "${step.value}" not found anywhere on the page.`,
         );
       }
 
