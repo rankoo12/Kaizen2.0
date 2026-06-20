@@ -409,11 +409,22 @@ async function executeStep(
         selectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
       }
     }
+  } else if (step.action === 'assert_text') {
+    // A content assertion ("verify X appears / the cart contains X") does NOT
+    // need the element resolver to pick the right element — the DOM pruner
+    // frequently never even surfaces the relevant node (e.g. the product link
+    // in the cart table), so asking the LLM to pick from its candidate list is
+    // the wrong model. We assert against the whole page body directly; the
+    // engine's assert_text checks the value is present anywhere on the page.
+    selectorSet = {
+      selectors: [{ selector: 'body', strategy: 'css', confidence: 1 }],
+      fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null,
+    };
   } else {
-    // Assertions verify the CURRENT page state — they must never read a cached
-    // selector (it can embed run-specific data, e.g. a header link named with a
-    // previous run's email). Use the no-cache resolver so they re-resolve fresh.
-    const isAssertionAction = step.action === 'assert_text' || step.action === 'assert_visible';
+    // Other assertions (assert_visible) verify CURRENT page state — they must
+    // never read a cached selector (it can embed run-specific data, e.g. a
+    // header link named with a previous run's email). Use the no-cache resolver.
+    const isAssertionAction = step.action === 'assert_visible';
     const needsElement = step.action !== 'navigate' && step.action !== 'press_key' && step.action !== 'wait';
     selectorSet = needsElement
       ? await (isAssertionAction ? assertionResolver : resolver).resolve(step, resolutionContext)
