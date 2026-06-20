@@ -273,14 +273,25 @@ describe('PlaywrightExecutionEngine', () => {
       expect(result.status).toBe('passed');
     });
 
-    it('throws when the expected substring is absent (last selector error propagates)', async () => {
-      // With a single selector, the dispatch error is re-thrown by executeStep so
-      // the worker's failure classifier receives the real assertion message.
-      mockPage.$eval.mockResolvedValue('Log in   Register');
+    it('falls back to the page body when the resolved element misses but the value is on the page', async () => {
+      // Element resolved to the "Shopping cart (1)" link (no match), but the
+      // product name IS elsewhere on the cart page → fallback passes.
+      mockPage.$eval
+        .mockResolvedValueOnce('Shopping cart (1)')                 // resolved element
+        .mockResolvedValueOnce('… cart table … Music 2 … total …'); // body
+
+      const result = await engine.executeStep(makeStep('Music 2'), selectorSet, mockPage);
+
+      expect(result.status).toBe('passed');
+      expect(mockObservability.increment).toHaveBeenCalledWith('engine.assert_text_page_fallback');
+    });
+
+    it('throws when the value is in neither the element nor the page body', async () => {
+      mockPage.$eval.mockResolvedValue('Log in   Register'); // both element + body miss
 
       await expect(
         engine.executeStep(makeStep('test@example.com'), selectorSet, mockPage),
-      ).rejects.toThrow(/expected element to contain "test@example.com"/);
+      ).rejects.toThrow(/not found in the target element or on the page/);
     });
 
     it('throws when value is null', async () => {
