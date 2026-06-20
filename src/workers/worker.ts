@@ -88,6 +88,17 @@ if (process.env.DISABLE_LLM === '1') {
 }
 
 const resolver = new CompositeElementResolver(resolvers, obs, llm);
+
+// No-cache resolver for assertion steps: skips the CachedElementResolver so a
+// "verify ..." step always re-resolves against the live page and can never read
+// a stale selector that embedded run-specific data (e.g. a header link named
+// "<a previous run's email>"). Assertions also never write to the cache.
+const assertionResolvers: IElementResolver[] = [archetypeElementResolver];
+if (process.env.DISABLE_LLM !== '1') {
+  assertionResolvers.push(llmResolver);
+}
+const assertionResolver = new CompositeElementResolver(assertionResolvers, obs, llm);
+
 const engine = new PlaywrightExecutionEngine(obs);
 const challengeDetector = new PageChallengeDetector();
 const screenshots = new ScreenshotService(obs);
@@ -399,11 +410,19 @@ async function executeStep(
       }
     }
   } else {
+    // Assertions verify the CURRENT page state — they must never read a cached
+    // selector (it can embed run-specific data, e.g. a header link named with a
+    // previous run's email). Use the no-cache resolver so they re-resolve fresh.
+    const isAssertionAction = step.action === 'assert_text' || step.action === 'assert_visible';
     const needsElement = step.action !== 'navigate' && step.action !== 'press_key' && step.action !== 'wait';
     selectorSet = needsElement
-      ? await resolver.resolve(step, resolutionContext)
+      ? await (isAssertionAction ? assertionResolver : resolver).resolve(step, resolutionContext)
       : { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
   }
+
+  // Assertions must never be persisted to the selector cache (see above) — the
+  // write-side guard. Re-verify every run.
+  const isAssertion = step.action === 'assert_text' || step.action === 'assert_visible';
 
   let stepError: Error | null = null;
   let result: Awaited<ReturnType<typeof engine.executeStep>>;
@@ -442,7 +461,11 @@ async function executeStep(
         obs.log('info', 'worker.captured_value', { name: captureKey, value: capturedValue });
       }
     }
-    if (result.selectorUsed) {
+    // Never cache assertion selectors (they verify per-run state and can embed
+    // run-specific data like the current email); also skip caching for the
+    // direct click_random pick whose selector is a transient data-kz-rand marker.
+    const cacheable = !isAssertion && step.action !== 'click_random';
+    if (result.selectorUsed && cacheable) {
       await resolver.recordSuccess(step.targetHash, domain, result.selectorUsed).catch((e: any) =>
         obs.log('warn', 'worker.record_success_failed', { error: e.message }),
       );
@@ -451,7 +474,9 @@ async function executeStep(
     // Archetype learning: when the LLM resolved this step, try to promote the
     // picked element's accessible name into the archetype library so future runs
     // on any site with the same accessible name skip the LLM entirely.
-    if (selectorSet.resolutionSource === 'llm' && selectorSet.llmPickedKaizenId && selectorSet.candidates) {
+    // Skip for assertions — we never want to learn an archetype from a verify
+    // step whose element name may be run-specific data.
+    if (!isAssertion && selectorSet.resolutionSource === 'llm' && selectorSet.llmPickedKaizenId && selectorSet.candidates) {
       const picked = selectorSet.candidates.find((c) => c.kaizenId === selectorSet.llmPickedKaizenId);
       if (picked) {
         await archetypeResolver.learn(picked.role, picked.name, step.action).catch((e: any) =>
