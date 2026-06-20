@@ -38,7 +38,7 @@ import { CompositeElementResolver } from '../modules/element-resolver/composite.
 import type { IElementResolver } from '../modules/element-resolver/interfaces';
 import { DBArchetypeResolver } from '../modules/element-resolver/db.archetype-resolver';
 import { ArchetypeElementResolver } from '../modules/element-resolver/archetype.element-resolver';
-import { pickRandomCandidate } from '../modules/element-resolver/random-element.selector';
+import { pickRandomCandidate, resolveCardTitle } from '../modules/element-resolver/random-element.selector';
 import { interpolateStep } from './run-context';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
 import { PageChallengeDetector } from '../modules/execution-engine/challenge-detector';
@@ -359,7 +359,13 @@ async function executeStep(
       const entries = pick.candidate.selectorCandidates?.length
         ? pick.candidate.selectorCandidates
         : [{ selector: pick.candidate.cssSelector, strategy: 'css' as const, confidence: 0.5 }];
-      randomPickName = pick.candidate.name || pick.candidate.textContent || null;
+      // Capture the *item title* from the picked element's product card — when
+      // the pick is an "Add to cart" button, its own text ("Add to cart") is
+      // useless for a later cart match; the card title is the product name that
+      // appears in the cart. Falls back to the element's accessible name.
+      // Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §2
+      const cardTitle = await resolveCardTitle(page, pick.candidate.cssSelector);
+      randomPickName = cardTitle || pick.candidate.name || pick.candidate.textContent || null;
       obs.increment('worker.click_random_picked', { poolSize: String(pick.poolSize) });
       selectorSet = {
         selectors: entries,
@@ -404,8 +410,12 @@ async function executeStep(
     // ── Capture: store the resolved element's text into the run context so a
     // later step can reference it via {{captureAs}}. For click_random the name
     // is already known (randomPickName); otherwise read it from the live element.
+    // click_random captures IMPLICITLY to `selectedItem` (the LLM AST has no
+    // captureAs field), so a later "verify cart matches {{selectedItem}}" works
+    // out of the box.
+    const captureKey = step.captureAs ?? (step.action === 'click_random' ? 'selectedItem' : null);
     let capturedValue: string | null = null;
-    if (step.captureAs) {
+    if (captureKey) {
       capturedValue = randomPickName;
       if (capturedValue == null && result.selectorUsed) {
         capturedValue = await page
@@ -413,8 +423,8 @@ async function executeStep(
           .catch(() => null);
       }
       if (capturedValue != null) {
-        runContext.variables[step.captureAs] = capturedValue;
-        obs.log('info', 'worker.captured_value', { name: step.captureAs, value: capturedValue });
+        runContext.variables[captureKey] = capturedValue;
+        obs.log('info', 'worker.captured_value', { name: captureKey, value: capturedValue });
       }
     }
     if (result.selectorUsed) {
@@ -435,7 +445,7 @@ async function executeStep(
       }
     }
 
-    void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart, selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null, selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0, selectorSet.archetypeName ?? null, null, stepId, step.captureAs ?? null, capturedValue);
+    void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart, selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null, selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0, selectorSet.archetypeName ?? null, null, stepId, captureKey, capturedValue);
     return { status: 'passed', healed: false, afterPng };
   }
 
