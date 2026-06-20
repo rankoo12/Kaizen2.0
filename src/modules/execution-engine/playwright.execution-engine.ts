@@ -254,20 +254,35 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
       }
 
       case 'assert_text': {
-        // Content assertion: the element's text must CONTAIN the expected value.
-        // Containment (not strict equality) because real UI containers wrap the
-        // value of interest in surrounding chrome (labels, prices, quantities).
+        // Content assertion: the expected value must appear in the resolved
+        // element's text. Containment (not equality) because real UI containers
+        // wrap the value in surrounding chrome (labels, prices, quantities).
         // Comparison is case-insensitive and whitespace-normalised.
+        //
+        // WHOLE-PAGE FALLBACK: "the cart"/"the header" etc. often resolve to a
+        // link or wrapper that doesn't literally contain the expected text even
+        // when the value IS on the page (e.g. "verify the cart contains Music 2"
+        // resolving to the "Shopping cart (1)" link). The human intent is "X is
+        // shown on this page", so if the resolved element misses, we re-check the
+        // whole document body before failing.
         // Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §1.2
         if (step.value == null) throw new Error('assert_text action requires StepAST.value');
-        const actual = await page.$eval(selector, (el) => (el.textContent ?? '').trim());
         const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
-        if (!norm(actual).includes(norm(step.value))) {
-          throw new Error(
-            `assert_text failed: expected element to contain "${step.value}" but got "${actual}".`,
-          );
+        const needle = norm(step.value);
+
+        const elText = await page.$eval(selector, (el) => (el.textContent ?? '').trim()).catch(() => '');
+        if (norm(elText).includes(needle)) break;
+
+        const bodyText = await page.$eval('body', (el) => (el.textContent ?? '').trim()).catch(() => '');
+        if (norm(bodyText).includes(needle)) {
+          this.observability.increment('engine.assert_text_page_fallback');
+          break;
         }
-        break;
+
+        throw new Error(
+          `assert_text failed: "${step.value}" not found in the target element or on the page. ` +
+          `Element text was "${elText.slice(0, 200)}".`,
+        );
       }
 
       case 'wait':

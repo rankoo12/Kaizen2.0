@@ -18,7 +18,7 @@ const WHERE = `selectors::text ~ '[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}
 (async () => {
   const c = new Client({ connectionString: url });
   await c.connect();
-  const sel = await c.query(`SELECT target_hash, domain, selectors FROM selector_cache WHERE ${WHERE}`);
+  const sel = await c.query(`SELECT content_hash, domain, selectors FROM selector_cache WHERE ${WHERE}`);
   console.log(`Found ${sel.rowCount} poisoned selector_cache row(s):`);
   sel.rows.forEach((r: any) => console.log('  ', r.domain, '→', JSON.stringify(r.selectors).slice(0, 120)));
 
