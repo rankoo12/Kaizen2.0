@@ -13,8 +13,8 @@ import type { RunContext, StepAST } from '../types';
 
 const TOKEN_RE = /\{\{\s*([\w.]+)\s*\}\}/g;
 
-export function createRunContext(): RunContext {
-  return { variables: {} };
+export function createRunContext(seed?: Record<string, string>): RunContext {
+  return { variables: { ...(seed ?? {}) } };
 }
 
 /**

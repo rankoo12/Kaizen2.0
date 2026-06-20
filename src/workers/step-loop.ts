@@ -42,6 +42,7 @@ export async function runStepLoop(
   runId: string,
   compiledSteps: StepAST[],
   deps: StepLoopDeps,
+  seedVariables?: Record<string, string>,
 ): Promise<StepLoopResult> {
   let runPassed = true;
   let anyHealed = false;
@@ -49,8 +50,9 @@ export async function runStepLoop(
   let stepsExecuted = 0;
   let previousAfterPng: Buffer | null = null;
   // Run-scoped variable memory: steps capture values into it and reference them
-  // in later steps via {{name}} tokens. Lives for the duration of this loop only.
-  const runContext = createRunContext();
+  // in later steps via {{name}} tokens. Seeded with generated form data (if any)
+  // so {{email}} etc. resolve from the first step. Lives for this loop only.
+  const runContext = createRunContext(seedVariables);
 
   for (let i = 0; i < compiledSteps.length; i++) {
     if (await deps.isCancelled(runId)) {

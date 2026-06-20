@@ -20,6 +20,13 @@ export type RunJobPayload = {
    */
   stepIds?: string[];
   baseUrl: string;
+  /**
+   * Pre-seeded run-scoped variables (generated form data) made available to
+   * steps via {{token}} interpolation. Generated fresh per run by the API so
+   * each run registers unique data. Optional for backwards-compat.
+   * Spec: docs/specs/tests-ux/spec-duplicate-case-and-generated-data.md §2.3
+   */
+  seedVariables?: Record<string, string>;
 };
 
 export const RUNS_QUEUE_NAME = 'kaizen-runs';

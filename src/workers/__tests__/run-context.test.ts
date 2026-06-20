@@ -16,6 +16,19 @@ describe('createRunContext', () => {
   it('starts with an empty variable map', () => {
     expect(createRunContext()).toEqual({ variables: {} });
   });
+
+  it('seeds the variable map from generated form data', () => {
+    const ctx = createRunContext({ email: 'a@b.com', firstName: 'Jordan' });
+    expect(ctx.variables.email).toBe('a@b.com');
+    expect(ctx.variables.firstName).toBe('Jordan');
+  });
+
+  it('copies the seed so later mutations do not leak back', () => {
+    const seed = { email: 'a@b.com' };
+    const ctx = createRunContext(seed);
+    ctx.variables.email = 'changed';
+    expect(seed.email).toBe('a@b.com');
+  });
 });
 
 describe('interpolate', () => {

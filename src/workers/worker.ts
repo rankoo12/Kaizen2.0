@@ -173,7 +173,7 @@ async function processRun(payload: RunJobPayload): Promise<void> {
       onCancelled: (stepsCompleted) => {
         logger.info({ event: 'run_cancelled', runId, stepsCompleted });
       },
-    });
+    }, payload.seedVariables);
   } finally {
     await context.close();
     await browser.close();

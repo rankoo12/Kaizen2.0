@@ -179,6 +179,16 @@ describe('runStepLoop — stop-on-fail', () => {
     expect(executeStep.mock.calls[2][3]).toBe(ctx0);
   });
 
+  it('seeds the runContext with generated form data from the caller', async () => {
+    const steps = makeSteps(1);
+    const executeStep = jest.fn().mockResolvedValue({ status: 'passed', healed: false, afterPng: null });
+    const deps = makeDeps({ executeStep });
+
+    await runStepLoop('run-seed', steps, deps, { email: 'unique@example.com' });
+
+    expect(executeStep.mock.calls[0][3].variables.email).toBe('unique@example.com');
+  });
+
   it('empty step list short-circuits with passed=true and stepsExecuted=0', async () => {
     const result = await runStepLoop('run-8', [], makeDeps());
     expect(result.runPassed).toBe(true);

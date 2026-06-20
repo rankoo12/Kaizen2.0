@@ -30,6 +30,7 @@ import { OpenAIGateway } from '../../modules/llm-gateway/openai.gateway';
 import { PostgresBillingMeter } from '../../modules/billing-meter/postgres.billing-meter';
 import { usageThisMonth } from '../../modules/billing-meter/usage';
 import { PinoObservability } from '../../modules/observability/pino.observability';
+import { generateFormData } from '../../modules/test-data/generate';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -65,6 +66,10 @@ const UpdateCaseBody = z.object({
 
 const RunCaseBody = z.object({
   baseUrl: z.string().url().optional(), // overrides case.base_url if provided
+});
+
+const DuplicateCaseBody = z.object({
+  name: z.string().min(1).max(300).optional(), // defaults to "<original> (copy)"
 });
 
 // ─── Route registration ───────────────────────────────────────────────────────
@@ -512,6 +517,89 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
     return reply.status(204).send();
   });
 
+  // ── POST /cases/:caseId/duplicate ─────────────────────────────────────────────
+  // Clones a case's active steps + config into a new case in the same suite.
+  // Run history, step_results, and screenshots are NOT copied.
+  // Spec: docs/specs/tests-ux/spec-duplicate-case-and-generated-data.md §1
+  app.post('/cases/:caseId/duplicate', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { caseId } = request.params as { caseId: string };
+    const parsed = DuplicateCaseBody.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'INVALID_REQUEST', details: parsed.error.issues });
+    }
+    const { tenantId } = request;
+
+    const result = await withTenantTransaction(tenantId, async (client) => {
+      // Source case
+      const { rows: srcRows } = await client.query<{
+        id: string; suite_id: string; name: string; base_url: string;
+      }>(
+        `SELECT id, suite_id, name, base_url FROM test_cases WHERE id = $1 AND tenant_id = $2`,
+        [caseId, tenantId],
+      );
+      if (srcRows.length === 0) return null;
+      const src = srcRows[0];
+
+      // Source active steps in order
+      const { rows: srcSteps } = await client.query<{ raw_text: string; content_hash: string; position: number }>(
+        `SELECT ts.raw_text, ts.content_hash, tcs.position
+         FROM test_case_steps tcs
+         JOIN test_steps ts ON ts.id = tcs.step_id
+         WHERE tcs.case_id = $1 AND tcs.is_active = true
+         ORDER BY tcs.position`,
+        [caseId],
+      );
+
+      const newName = parsed.data.name ?? `${src.name} (copy)`;
+
+      const { rows: caseRows } = await client.query<{
+        id: string; name: string; base_url: string; created_at: Date; updated_at: Date;
+      }>(
+        `INSERT INTO test_cases (tenant_id, suite_id, name, base_url)
+         VALUES ($1, $2, $3, $4)
+         RETURNING id, name, base_url, created_at, updated_at`,
+        [tenantId, src.suite_id, newName, src.base_url],
+      );
+      const newCase = caseRows[0];
+
+      const stepRows: { id: string; position: number; raw_text: string; content_hash: string }[] = [];
+      for (const s of srcSteps) {
+        const { rows: stepRes } = await client.query<{ id: string }>(
+          `INSERT INTO test_steps (tenant_id, case_id, position, raw_text, content_hash)
+           VALUES ($1, $2, $3, $4, $5)
+           RETURNING id`,
+          [tenantId, newCase.id, s.position, s.raw_text, s.content_hash],
+        );
+        const stepId = stepRes[0].id;
+        await client.query(
+          `INSERT INTO test_case_steps (tenant_id, case_id, step_id, position, is_active)
+           VALUES ($1, $2, $3, $4, true)`,
+          [tenantId, newCase.id, stepId, s.position],
+        );
+        stepRows.push({ id: stepId, position: s.position, raw_text: s.raw_text, content_hash: s.content_hash });
+      }
+
+      return { case: newCase, suiteId: src.suite_id, steps: stepRows };
+    });
+
+    if (!result) return reply.status(404).send({ error: 'CASE_NOT_FOUND' });
+
+    return reply.status(201).send({
+      case: {
+        id:        result.case.id,
+        name:      result.case.name,
+        baseUrl:   result.case.base_url,
+        suiteId:   result.suiteId,
+        createdAt: result.case.created_at,
+        updatedAt: result.case.updated_at,
+        steps:     result.steps.map((s) => ({
+          id: s.id, position: s.position, rawText: s.raw_text, contentHash: s.content_hash,
+        })),
+        lastRun: null,
+      },
+    });
+  });
+
   // ── POST /cases/:caseId/run ───────────────────────────────────────────────────
   app.post('/cases/:caseId/run', { preHandler: [requireAuth] }, async (request, reply) => {
     const { caseId } = request.params as { caseId: string };
@@ -598,6 +686,10 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       // the runs API can LEFT JOIN test_steps and surface the original text.
       stepIds: caseData.stepIds,
       baseUrl,
+      // Generated form data ({{firstName}}, {{email}}, …) seeded into the run
+      // context so steps register unique data each run.
+      // Spec: docs/specs/tests-ux/spec-duplicate-case-and-generated-data.md §2
+      seedVariables: generateFormData(),
     });
 
     return reply.status(202).send({ runId, status: 'queued' });
