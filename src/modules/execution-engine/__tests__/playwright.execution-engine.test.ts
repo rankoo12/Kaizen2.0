@@ -257,41 +257,36 @@ describe('PlaywrightExecutionEngine', () => {
       similarityScore: null,
     };
 
-    it('passes when the element text contains the expected substring', async () => {
-      mockPage.$eval.mockResolvedValueOnce('Welcome, test@example.com  |  Log out');
-
-      const result = await engine.executeStep(makeStep('test@example.com'), selectorSet, mockPage);
-
-      expect(result.status).toBe('passed');
-    });
-
-    it('matches case-insensitively and ignores whitespace differences', async () => {
-      mockPage.$eval.mockResolvedValueOnce('  HELLO   WORLD  ');
-
-      const result = await engine.executeStep(makeStep('hello world'), selectorSet, mockPage);
-
-      expect(result.status).toBe('passed');
-    });
-
-    it('falls back to the page body when the resolved element misses but the value is on the page', async () => {
-      // Element resolved to the "Shopping cart (1)" link (no match), but the
-      // product name IS elsewhere on the cart page → fallback passes.
-      mockPage.$eval
-        .mockResolvedValueOnce('Shopping cart (1)')                 // resolved element
-        .mockResolvedValueOnce('… cart table … Music 2 … total …'); // body
+    it('passes and reports the matched element selector', async () => {
+      // assert_text searches the page body in-browser and returns the innermost
+      // matching element's selector + text.
+      mockPage.$eval.mockResolvedValueOnce({ selector: 'td.product', text: 'Music 2' });
 
       const result = await engine.executeStep(makeStep('Music 2'), selectorSet, mockPage);
 
       expect(result.status).toBe('passed');
-      expect(mockObservability.increment).toHaveBeenCalledWith('engine.assert_text_page_fallback');
+      // The run details page should show the matched element, not "body".
+      expect(result.selectorUsed).toBe('td.product');
+      expect(mockObservability.increment).toHaveBeenCalledWith('engine.assert_text_matched');
     });
 
-    it('throws when the value is in neither the element nor the page body', async () => {
-      mockPage.$eval.mockResolvedValue('Log in   Register'); // both element + body miss
+    it('retries while the value has not rendered yet, then passes', async () => {
+      mockPage.$eval
+        .mockResolvedValueOnce(null)                                  // not rendered yet
+        .mockResolvedValueOnce({ selector: 'a.product-name', text: '3rd Album' });
+
+      const result = await engine.executeStep(makeStep('3rd Album'), selectorSet, mockPage);
+
+      expect(result.status).toBe('passed');
+      expect(result.selectorUsed).toBe('a.product-name');
+    });
+
+    it('throws when the value is nowhere on the page', async () => {
+      mockPage.$eval.mockResolvedValue(null); // never matches, all retries exhausted
 
       await expect(
         engine.executeStep(makeStep('test@example.com'), selectorSet, mockPage),
-      ).rejects.toThrow(/not found in the target element or on the page/);
+      ).rejects.toThrow(/not found anywhere on the page/);
     });
 
     it('throws when value is null', async () => {
