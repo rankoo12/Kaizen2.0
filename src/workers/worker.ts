@@ -354,7 +354,7 @@ async function executeStep(
     // surfaced for capture (Gap C) and persisted for the run details page.
     // Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §2
     const candidates = await domPruner.prune(page, step.targetDescription ?? '');
-    const pick = pickRandomCandidate(candidates, `${runId}:${stepIndex}`);
+    const pick = pickRandomCandidate(candidates, `${runId}:${stepIndex}`, step.targetDescription ?? '');
     if (pick) {
       const entries = pick.candidate.selectorCandidates?.length
         ? pick.candidate.selectorCandidates

@@ -49,24 +49,71 @@ function looksLikeChrome(c: CandidateNode): boolean {
   return CHROME_NAMES.has(base);
 }
 
+/** Tokens from a target description that carry no element-matching signal. */
+const STOPWORDS = new Set([
+  'a', 'an', 'the', 'random', 'any', 'some', 'to', 'of', 'for', 'in', 'on',
+  'and', 'add', 'select', 'pick', 'choose', 'click', 'open', 'item', 'items',
+  'product', 'products', // intentionally weak: "product" appears nowhere on
+  // product elements (their name is the product title), so it must not dominate.
+]);
+
+/**
+ * Score one candidate by word-overlap between the target description and the
+ * candidate's role/name/attributes. Returns 0 when nothing meaningful matches.
+ * NOTE: the DOM pruner sets every candidate's `similarityScore` to a constant
+ * 1.0, so it is useless here — we compute our own score against the target.
+ */
+function lexicalScore(c: CandidateNode, targetWords: string[]): number {
+  if (targetWords.length === 0) return 0;
+  const hay = [
+    c.role,
+    c.name,
+    c.textContent,
+    c.attributes?.['value'] ?? '',
+    c.attributes?.['aria-label'] ?? '',
+    c.attributes?.['title'] ?? '',
+  ].join(' ').toLowerCase();
+  return targetWords.reduce((n, w) => n + (hay.includes(w) ? 1 : 0), 0);
+}
+
+function targetTokens(target: string): string[] {
+  return target.toLowerCase()
+    .split(/[^a-z0-9]+/)
+    .filter((w) => w.length > 1 && !STOPWORDS.has(w));
+}
+
 /**
  * Reduce the candidate pool to those plausibly matching the target.
  *
- * Order of preference:
- *   1. candidates the DOM pruner lexically scored as relevant (best signal);
- *   2. otherwise, all visible non-chrome candidates (filters out footer/nav junk
- *      so a vague target like "a random product" can't land on "Twitter");
- *   3. otherwise, the full visible pool (never return empty when input is not).
+ * The DOM pruner returns EVERY interactive element with a constant
+ * similarityScore (1.0), so we cannot trust that field. Instead:
+ *   1. always drop site chrome (footer/nav/search/cart) and unnamed elements;
+ *   2. score the rest by word-overlap with the target description and keep the
+ *      top scorers (e.g. "add to cart button" → the Add-to-cart inputs);
+ *   3. if nothing scores (vague target like "a random product"), return all
+ *      non-chrome candidates so the pick is still a real content element;
+ *   4. never return empty when the input was non-empty.
  */
-export function eligibleCandidates(candidates: CandidateNode[]): CandidateNode[] {
+export function eligibleCandidates(
+  candidates: CandidateNode[],
+  target = '',
+): CandidateNode[] {
   const visible = candidates.filter((c) => c.isVisible);
-  const pool = visible.length > 0 ? visible : candidates;
+  const base = visible.length > 0 ? visible : candidates;
 
-  const scored = pool.filter((c) => c.similarityScore > 0);
-  if (scored.length > 0) return scored;
+  const nonChrome = base.filter((c) => !looksLikeChrome(c));
+  const pool = nonChrome.length > 0 ? nonChrome : base;
 
-  const nonChrome = pool.filter((c) => !looksLikeChrome(c));
-  if (nonChrome.length > 0) return nonChrome;
+  const words = targetTokens(target);
+  if (words.length > 0) {
+    const scored = pool
+      .map((c) => ({ c, s: lexicalScore(c, words) }))
+      .filter((x) => x.s > 0);
+    if (scored.length > 0) {
+      const top = Math.max(...scored.map((x) => x.s));
+      return scored.filter((x) => x.s === top).map((x) => x.c);
+    }
+  }
 
   return pool;
 }
@@ -86,9 +133,10 @@ export type RandomPick = {
 export function pickRandomCandidate(
   candidates: CandidateNode[],
   seed: string,
+  target = '',
 ): RandomPick | null {
   if (candidates.length === 0) return null;
-  const pool = eligibleCandidates(candidates);
+  const pool = eligibleCandidates(candidates, target);
   const index = seededIndex(seed, pool.length);
   return { candidate: pool[index], index, poolSize: pool.length };
 }
@@ -124,16 +172,19 @@ export async function resolveCardTitle(
       const clean = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
 
       // 1. Climb to a product-card-like ancestor and read its title.
+      // nopCommerce/demowebshop: input.product-box-add-to-cart-button lives at
+      // div.item-box > div > div.details > div.add-info > div.buttons > input,
+      // with the title at div.details > h2.product-title > a — ~5 hops up.
       const CARD_SELECTORS = [
-        '.product-item', '.item-box', '.product-card', '[data-productid]',
-        'li.product', 'article',
+        '.item-box', '.product-item', '.product-card', '.details',
+        '[data-productid]', 'li.product', 'article',
       ];
       const TITLE_SELECTORS = [
-        '.product-title a', '.product-title', 'h2 a', 'h2', 'h3 a', 'h3',
-        '.product-name', 'a.product-name',
+        'h2.product-title a', '.product-title a', '.product-title',
+        'h2 a', 'h2', 'h3 a', 'h3', '.product-name a', '.product-name',
       ];
       let node: Element | null = el;
-      for (let hops = 0; node && hops < 6; hops++) {
+      for (let hops = 0; node && hops < 8; hops++) {
         if (CARD_SELECTORS.some((s) => node!.matches?.(s))) {
           for (const ts of TITLE_SELECTORS) {
             const t = node.querySelector(ts);
