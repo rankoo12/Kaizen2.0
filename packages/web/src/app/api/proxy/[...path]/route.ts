@@ -27,12 +27,24 @@ async function forwardRequest(
   method: string,
   accessToken: string,
   body: string | undefined,
+  ifNoneMatch?: string | null,
 ): Promise<Response> {
-  const headers: HeadersInit = {
+  const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
     'Content-Type': 'application/json',
   };
+  // Forward the conditional-request validator so cacheable upstream responses
+  // (e.g. immutable screenshots from GET /media) can answer 304 Not Modified.
+  if (ifNoneMatch) headers['If-None-Match'] = ifNoneMatch;
   return fetch(url, { method, headers, body, cache: 'no-store' });
+}
+
+/** Copy caching-related headers from an upstream response onto the client response. */
+function copyCacheHeaders(from: Response, to: NextResponse): void {
+  const cacheControl = from.headers.get('cache-control');
+  const etag = from.headers.get('etag');
+  if (cacheControl) to.headers.set('Cache-Control', cacheControl);
+  if (etag) to.headers.set('ETag', etag);
 }
 
 function buildUpstreamUrl(pathSegments: string[], search: string): string {
@@ -47,8 +59,12 @@ async function buildResponse(res: Response, cookieUpdates?: {
   const isJson = contentType.includes('application/json');
 
   let response: NextResponse;
-  
-  if (res.status === 204) {
+
+  if (res.status === 304) {
+    // Not Modified — no body; preserve the validator/cache headers.
+    response = new NextResponse(null, { status: 304 });
+    copyCacheHeaders(res, response);
+  } else if (res.status === 204) {
     response = new NextResponse(null, { status: 204 });
   } else if (isJson) {
     const data = await res.json();
@@ -62,6 +78,8 @@ async function buildResponse(res: Response, cookieUpdates?: {
         'Content-Type': contentType,
       },
     });
+    // Propagate upstream caching so the browser serves repeat views from cache.
+    copyCacheHeaders(res, response);
   }
 
   if (cookieUpdates) {
@@ -87,13 +105,14 @@ async function handler(
 
   const upstreamUrl = buildUpstreamUrl(path, request.nextUrl.search);
   const method = request.method;
+  const ifNoneMatch = request.headers.get('if-none-match');
   const body = ['GET', 'HEAD', 'DELETE'].includes(method)
     ? undefined
     : await request.text();
 
   // First attempt with current access token
   if (accessToken) {
-    const res = await forwardRequest(upstreamUrl, method, accessToken, body);
+    const res = await forwardRequest(upstreamUrl, method, accessToken, body, ifNoneMatch);
 
     if (res.status !== 401) {
       return buildResponse(res);
@@ -117,7 +136,7 @@ async function handler(
   }
 
   // Retry with new access token and return updated cookies in response
-  const retryRes = await forwardRequest(upstreamUrl, method, newTokens.accessToken, body);
+  const retryRes = await forwardRequest(upstreamUrl, method, newTokens.accessToken, body, ifNoneMatch);
   return buildResponse(retryRes, {
     access:  newTokens.accessToken,
     refresh: newTokens.refreshToken,

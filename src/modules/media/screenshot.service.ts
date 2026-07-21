@@ -28,6 +28,16 @@ export class ScreenshotService {
   private readonly keyFile: string | undefined;
   private readonly gcsEnabled: boolean;
 
+  // Process-local LRU of downloaded PNG buffers. Screenshots are immutable per
+  // key, so caching them lets repeat downloads (e.g. many viewers of the same
+  // run, or a client bypassing its HTTP cache) skip the GCS/disk round-trip —
+  // capping egress cost and shielding the endpoint from download-flood abuse.
+  // Bounded by both entry count and total bytes; oldest entries evict first.
+  private readonly cache = new Map<string, Buffer>();
+  private cacheBytes = 0;
+  private readonly maxCacheEntries = Number(process.env.SCREENSHOT_CACHE_MAX_ENTRIES ?? 256);
+  private readonly maxCacheBytes = Number(process.env.SCREENSHOT_CACHE_MAX_BYTES ?? 128 * 1024 * 1024);
+
   constructor(private readonly observability: IObservability) {
     this.bucket = process.env.GCS_BUCKET ?? 'kaizen-screenshots';
     this.localDir = path.resolve('./screenshots');
@@ -79,11 +89,48 @@ export class ScreenshotService {
   async download(key: string): Promise<Buffer | null> {
     if (!key) return null;
 
-    if (key.startsWith('gs://') || (this.gcsEnabled && !key.startsWith('/'))) {
-      return this.downloadFromGCS(key.replace(`gs://${this.bucket}/`, ''));
+    const cached = this.cacheGet(key);
+    if (cached) {
+      this.observability.increment('screenshot.cache_hit');
+      return cached;
     }
 
-    return this.readLocally(key);
+    let buffer: Buffer | null;
+    if (key.startsWith('gs://') || (this.gcsEnabled && !key.startsWith('/'))) {
+      buffer = await this.downloadFromGCS(key.replace(`gs://${this.bucket}/`, ''));
+    } else {
+      buffer = this.readLocally(key);
+    }
+
+    if (buffer) this.cacheSet(key, buffer);
+    return buffer;
+  }
+
+  /** LRU read: returns the cached buffer and marks it most-recently-used. */
+  private cacheGet(key: string): Buffer | null {
+    const hit = this.cache.get(key);
+    if (!hit) return null;
+    this.cache.delete(key);
+    this.cache.set(key, hit);
+    return hit;
+  }
+
+  /** LRU write: inserts, then evicts oldest entries until within bounds. */
+  private cacheSet(key: string, buf: Buffer): void {
+    if (buf.length > this.maxCacheBytes) return; // single item too large to cache
+    const existing = this.cache.get(key);
+    if (existing) {
+      this.cacheBytes -= existing.length;
+      this.cache.delete(key);
+    }
+    this.cache.set(key, buf);
+    this.cacheBytes += buf.length;
+    while (this.cache.size > this.maxCacheEntries || this.cacheBytes > this.maxCacheBytes) {
+      const oldest = this.cache.keys().next().value;
+      if (oldest === undefined) break;
+      this.cacheBytes -= this.cache.get(oldest)!.length;
+      this.cache.delete(oldest);
+    }
   }
 
   private async downloadFromGCS(objectKey: string): Promise<Buffer | null> {

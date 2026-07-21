@@ -2,7 +2,7 @@
   "info": {
     "name": "Kaizen — Phase 1",
     "_postman_id": "kaizen-phase1-collection",
-    "description": "Phase 1 Core Loop — NL steps in, browser action out.\n\nOrder of operations:\n1. Health Check — confirm API is up\n2. Seed Dev Tenant — run once to insert the tenant row\n3. POST /runs — enqueue a test run\n4. GET /runs/:id — poll until status is passed/failed\n\nThe collection uses a {{runId}} variable that is automatically captured from the POST /runs response.",
+    "description": "Phase 1 Core Loop — NL steps in, browser action out.\n\nOrder of operations:\n1. Health Check — confirm API is up\n2. Seed Dev Tenant — run once to insert the tenant row\n3. POST /runs — enqueue a test run\n4. GET /runs/:id — poll until status is passed/failed\n\nAuth: /runs is tenant-scoped. Set the {{apiKey}} variable to a valid API key (kzn_live_...) with 'execute' scope; the tenant is resolved from the key, not the request body. Requests without a valid key get 401.\n\nThe collection uses a {{runId}} variable that is automatically captured from the POST /runs response.",
     "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
   },
   "variable": [
@@ -12,9 +12,10 @@
       "type": "string"
     },
     {
-      "key": "tenantId",
-      "value": "00000000-0000-0000-0000-000000000001",
-      "type": "string"
+      "key": "apiKey",
+      "value": "kzn_live_REPLACE_WITH_A_REAL_KEY",
+      "type": "string",
+      "description": "API key (kzn_live_...) with 'execute' scope. The tenant is resolved from this key."
     },
     {
       "key": "runId",
@@ -72,11 +73,12 @@
       "request": {
         "method": "POST",
         "header": [
-          { "key": "Content-Type", "value": "application/json" }
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{apiKey}}" }
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"tenantId\": \"{{tenantId}}\",\n  \"steps\": [\n    \"open youtube\",\n    \"search for cats\",\n    \"press enter\"\n  ],\n  \"baseUrl\": \"https://youtube.com\"\n}",
+          "raw": "{\n  \"steps\": [\n    \"open youtube\",\n    \"search for cats\",\n    \"press enter\"\n  ],\n  \"baseUrl\": \"https://youtube.com\"\n}",
           "options": {
             "raw": { "language": "json" }
           }
@@ -114,11 +116,12 @@
       "request": {
         "method": "POST",
         "header": [
-          { "key": "Content-Type", "value": "application/json" }
+          { "key": "Content-Type", "value": "application/json" },
+          { "key": "Authorization", "value": "Bearer {{apiKey}}" }
         ],
         "body": {
           "mode": "raw",
-          "raw": "{\n  \"tenantId\": \"not-a-uuid\",\n  \"steps\": [],\n  \"baseUrl\": \"not-a-url\"\n}",
+          "raw": "{\n  \"steps\": [],\n  \"baseUrl\": \"not-a-url\"\n}",
           "options": {
             "raw": { "language": "json" }
           }
@@ -152,7 +155,9 @@
       "name": "4 — GET /runs/:id (poll status)",
       "request": {
         "method": "GET",
-        "header": [],
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{apiKey}}" }
+        ],
         "url": {
           "raw": "{{baseUrl}}/runs/{{runId}}",
           "host": ["{{baseUrl}}"],
@@ -183,7 +188,9 @@
       "name": "4b — GET /runs/:id (not found check)",
       "request": {
         "method": "GET",
-        "header": [],
+        "header": [
+          { "key": "Authorization", "value": "Bearer {{apiKey}}" }
+        ],
         "url": {
           "raw": "{{baseUrl}}/runs/00000000-0000-0000-0000-000000000000",
           "host": ["{{baseUrl}}"],
