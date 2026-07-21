@@ -17,7 +17,7 @@ type ToastState = { msg: string; kind: 'info' | 'success' | 'danger' } | null;
 
 export function NewTestScreen() {
   const router = useRouter();
-  const { suites } = useSuites();
+  const { suites, refetch: refetchSuites } = useSuites();
 
   const [name, setName]       = useState('');
   const [baseUrl, setBaseUrl] = useState('');
@@ -26,9 +26,38 @@ export function NewTestScreen() {
   const [submitting, setSubmitting] = useState<null | 'save' | 'save-and-run'>(null);
   const [toast, setToast]     = useState<ToastState>(null);
 
+  // Inline "create new suite" — the only place suites can be created in the UI.
+  const [creatingSuite, setCreatingSuite] = useState(false);
+  const [newSuiteName, setNewSuiteName]   = useState('');
+  const [savingSuite, setSavingSuite]     = useState(false);
+
   function showToast(msg: string, kind: 'info' | 'success' | 'danger' = 'info') {
     setToast({ msg, kind });
     window.setTimeout(() => setToast(null), 3000);
+  }
+
+  async function createSuite() {
+    const trimmed = newSuiteName.trim();
+    if (!trimmed || savingSuite) return;
+    setSavingSuite(true);
+    try {
+      const res = await fetch('/api/proxy/suites', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name: trimmed }),
+      });
+      if (!res.ok) throw new Error();
+      const data = await res.json();
+      refetchSuites();
+      setSuiteId(data.suite.id);          // auto-select the new suite
+      setCreatingSuite(false);
+      setNewSuiteName('');
+      showToast(`Suite "${trimmed}" created.`, 'success');
+    } catch {
+      showToast('Failed to create suite.', 'danger');
+    } finally {
+      setSavingSuite(false);
+    }
   }
 
   function validate(): string[] | null {
@@ -170,18 +199,62 @@ export function NewTestScreen() {
                   />
                 </FieldRow>
                 <FieldRow label="Suite" icon={Layers}>
-                  <select
-                    value={suiteId}
-                    onChange={(e) => setSuiteId(e.target.value)}
-                    className="bg-transparent border-0 outline-none text-text text-xs"
-                  >
-                    <option value="">Select…</option>
-                    {suites.map((s) => (
-                      <option key={s.id} value={s.id} className="bg-surface text-text">
-                        {s.name}
-                      </option>
-                    ))}
-                  </select>
+                  {creatingSuite ? (
+                    <div className="flex items-center gap-1.5">
+                      <input
+                        autoFocus
+                        value={newSuiteName}
+                        onChange={(e) => setNewSuiteName(e.target.value)}
+                        onKeyDown={(e) => {
+                          if (e.key === 'Enter') createSuite();
+                          if (e.key === 'Escape') { setCreatingSuite(false); setNewSuiteName(''); }
+                        }}
+                        placeholder="New suite name…"
+                        disabled={savingSuite}
+                        className="bg-transparent border-0 outline-none text-text text-xs min-w-[180px] placeholder:text-text-faint"
+                      />
+                      <button
+                        type="button"
+                        onClick={createSuite}
+                        disabled={savingSuite || !newSuiteName.trim()}
+                        className="text-success hover:opacity-80 disabled:opacity-40"
+                        title="Create suite"
+                      >
+                        {savingSuite ? <Loader2 size={13} className="animate-orbit" /> : <Check size={13} />}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => { setCreatingSuite(false); setNewSuiteName(''); }}
+                        disabled={savingSuite}
+                        className="text-text-mid hover:text-danger"
+                        title="Cancel"
+                      >
+                        <Trash2 size={12} />
+                      </button>
+                    </div>
+                  ) : (
+                    <div className="flex items-center gap-2">
+                      <select
+                        value={suiteId}
+                        onChange={(e) => setSuiteId(e.target.value)}
+                        className="bg-transparent border-0 outline-none text-text text-xs"
+                      >
+                        <option value="">{suites.length ? 'Select…' : 'No suites yet'}</option>
+                        {suites.map((s) => (
+                          <option key={s.id} value={s.id} className="bg-surface text-text">
+                            {s.name}
+                          </option>
+                        ))}
+                      </select>
+                      <button
+                        type="button"
+                        onClick={() => setCreatingSuite(true)}
+                        className="inline-flex items-center gap-1 text-[11px] text-brand-primary hover:opacity-80"
+                      >
+                        <Plus size={11} /> New
+                      </button>
+                    </div>
+                  )}
                 </FieldRow>
                 <FieldRow label="Browser" icon={Cpu}>
                   <span className="text-xs text-text">Chromium</span>

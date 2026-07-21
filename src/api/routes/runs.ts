@@ -1,17 +1,26 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
+import { createHash } from 'crypto';
 import { Redis } from 'ioredis';
 import { getPool } from '../../db/pool';
 import { createRunQueue } from '../../queue';
 import { cancelKey } from '../../workers/cancel-keys';
+import { requireAuth, requireApiKey, requireScope, requireTenant } from '../middleware/auth';
 import { LearnedCompiler } from '../../modules/test-compiler/learned.compiler';
 import { OpenAIGateway } from '../../modules/llm-gateway/openai.gateway';
 import { PostgresBillingMeter } from '../../modules/billing-meter/postgres.billing-meter';
+import { usageThisMonth } from '../../modules/billing-meter/usage';
 import { PinoObservability } from '../../modules/observability/pino.observability';
+import { ScreenshotService } from '../../modules/media/screenshot.service';
+
+/** Upper bound on steps for a single direct API run — caps unbounded LLM compilation cost. */
+const MAX_STEPS_PER_RUN = 100;
 
 const PostRunsBody = z.object({
-  tenantId: z.string().uuid('tenantId must be a valid UUID'),
-  steps: z.array(z.string().min(1)).min(1, 'at least one step is required'),
+  steps: z.array(z.string().min(1)).min(1, 'at least one step is required').max(
+    MAX_STEPS_PER_RUN,
+    `at most ${MAX_STEPS_PER_RUN} steps per run`,
+  ),
   baseUrl: z.string().url('baseUrl must be a valid URL'),
 });
 
@@ -31,18 +40,44 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
    * Accepts a flat list of natural-language steps, compiles them,
    * creates a run record, and enqueues the job for a worker to pick up.
    *
-   * Phase 1: no auth. tenantId is passed explicitly in the body.
-   * The tenant must exist in the DB (seed it first).
+   * Auth: API key (`kzn_live_*`) with `execute` scope. tenantId is resolved
+   * from the key — never trusted from the request body. This is the CI/CD
+   * entrypoint; the web UI enqueues via POST /cases/:caseId/run instead.
    *
    * Returns: { runId, status: 'queued' }
    */
-  app.post('/runs', async (request, reply) => {
+  app.post('/runs', { preHandler: [requireApiKey, requireScope('execute')] }, async (request, reply) => {
     const parsed = PostRunsBody.safeParse(request.body);
     if (!parsed.success) {
       return reply.status(400).send({ error: 'INVALID_REQUEST', details: parsed.error.issues });
     }
 
-    const { tenantId, steps, baseUrl } = parsed.data;
+    const { steps, baseUrl } = parsed.data;
+    const { tenantId } = request;
+
+    // Enforce the tenant's monthly LLM token budget before spending on compilation
+    // (mirrors POST /cases/:caseId/run). Without this the direct API path is a
+    // budget bypass.
+    const { rows: budgetRows } = await getPool().query<{ llm_budget_tokens_monthly: string }>(
+      `SELECT llm_budget_tokens_monthly FROM tenants WHERE id = $1`,
+      [tenantId],
+    );
+    const budget = Number(budgetRows[0]?.llm_budget_tokens_monthly ?? 0);
+    if (budget <= 0) {
+      return reply.status(402).send({
+        error: 'INSUFFICIENT_TOKENS',
+        message: 'This account has no LLM tokens allocated. Contact the workspace owner to enable runs.',
+      });
+    }
+    const used = await usageThisMonth(tenantId);
+    if (used >= budget) {
+      return reply.status(402).send({
+        error: 'TOKEN_LIMIT_REACHED',
+        message: `Token limit reached (${budget.toLocaleString()}). Used ${used.toLocaleString()} this month.`,
+        used,
+        budget,
+      });
+    }
 
     // Compile all steps (cache-first → LLM fallback)
     const compiledSteps = await compiler.compileMany(steps);
@@ -75,8 +110,6 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
    *
    * Query params: suiteId?, caseId?, status?, page? (default 1), limit? (default 20, max 100)
    */
-  const { requireAuth } = await import('../middleware/auth');
-
   app.get('/runs', { preHandler: [requireAuth] }, async (request, reply) => {
     const query = request.query as {
       suiteId?: string; caseId?: string; status?: string;
@@ -138,13 +171,13 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  app.get<{ Params: { id: string } }>('/runs/:id', async (request, reply) => {
+  app.get<{ Params: { id: string } }>('/runs/:id', { preHandler: [requireTenant] }, async (request, reply) => {
     const pool = getPool();
     const { rows } = await pool.query(
       `SELECT id, tenant_id, status, triggered_by, started_at, completed_at, environment_url, created_at
        FROM runs
-       WHERE id = $1`,
-      [request.params.id],
+       WHERE id = $1 AND tenant_id = $2`,
+      [request.params.id, request.tenantId],
     );
 
     if (rows.length === 0) {
@@ -216,14 +249,14 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
    * report view. Tenant-scoped via the run's tenant.
    * Spec: docs/specs/tests-ux/spec-run-report-view.md
    */
-  app.get<{ Params: { id: string } }>('/runs/:id/report', async (request, reply) => {
+  app.get<{ Params: { id: string } }>('/runs/:id/report', { preHandler: [requireTenant] }, async (request, reply) => {
     const pool = getPool();
     const runId = request.params.id;
 
     const { rows: runRows } = await pool.query(
       `SELECT id, tenant_id, status, environment_url, triggered_by, created_at, completed_at, started_at
-       FROM runs WHERE id = $1`,
-      [runId],
+       FROM runs WHERE id = $1 AND tenant_id = $2`,
+      [runId, request.tenantId],
     );
     if (runRows.length === 0) return reply.status(404).send({ error: 'RUN_NOT_FOUND' });
     const run = runRows[0];
@@ -279,7 +312,7 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  const screenshots = new (require('../../modules/media/screenshot.service').ScreenshotService)(obs);
+  const screenshots = new ScreenshotService(obs);
 
   /**
    * PATCH /runs/:runId/steps/:stepId/verdict
@@ -294,6 +327,7 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
 
   app.patch<{ Params: { runId: string; stepId: string } }>(
     '/runs/:runId/steps/:stepId/verdict',
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const parsed = VerdictBody.safeParse(request.body);
       if (!parsed.success) {
@@ -317,8 +351,8 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
                 sr.archetype_name, r.tenant_id, r.environment_url
          FROM step_results sr
          JOIN runs r ON r.id = sr.run_id
-         WHERE sr.id = $1 AND sr.run_id = $2`,
-        [stepId, runId],
+         WHERE sr.id = $1 AND sr.run_id = $2 AND r.tenant_id = $3`,
+        [stepId, runId, request.tenantId],
       );
 
       if (rows.length === 0) {
@@ -481,6 +515,7 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
 
   app.patch<{ Params: { runId: string; stepId: string } }>(
     '/runs/:runId/steps/:stepId/candidate',
+    { preHandler: [requireAuth] },
     async (request, reply) => {
       const parsed = CandidateBody.safeParse(request.body);
       if (!parsed.success) {
@@ -497,8 +532,8 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
                 sr.dom_candidates, r.tenant_id, r.environment_url
          FROM step_results sr
          JOIN runs r ON r.id = sr.run_id
-         WHERE sr.id = $1 AND sr.run_id = $2`,
-        [stepId, runId],
+         WHERE sr.id = $1 AND sr.run_id = $2 AND r.tenant_id = $3`,
+        [stepId, runId, request.tenantId],
       );
 
       if (rows.length === 0) {
@@ -616,13 +651,13 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
    *
    * Only valid for runs in status "queued" or "running".
    */
-  app.post<{ Params: { id: string } }>('/runs/:id/cancel', async (request, reply) => {
+  app.post<{ Params: { id: string } }>('/runs/:id/cancel', { preHandler: [requireTenant] }, async (request, reply) => {
     const { id: runId } = request.params;
     const pool = getPool();
 
     const { rows } = await pool.query(
-      `SELECT id, status FROM runs WHERE id = $1`,
-      [runId],
+      `SELECT id, status FROM runs WHERE id = $1 AND tenant_id = $2`,
+      [runId, request.tenantId],
     );
 
     if (rows.length === 0) {
@@ -661,14 +696,47 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
 
   /**
    * GET /media?key=...
-   * Resolves a screenshot from memory/GCS and streams it back
+   *
+   * Streams a run screenshot back to the caller. Screenshots are immutable once
+   * written (the key encodes tenant/run/step/timing), so responses are marked
+   * cacheable for a year — the browser then serves repeat views from its own
+   * cache without re-hitting this endpoint or GCS. A process-local LRU in
+   * ScreenshotService absorbs cold-cache / cache-busted requests so they don't
+   * fan out to GCS either.
+   *
+   * Authorization: the `key` must match a `step_results.screenshot_key` owned by
+   * the caller's tenant. This both scopes access per-tenant and prevents the
+   * previous arbitrary-file-read (`?key=/etc/passwd`) — an unauthorized key is
+   * simply not found in the tenant's step results.
    */
-  app.get<{ Querystring: { key: string } }>('/media', async (request, reply) => {
-    if (!request.query.key) return reply.status(400).send({ error: 'Missing key' });
-    const buffer = await screenshots.download(request.query.key);
+  app.get<{ Querystring: { key: string } }>('/media', { preHandler: [requireTenant] }, async (request, reply) => {
+    const key = request.query.key;
+    if (!key) return reply.status(400).send({ error: 'Missing key' });
+    // Defense-in-depth against traversal even before the DB check.
+    if (key.includes('..')) return reply.status(400).send({ error: 'Invalid key' });
+
+    // Authorize: only keys produced by this tenant's runs are downloadable.
+    const { rows } = await getPool().query(
+      `SELECT 1 FROM step_results WHERE screenshot_key = $1 AND tenant_id = $2 LIMIT 1`,
+      [key, request.tenantId],
+    );
+    if (rows.length === 0) return reply.status(404).send({ error: 'Not found' });
+
+    // Content is immutable per key → strong validator + long-lived private cache.
+    const etag = `"${createHash('sha1').update(key).digest('hex')}"`;
+    const cacheControl = 'private, max-age=31536000, immutable';
+
+    if (request.headers['if-none-match'] === etag) {
+      return reply.status(304).header('ETag', etag).header('Cache-Control', cacheControl).send();
+    }
+
+    const buffer = await screenshots.download(key);
     if (!buffer) return reply.status(404).send({ error: 'Not found' });
-    
-    reply.header('Content-Type', 'image/png');
+
+    reply
+      .header('Content-Type', 'image/png')
+      .header('Cache-Control', cacheControl)
+      .header('ETag', etag);
     return reply.send(buffer);
   });
 }

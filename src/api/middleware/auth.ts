@@ -125,6 +125,25 @@ export async function requireAuth(
   }
 }
 
+// ─── Combined tenant guard (API key OR JWT) ───────────────────────────────────
+
+/**
+ * Authenticates via EITHER an API key (`kzn_live_*`) OR a JWT session token,
+ * setting `request.tenantId` from whichever path succeeds. Use on routes served
+ * to both the web UI (JWT cookies via the Next proxy) and CI/CD (API keys) —
+ * e.g. reading run status or fetching a run's screenshots.
+ */
+export async function requireTenant(
+  request: FastifyRequest,
+  reply: FastifyReply,
+): Promise<void> {
+  const authHeader = request.headers['authorization'];
+  if (authHeader?.startsWith('Bearer kzn_live_')) {
+    return requireApiKey(request, reply);
+  }
+  return requireAuth(request, reply);
+}
+
 // ─── Platform admin middleware ────────────────────────────────────────────────
 
 export async function requirePlatformAdmin(

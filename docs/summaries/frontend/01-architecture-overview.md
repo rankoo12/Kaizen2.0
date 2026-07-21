@@ -3,7 +3,7 @@
 ## Tech Stack
 - **Framework:** Next.js 15 (App Router).
 - **Language:** TypeScript.
-- **Styling:** Tailwind CSS (configured in `tailwind.config.ts`, global CSS in `globals.css`).
+- **Styling:** Tailwind CSS v4 (CSS-first config — design tokens, `@theme`, and base rules live in `globals.css`; there is no `tailwind.config.ts`).
 - **Icons:** Custom SVGs (social-icons.tsx) & lucide-react.
 
 ## Directory Structure

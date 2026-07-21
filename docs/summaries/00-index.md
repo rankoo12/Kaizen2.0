@@ -14,7 +14,6 @@ All specs are modular; follow the links to learn more about specific sub-systems
 - [02 API & Routing](./frontend/02-api-routing.md): Next.js App router, middleware, and Next.js backend proxy.
 - [03 Atomic Design Components](./frontend/03-atomic-design.md): Reusable component hierarchy (Atoms, Molecules, Organisms).
 - [04 Data & Hooks](./frontend/04-data-hooks.md): Context APIs and React query hooks.
-- [05 UI & UX Enhancements](./frontend/05-ui-ux-enhancements.md): Interactive element updates, 3D aesthetics, and persistent music player.
 
 ### Backend (`src/`)
 - [01 Architecture Overview](./backend/01-architecture-overview.md): Fastify API, BullMQ workers.
@@ -22,7 +21,7 @@ All specs are modular; follow the links to learn more about specific sub-systems
 - [03 Execution Engine](./backend/03-execution-engine.md): Playwright integration.
 - [04 Healing Engine](./backend/04-healing-engine.md): Strategy matrix for resolving broken selectors.
 - [05 Identity & Auth](./backend/05-identity-auth.md): Multi-tenancy and standard JWT patterns.
-- [06 LLM Gateway](./backend/06-llm-gateway.md): Integration layer for OpenAI/Anthropic.
+- [06 LLM Gateway & Observability](./backend/06-llm-gateway-observability.md): Integration layer for OpenAI/Anthropic, plus Pino/OpenTelemetry.
 
 ### Specs (`docs/specs/`)
 
