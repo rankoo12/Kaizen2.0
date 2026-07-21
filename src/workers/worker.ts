@@ -152,6 +152,18 @@ async function processRun(payload: RunJobPayload): Promise<void> {
   const span = obs.startSpan('worker.processRun', { runId, tenantId });
 
   await markRunRunning(runId);
+
+  // Idempotency: a BullMQ retry (after a transient infra fault) re-runs this job
+  // from the top. Clear any rows a prior attempt persisted so results and the run
+  // log aren't duplicated. FK-safe order: healing_events → step_results → run_events.
+  // No-op on a first attempt (nothing persisted yet).
+  await getPool().query(
+    `DELETE FROM healing_events WHERE step_result_id IN (SELECT id FROM step_results WHERE run_id = $1)`,
+    [runId],
+  ).catch(() => {});
+  await getPool().query(`DELETE FROM step_results WHERE run_id = $1`, [runId]).catch(() => {});
+  await getPool().query(`DELETE FROM run_events   WHERE run_id = $1`, [runId]).catch(() => {});
+
   logger.info({ event: 'run_started', runId, tenantId, stepCount: compiledSteps.length });
 
   // Persisted chronological run log → powers the full-run report.
@@ -162,6 +174,19 @@ async function processRun(payload: RunJobPayload): Promise<void> {
   // Enforcement: Docker environments absolutely require headless: true without xvfb
   const browser = await chromium.launch({ headless: true });
   const context = await browser.newContext({ baseURL: baseUrl });
+
+  // __name shim: tsx/esbuild (keepNames) wraps named inner declarations inside
+  // functions passed to page.$eval/page.evaluate with __name(...) calls. That
+  // helper does not exist in the browser, so those serialized functions throw
+  // ReferenceError — silently, wherever the caller .catch()es to null (e.g. the
+  // assert_text page scan, which then reports "text not found" for text that IS
+  // present). Defining __name as identity in every page makes them run. No-op in
+  // production, where tsc compiles the worker and emits no __name wrappers.
+  await context.addInitScript(() => {
+    const g = globalThis as unknown as { __name?: (fn: unknown) => unknown };
+    g.__name = g.__name || ((fn) => fn);
+  });
+
   const page = await context.newPage();
 
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
@@ -602,8 +627,14 @@ const worker = new Worker<RunJobPayload>(
     try {
       await processRun(job.data);
     } catch (err: any) {
-      logger.error({ event: 'job_error', jobId: job.id, runId: job.data.runId, error: err.message });
-      await markRunComplete(job.data.runId, 'failed').catch(() => { });
+      // Only mark the run failed once retries are exhausted — otherwise a retry
+      // would overwrite a transient 'failed' and the run flickers. Rethrow either
+      // way so BullMQ schedules the next attempt (or records the final failure).
+      const isLastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
+      logger.error({ event: 'job_error', jobId: job.id, runId: job.data.runId, error: err.message, attempt: job.attemptsMade + 1, willRetry: !isLastAttempt });
+      if (isLastAttempt) {
+        await markRunComplete(job.data.runId, 'failed').catch(() => { });
+      }
       throw err;
     }
   },

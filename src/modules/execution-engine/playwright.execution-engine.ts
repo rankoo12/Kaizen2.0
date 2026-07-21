@@ -51,6 +51,14 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
         return await this.executePressKey(step, pw, start);
       }
 
+      // wait acts on the clock/page: a numeric duration needs no selector, so it
+      // must be handled before the no-selectors guard below (otherwise every
+      // "wait N seconds" step fails with NoSelectorsError and stop-on-fail kills
+      // the rest of the run).
+      if (step.action === 'wait') {
+        return await this.executeWait(step, selectorSet, pw, start);
+      }
+
       // All remaining actions require at least one selector
       if (selectorSet.selectors.length === 0) {
         this.observability.increment('engine.step_failed', { action: step.action, reason: 'no_selectors' });
@@ -180,6 +188,33 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
    * asserted text) so the run details page shows the matched element rather than
    * the broad query selector; returns void for all other actions.
    */
+  private async executeWait(
+    step: StepAST,
+    selectorSet: SelectorSet,
+    page: PlaywrightPageLike,
+    start: number,
+  ): Promise<StepExecutionResult> {
+    try {
+      if (step.value && /^\d+$/.test(step.value)) {
+        // Numeric value is a fixed duration in milliseconds (compiler-normalised).
+        await page.waitForTimeout(parseInt(step.value, 10));
+      } else if (selectorSet.selectors.length > 0) {
+        // Non-numeric wait ("wait for X to appear") → wait for the resolved target.
+        await page.waitForSelector(selectorSet.selectors[0].selector, { timeout: ACTION_TIMEOUT_MS });
+      } else {
+        return this.failResult(
+          start, 'WaitError',
+          `wait requires a numeric duration or a target element; got value="${step.value ?? ''}".`,
+        );
+      }
+      this.observability.increment('engine.step_passed', { action: 'wait' });
+      return this.passResult(start, null);
+    } catch (e: any) {
+      this.observability.increment('engine.step_failed', { action: 'wait' });
+      return this.failResult(start, 'WaitError', e.message);
+    }
+  }
+
   private async dispatchAction(
     step: StepAST,
     selector: string,
@@ -284,32 +319,51 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
         // run details page show exactly where the value was found (e.g. the cart
         // row link), instead of an opaque "body".
         // Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §1.2
+        // Poll for up to ~8s so asynchronously-rendered content (SPA hydration,
+        // "click Start → content appears after N seconds") is caught rather than
+        // failing on a render race. Bounded so a genuinely-absent value still fails
+        // in reasonable time.
         let match: { selector: string; text: string } | null = null;
-        for (let attempt = 0; attempt < 5; attempt++) {
+        let evalError: string | null = null;
+        // ~8s budget (20 × 400ms) for async / dynamically-rendered content.
+        for (let attempt = 0; attempt < 20 && !match; attempt++) {
           match = await page.$eval(
             'body',
             (root: Element, search: string) => {
               const tidy = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
               const lc = (s: string) => tidy(s).toLowerCase();
+              const selFor = (el: Element) => {
+                if (el.id) return `#${el.id}`;
+                const cls = (el.getAttribute('class') ?? '').trim().split(/\s+/).filter(Boolean)[0];
+                return cls ? `${el.tagName.toLowerCase()}.${cls}` : el.tagName.toLowerCase();
+              };
               const all = Array.from(root.querySelectorAll<Element>('*'));
-              // Innermost = the deepest element that still contains the needle.
+              // 1) Form-control values are NOT part of textContent — check them
+              //    explicitly so "verify the field contains X" works for typed
+              //    input, textarea content, and the selected <option>.
+              for (const el of all) {
+                const tag = el.tagName.toLowerCase();
+                let v: string | null = null;
+                if (tag === 'input' || tag === 'textarea') v = (el as HTMLInputElement).value;
+                else if (tag === 'select') {
+                  const s = el as HTMLSelectElement;
+                  v = (s.options[s.selectedIndex] && s.options[s.selectedIndex].text) || s.value;
+                }
+                if (v != null && lc(v).includes(search)) {
+                  return { selector: selFor(el), text: tidy(v).slice(0, 200) };
+                }
+              }
+              // 2) Innermost = the deepest element whose visible text contains the needle.
               for (let i = all.length - 1; i >= 0; i--) {
                 const el = all[i];
                 if (lc(el.textContent ?? '').includes(search)) {
-                  // Build a readable, unique-ish selector for the matched element.
-                  let sel = el.tagName.toLowerCase();
-                  if (el.id) sel = `#${el.id}`;
-                  else {
-                    const cls = (el.getAttribute('class') ?? '').trim().split(/\s+/).filter(Boolean)[0];
-                    if (cls) sel += `.${cls}`;
-                  }
-                  return { selector: sel, text: tidy(el.textContent).slice(0, 200) };
+                  return { selector: selFor(el), text: tidy(el.textContent).slice(0, 200) };
                 }
               }
               return null;
             },
             needle,
-          ).catch(() => null);
+          ).catch((e: any) => { evalError = e?.message ?? String(e); return null; });
           if (match) break;
           await page.waitForTimeout(400);
         }
@@ -318,6 +372,7 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
           rawValue: step.value,
           needle,
           found: match?.selector ?? null,
+          evalError,
         });
 
         if (match) {
@@ -325,8 +380,14 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
           return match.selector; // surfaced as selectorUsed on the run details page
         }
 
+        // A page-scan error (not a genuine "absent") means a bug, not a failed
+        // assertion — surface it loudly instead of masquerading as "not found".
+        if (evalError) {
+          this.observability.log('warn', 'engine.assert_text_eval_error', { needle, error: evalError });
+        }
         throw new Error(
-          `assert_text failed: "${step.value}" not found anywhere on the page.`,
+          `assert_text failed: "${step.value}" not found anywhere on the page.` +
+          (evalError ? ` (page scan error: ${evalError})` : ''),
         );
       }
 

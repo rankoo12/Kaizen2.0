@@ -106,6 +106,49 @@ describe('PlaywrightExecutionEngine', () => {
     });
   });
 
+  // ─── wait ────────────────────────────────────────────────────────────────────
+
+  describe('wait', () => {
+    const makeWait = (value: string | null): StepAST => ({
+      action: 'wait',
+      value,
+      targetDescription: null,
+      url: null,
+      rawText: `wait ${value}`,
+      contentHash: 'w1',
+      targetHash: 'test-target-hash',
+    });
+    const noSel: SelectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+
+    it('waits a fixed duration for a numeric value without needing a selector', async () => {
+      mockPage.waitForTimeout.mockResolvedValueOnce(undefined);
+      const result = await engine.executeStep(makeWait('6000'), noSel, mockPage);
+      expect(result.status).toBe('passed');
+      expect(mockPage.waitForTimeout).toHaveBeenCalledWith(6000);
+    });
+
+    it('does NOT fail a numeric wait with NoSelectorsError (regression: wait ran before the guard)', async () => {
+      mockPage.waitForTimeout.mockResolvedValueOnce(undefined);
+      const result = await engine.executeStep(makeWait('500'), noSel, mockPage);
+      expect(result.status).toBe('passed');
+      expect(result.errorType).not.toBe('NoSelectorsError');
+    });
+
+    it('waits for the resolved selector when the value is non-numeric', async () => {
+      mockPage.waitForSelector.mockResolvedValueOnce(undefined);
+      const withSel: SelectorSet = { ...noSel, selectors: [{ selector: '#late', strategy: 'css', confidence: 0.9 }] };
+      const result = await engine.executeStep(makeWait('for the spinner to appear'), withSel, mockPage);
+      expect(result.status).toBe('passed');
+      expect(mockPage.waitForSelector).toHaveBeenCalledWith('#late', { timeout: 10_000 });
+    });
+
+    it('fails with WaitError (not NoSelectorsError) when there is neither a duration nor a target', async () => {
+      const result = await engine.executeStep(makeWait(null), noSel, mockPage);
+      expect(result.status).toBe('failed');
+      expect(result.errorType).toBe('WaitError');
+    });
+  });
+
   // ─── selector-based actions ──────────────────────────────────────────────────
 
   describe('click', () => {

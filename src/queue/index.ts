@@ -46,7 +46,15 @@ export function createRunQueue(): Queue<RunJobPayload> {
   return new Queue<RunJobPayload>(RUNS_QUEUE_NAME, {
     connection: createRedisConnection(),
     defaultJobOptions: {
-      attempts: 1,           // Phase 1: no retries — healing engine handles failures
+      // Retry on THROWN exceptions only — transient infra faults (DB/Redis
+      // connection timeouts, browser-launch hiccups, network blips). Normal test
+      // outcomes (failed assertions) never throw out of processRun, so they are
+      // NOT retried. Backoff spaces attempts so a briefly-unavailable dependency
+      // has time to recover; processRun clears prior rows on entry so a retry
+      // produces clean results. Without this, a transient fault stranded the run
+      // in 'queued'/'running' forever.
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 3000 },
       removeOnComplete: 100,
       removeOnFail: 200,
     },
