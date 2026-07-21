@@ -17,5 +17,5 @@ The backend is deeply componentized into modules, loosely coupled via interfaces
 - `element-resolver`: Maps natural language target strings to valid DOM selectors.
 
 **Related Specs:**
-- [Shared Pool & Worker](./07-shared-pool-worker.md)
 - [Identity & Auth](./05-identity-auth.md)
+- [LLM Gateway & Observability](./06-llm-gateway-observability.md)

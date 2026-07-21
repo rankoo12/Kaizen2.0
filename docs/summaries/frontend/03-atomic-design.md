@@ -13,8 +13,9 @@ Kaizen organizes `packages/web/src/components` strictly around Atomic Design. Ea
 
 ## 3. Organisms (`components/organisms`)
 - Heavy, stateful blocks of the UI. Organisms usually connect to context, hooks, or backend services.
-- This is where `useCases`, `useRunPoller`, or Form Submission logical states (loading, errors) take place.
-- **Examples**: `auth-card.tsx`, `new-test-panel.tsx`, `test-overview-panel.tsx`, `tests-panel.tsx`.
+- This is where `useAllCases`, `useRunPoller`, or Form Submission logical states (loading, errors) take place.
+- **Examples**: `auth-card.tsx`, `new-test-screen.tsx`, `test-detail-screen.tsx`, `tests-dashboard.tsx`, `run-report.tsx`.
+- **Archived**: the earlier panel-based organisms (`new-test-panel.tsx`, `test-overview-panel.tsx`, `tests-panel.tsx`) now live under `organisms/.old/` and are not imported by any production code. See the redundancy note in [docs/known-issues/issue_9_review_findings.md](../../known-issues/issue_9_review_findings.md).
 
 **Related Specs:**
 - [Architecture Overview](./01-architecture-overview.md)
