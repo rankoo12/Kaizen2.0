@@ -24,7 +24,8 @@ materializeGcsKeyFromEnv();
 
 import { randomUUID } from 'node:crypto';
 import { Worker } from 'bullmq';
-import { chromium, type Page } from 'playwright';
+import { type Page } from 'playwright';
+import { BrowserPool } from './browser-pool';
 import { cancelKey } from './cancel-keys';
 import { runStepLoop } from './step-loop';
 import pino from 'pino';
@@ -113,6 +114,9 @@ const assertionResolver = new CompositeElementResolver(assertionResolvers, obs, 
 const engine = new PlaywrightExecutionEngine(obs);
 const challengeDetector = new PageChallengeDetector();
 const screenshots = new ScreenshotService(obs);
+// Phase 3: one shared Chromium, N isolated contexts — the pool relaunches
+// after a crash. Spec: spec-service-decomposition.md §7
+const browserPool = new BrowserPool();
 
 // Event bus + co-located consumers (Phase 1 modular monolith): the step loop
 // publishes side-effects; these BullMQ Workers drain them off the per-step
@@ -204,8 +208,11 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
   );
   runLog.log('run', `Run started · ${compiledSteps.length} step(s) · ${baseUrl}`, { data: { baseUrl, stepCount: compiledSteps.length } });
 
-  // Enforcement: Docker environments absolutely require headless: true without xvfb
-  const browser = await chromium.launch({ headless: true });
+  // One shared browser, one isolated context per run (Phase 3): contexts are
+  // cheap and fully sandboxed (cookies/storage/pages) while browser launches
+  // cost seconds — the pool owns launch/relaunch. This run closes ONLY its
+  // context; the browser outlives it for concurrent + subsequent runs.
+  const browser = await browserPool.get();
   const context = await browser.newContext({ baseURL: baseUrl });
 
   // __name shim: tsx/esbuild (keepNames) wraps named inner declarations inside
@@ -260,8 +267,8 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
       },
     }, payload.seedVariables);
   } finally {
+    // Close only this run's context — the pooled browser stays up for other runs.
     await context.close();
-    await browser.close();
     // Always clean up the cancellation key so it doesn't linger in Redis.
     await cacheRedis.del(cancelKey(runId)).catch(() => {});
   }
@@ -751,7 +758,11 @@ const worker = new Worker<RunJobPayload>(
   },
   {
     connection: createRedisConnection(),
-    concurrency: 1,
+    // Phase 3: N runs in parallel, each in its own BrowserContext from the
+    // shared browser; side-effects already drain via the event bus. 1 remains
+    // the safe default — raise deliberately via WORKER_CONCURRENCY.
+    // Spec: spec-service-decomposition.md §7
+    concurrency: Math.max(1, Number(process.env.WORKER_CONCURRENCY ?? 1) || 1),
   },
 );
 
@@ -780,6 +791,7 @@ const shutdown = async (signal: string): Promise<void> => {
   await worker.close();
   await Promise.allSettled([screenshotConsumer?.close(), persistenceConsumer?.close()]);
   await bus.close();
+  await browserPool.close();
   await closePool();
   process.exit(0);
 };
