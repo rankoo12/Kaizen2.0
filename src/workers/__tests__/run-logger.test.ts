@@ -58,4 +58,41 @@ describe('RunLogger', () => {
     await expect(rl.flush()).resolves.toBeUndefined();
     expect(obs.log).toHaveBeenCalledWith('warn', 'run_logger.flush_failed', expect.any(Object));
   });
+
+  describe('with an injected sink (decomposed worker)', () => {
+    it('hands each flushed batch to the sink and never touches the pool', async () => {
+      const sink = jest.fn().mockResolvedValue(undefined);
+      const rl = new RunLogger('t1', 'r1', obs, sink);
+      rl.log('run', 'started');
+      rl.log('execute', 'step 01 ✓', { stepIndex: 0 });
+      await rl.flush();
+
+      expect(mockQuery).not.toHaveBeenCalled();
+      expect(sink).toHaveBeenCalledTimes(1);
+      const rows = sink.mock.calls[0][0];
+      expect(rows).toHaveLength(2);
+      expect(rows[0]).toMatchObject({ seq: 0, phase: 'run', message: 'started' });
+      expect(rows[1]).toMatchObject({ seq: 1, phase: 'execute', stepIndex: 0 });
+    });
+
+    it('keeps seq monotonic across multiple flushes', async () => {
+      const sink = jest.fn().mockResolvedValue(undefined);
+      const rl = new RunLogger('t1', 'r1', obs, sink);
+      rl.log('run', 'a');
+      await rl.flush();
+      rl.log('run', 'b');
+      await rl.flush();
+
+      expect(sink.mock.calls[0][0][0].seq).toBe(0);
+      expect(sink.mock.calls[1][0][0].seq).toBe(1);
+    });
+
+    it('swallows sink failures (logging must never break a run)', async () => {
+      const sink = jest.fn().mockRejectedValue(new Error('bus down'));
+      const rl = new RunLogger('t1', 'r1', obs, sink);
+      rl.log('run', 'a');
+      await expect(rl.flush()).resolves.toBeUndefined();
+      expect(obs.log).toHaveBeenCalledWith('warn', 'run_logger.flush_failed', expect.any(Object));
+    });
+  });
 });

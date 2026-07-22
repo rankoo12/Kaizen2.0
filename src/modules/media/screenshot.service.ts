@@ -59,6 +59,22 @@ export class ScreenshotService {
     return new Storage(this.keyFile ? { keyFilename: this.keyFile } : {});
   }
 
+  /** Canonical stored form of an object key — exactly what upload() returns on success. */
+  private storedKey(objectKey: string): string {
+    return this.gcsEnabled ? `gs://${this.bucket}/${objectKey}` : path.join(this.localDir, objectKey);
+  }
+
+  /**
+   * Deterministic stored key for a screenshot, computable BEFORE any upload
+   * happens. The execution service records this on step_results immediately;
+   * the screenshot consumer uploads the bytes to the same key asynchronously
+   * (until then, /media 404s for it — accepted eventual consistency).
+   * Spec: docs/specs/workers/spec-service-decomposition.md §4.1
+   */
+  keyFor(tenantId: string, runId: string, stepIndex: number, timing: 'before' | 'after'): string {
+    return this.storedKey(`${tenantId}/${runId}/${stepIndex}/${timing}.png`);
+  }
+
   /**
    * Upload a PNG buffer to GCS or save locally.
    * Returns the object key (GCS) or file path (local) on success, null on error.
@@ -158,7 +174,7 @@ export class ScreenshotService {
       try {
         await this.writeOnce(png, key);
         this.observability.increment('screenshot.gcs_uploaded');
-        return `gs://${this.bucket}/${key}`;
+        return this.storedKey(key);
       } catch (e: any) {
         const retriable = /stream was destroyed|ECONNRESET|ETIMEDOUT|socket hang up|key must be/i.test(e.message ?? '');
         if (!retriable || attempt === 3) {
@@ -188,7 +204,7 @@ export class ScreenshotService {
 
   private async saveLocally(png: Buffer, key: string): Promise<string | null> {
     try {
-      const filePath = path.join(this.localDir, key);
+      const filePath = this.storedKey(key);
       fs.mkdirSync(path.dirname(filePath), { recursive: true });
       fs.writeFileSync(filePath, png);
       this.observability.increment('screenshot.local_saved');
