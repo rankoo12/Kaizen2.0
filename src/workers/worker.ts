@@ -477,7 +477,7 @@ async function executeStep(
     // State / negative assertions verify CURRENT page state — they must never read
     // a cached selector (it can embed run-specific data, e.g. a header link named
     // with a previous run's email). Use the no-cache resolver.
-    const NO_CACHE_ASSERTIONS = new Set(['assert_visible', 'assert_not_visible', 'assert_enabled', 'assert_disabled', 'assert_checked']);
+    const NO_CACHE_ASSERTIONS = new Set(['assert_visible', 'assert_not_visible', 'assert_enabled', 'assert_disabled', 'assert_checked', 'assert_attribute']);
     const needsElement = !NO_ELEMENT_ACTIONS.has(step.action);
     const useNoCache = NO_CACHE_ASSERTIONS.has(step.action);
     selectorSet = needsElement

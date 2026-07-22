@@ -114,7 +114,7 @@ export class OpenAIGateway implements ILLMGateway {
             role: 'system',
             content: `You are a UI test compiler. Extract the user's intent into a JSON object matching this schema exactly:
 {
-  "action": "navigate" | "go_back" | "go_forward" | "reload" | "click" | "click_random" | "double_click" | "right_click" | "hover" | "type" | "clear" | "select" | "check" | "uncheck" | "upload" | "assert_visible" | "assert_not_visible" | "assert_text" | "assert_not_text" | "assert_url" | "assert_title" | "assert_enabled" | "assert_disabled" | "assert_checked" | "wait" | "press_key" | "scroll",
+  "action": "navigate" | "go_back" | "go_forward" | "reload" | "click" | "click_random" | "double_click" | "right_click" | "hover" | "type" | "clear" | "select" | "check" | "uncheck" | "upload" | "assert_visible" | "assert_not_visible" | "assert_text" | "assert_not_text" | "assert_url" | "assert_title" | "assert_enabled" | "assert_disabled" | "assert_checked" | "assert_attribute" | "wait" | "press_key" | "scroll",
   "targetDescription": "string | null",
   "value": "string | null",
   "url": "string | null"
@@ -143,6 +143,7 @@ Action rules:
 - "assert_not_text": verifying some text is NOT anywhere on the page ("verify 'Out of stock' is not shown"). Put the text in value; targetDescription null.
 - "assert_enabled" / "assert_disabled": verifying an element is enabled / disabled ("verify Submit is disabled"). Element in targetDescription.
 - "assert_checked": verifying a checkbox or radio is checked ("verify the Remember me box is checked"). Element in targetDescription.
+- "assert_attribute": verifying an element's HTML attribute. Element in targetDescription, and value is "attribute=expectedValue". Examples: "verify the Login link points to /login" → targetDescription: "the Login link", value: "href=/login"; "verify the Subscribe button has class active" → targetDescription: "the Subscribe button", value: "class=active".
 
 Radio buttons and checkboxes MUST use "click" to toggle, or "check"/"uncheck" to force a state; never "select".
 

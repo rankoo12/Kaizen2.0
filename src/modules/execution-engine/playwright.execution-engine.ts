@@ -20,6 +20,7 @@ interface PlaywrightPageLike {
   selectOption(selector: string, value: string | { label: string } | { value: string }, options?: { timeout?: number }): Promise<unknown>;
   setInputFiles(selector: string, files: string | string[], options?: { timeout?: number }): Promise<void>;
   isVisible(selector: string): Promise<boolean>;
+  getAttribute(selector: string, name: string, options?: { timeout?: number }): Promise<string | null>;
   isEnabled(selector: string, options?: { timeout?: number }): Promise<boolean>;
   isDisabled(selector: string, options?: { timeout?: number }): Promise<boolean>;
   isChecked(selector: string, options?: { timeout?: number }): Promise<boolean>;
@@ -464,6 +465,23 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
       case 'assert_checked': {
         const checked = await page.isChecked(selector, { timeout: ACTION_TIMEOUT_MS }).catch(() => false);
         if (!checked) throw new Error(`assert_checked failed: element is not checked: ${selector}`);
+        break;
+      }
+
+      case 'assert_attribute': {
+        // value is "attribute=expectedValue" (e.g. "href=/login", "class=active").
+        // With no "=", assert the attribute is merely present.
+        if (!step.value) throw new Error('assert_attribute requires "attribute=expected" in StepAST.value');
+        const eq = step.value.indexOf('=');
+        const attr = (eq >= 0 ? step.value.slice(0, eq) : step.value).trim();
+        const expected = (eq >= 0 ? step.value.slice(eq + 1) : '').trim();
+        const actual = await page.getAttribute(selector, attr, { timeout: ACTION_TIMEOUT_MS }).catch(() => null);
+        const ok = expected === ''
+          ? actual !== null
+          : (actual ?? '').toLowerCase().includes(expected.toLowerCase());
+        if (!ok) {
+          throw new Error(`assert_attribute failed: ${attr}="${actual ?? '(absent)'}" does not ${expected === '' ? 'exist' : `contain "${expected}"`} on ${selector}.`);
+        }
         break;
       }
 
