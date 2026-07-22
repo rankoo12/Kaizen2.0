@@ -14,8 +14,8 @@ const row: StepResultRow = {
 
 function makeBus() {
   const redis = { set: jest.fn().mockResolvedValue('OK') } as any;
-  const screenshots = { add: jest.fn().mockResolvedValue(undefined), close: jest.fn().mockResolvedValue(undefined) } as any;
-  const persist = { add: jest.fn().mockResolvedValue(undefined), close: jest.fn().mockResolvedValue(undefined) } as any;
+  const screenshots = { add: jest.fn().mockResolvedValue(undefined), close: jest.fn().mockResolvedValue(undefined), on: jest.fn() } as any;
+  const persist = { add: jest.fn().mockResolvedValue(undefined), close: jest.fn().mockResolvedValue(undefined), on: jest.fn() } as any;
   const bus = new BullMQEventBus(redis, obs, { screenshots, persist });
   return { bus, redis, screenshots, persist };
 }

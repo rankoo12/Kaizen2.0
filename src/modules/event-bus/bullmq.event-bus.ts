@@ -45,6 +45,13 @@ export class BullMQEventBus implements IEventBus {
   ) {
     this.screenshotQueue = queues?.screenshots ?? createScreenshotQueue();
     this.persistQueue = queues?.persist ?? createPersistQueue();
+    // Queues emit 'error' on Redis connection blips; without a listener that is
+    // an unhandled EventEmitter error and kills the process. publish() already
+    // degrades gracefully per call — these only need to observe.
+    this.screenshotQueue.on('error', (err) =>
+      this.obs.log('warn', 'event_bus.queue_error', { queue: 'screenshots', error: err.message }));
+    this.persistQueue.on('error', (err) =>
+      this.obs.log('warn', 'event_bus.queue_error', { queue: 'persist', error: err.message }));
   }
 
   async publish(e: RunEventEnvelope): Promise<void> {

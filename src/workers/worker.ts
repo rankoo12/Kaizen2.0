@@ -729,6 +729,13 @@ worker.on('failed', (job, err) => {
   logger.error({ event: 'job_failed', jobId: job?.id, error: err.message });
 });
 
+// Without an 'error' listener, a transient Redis blip (ECONNRESET) becomes an
+// unhandled EventEmitter error and kills the process mid-run. BullMQ reconnects
+// on its own; we only need to observe.
+worker.on('error', (err) => {
+  logger.warn({ event: 'worker_connection_error', error: err.message });
+});
+
 // ─── Graceful Shutdown ────────────────────────────────────────────────────────
 
 const shutdown = async (signal: string): Promise<void> => {

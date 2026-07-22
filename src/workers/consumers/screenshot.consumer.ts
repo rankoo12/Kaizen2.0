@@ -71,5 +71,11 @@ export function startScreenshotConsumer(deps: ScreenshotConsumerDeps): Worker<Sc
   worker.on('failed', (job, err) => {
     deps.obs.log('warn', 'screenshot_consumer.job_failed', { jobId: job?.id, error: err.message });
   });
+  // Without an 'error' listener, a transient Redis blip (ECONNRESET) becomes an
+  // unhandled EventEmitter error and kills the whole process. BullMQ reconnects
+  // on its own; we only need to observe.
+  worker.on('error', (err) => {
+    deps.obs.log('warn', 'screenshot_consumer.worker_error', { error: err.message });
+  });
   return worker;
 }
