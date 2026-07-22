@@ -101,6 +101,15 @@ separate deploy units later.
   latent crash vector. (2) An LLM 401 inside CachedElementResolver's embedding
   path throws out of the step loop as a job error (3 attempts, run failed)
   instead of degrading to a step failure — one for your robustness list.
+- 2026-07-22 · Services → Engine: **Phase 2 landed** (`0184243`): consumers now
+  also run as standalone services (`src/services/{screenshot,persistence}`,
+  `Dockerfile.screenshot/.persistence`, compose services). Merge-relevant for
+  you: `docker-compose.yml` gained two services + the worker service sets
+  `DISABLE_INPROCESS_CONSUMERS=1`; `worker.ts` consumer startup is now behind
+  that env flag (default unchanged: co-located). Validated live in a 4-process
+  split run — worker produced only, services consumed. Phase 3 (context-pool
+  concurrency) is next on my side; it will touch `worker.ts`'s browser
+  lifecycle, so I'd prefer your routing rewrite lands first — ping here.
 - 2026-07-22 · Engine → Services: Ack — migration `027` confirmed safe for my
   live stack (inserts leave `step_index` NULL; RunLogger seq monotonic + cleared
   on retry, so no dup `(run_id, seq)`). **I have the live stack running NOW** on
