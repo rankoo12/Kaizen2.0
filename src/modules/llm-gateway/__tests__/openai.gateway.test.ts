@@ -61,20 +61,26 @@ describe('OpenAIGateway', () => {
     expect(mockObservability.log).toHaveBeenCalledWith('error', 'llm.compileStep_failed', expect.any(Object));
   });
 
-  it('resolveElement parses selectors and emits token metrics', async () => {
+  it('resolveElement maps the LLM-picked kaizenId to the candidate selectors and emits token metrics', async () => {
+    // Contract: the LLM returns only { kaizenId } (disambiguation). The gateway
+    // maps that id back to the candidate's pre-generated selectorCandidates —
+    // selector generation is the DOM pruner's job, not the LLM's.
     mockCreateCompletion.mockResolvedValueOnce({
-      choices: [{ message: { content: JSON.stringify({
-        selectors: [{ selector: "[data-kaizen-id='kz-2']", strategy: 'data-testid', confidence: 0.99 }],
-      }) } }],
+      choices: [{ message: { content: JSON.stringify({ kaizenId: 'kz-2' }) } }],
       usage: { total_tokens: 150, prompt_tokens: 100, completion_tokens: 50 },
     });
 
     const step = { action: 'click' as const, targetDescription: 'login', value: null, url: null, rawText: 'click login', contentHash: '123', targetHash: 'test-target-hash' };
-    const candidates = [{ kaizenId: 'kz-2', role: 'button', name: 'Login', cssSelector: '', xpath: '', attributes: {}, textContent: 'Login', isVisible: true, similarityScore: 1 }];
+    const candidates = [{
+      kaizenId: 'kz-2', role: 'button', name: 'Login', cssSelector: '', xpath: '', attributes: {},
+      textContent: 'Login', isVisible: true, similarityScore: 1,
+      selectorCandidates: [{ selector: "[data-kaizen-id='kz-2']", strategy: 'data-testid' as const, confidence: 0.99 }],
+    }];
 
     const result = await gateway.resolveElement(step, candidates, 'tenant-1');
 
     expect(result.selectors[0].selector).toBe("[data-kaizen-id='kz-2']");
+    expect(result.llmPickedKaizenId).toBe('kz-2');
     expect(result.fromCache).toBe(false);
     expect(mockBillingMeter.emit).toHaveBeenCalledWith(
       expect.objectContaining({ eventType: 'LLM_CALL', quantity: 150 }),
@@ -92,7 +98,7 @@ describe('OpenAIGateway', () => {
 
     expect(mockRedis.setex).toHaveBeenCalledWith(
       expect.stringMatching(/^llm:dedup:/),
-      86_400,
+      3_600, // intentional 1-hour TTL — see resolveElement (avoids serving stale wrong picks after a verdict=failed rerun)
       expect.any(String),
     );
   });

@@ -103,9 +103,11 @@ describe('LLMElementResolver', () => {
     await new Promise((r) => setImmediate(r));
 
     expect(mockLLMGateway.generateEmbedding).toHaveBeenCalledWith('click subscribe');
+    // The cache row is keyed on targetHash (not contentHash) so every step
+    // targeting this element shares one row — see llm.element-resolver.ts writeCacheRow.
     expect(mockQuery).toHaveBeenCalledWith(
       expect.stringContaining('INSERT INTO selector_cache'),
-      expect.arrayContaining(['tenant-1', 'hash-xyz', 'youtube.com']),
+      expect.arrayContaining(['tenant-1', 'test-target-hash', 'youtube.com']),
     );
   });
 
@@ -125,8 +127,11 @@ describe('LLMElementResolver', () => {
     await resolver.resolve(step, context);
     await new Promise((r) => setImmediate(r));
 
-    expect(mockLLMGateway.generateEmbedding).not.toHaveBeenCalled();
-    expect(mockQuery).not.toHaveBeenCalled();
+    // The L2.5 element_embedding lookup legitimately issues one embedding + one
+    // SELECT before the LLM path. What must NOT happen is persisting the invalid
+    // selectors: no INSERT INTO selector_cache when every selector fails validation.
+    const insertCall = mockQuery.mock.calls.find((c: unknown[]) => /INSERT INTO selector_cache/.test(String(c[0])));
+    expect(insertCall).toBeUndefined();
   });
 
   it('recordSuccess updates outcome_window with a success in DB', async () => {

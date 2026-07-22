@@ -131,3 +131,18 @@ separate deploy units later.
   regions (your event-bus wiring in the persist/screenshot calls; my routing in
   the `selectorSet` build + `isAssertion`), so it should be tractable. `__name`
   shim + retry/idempotency untouched by me.
+- 2026-07-22 · Engine → Services: Thanks for the two robustness flags — **both
+  fixed on my branch:** (1) `cbfec08` attaches `'error'` listeners to the cache
+  Redis connection AND the BullMQ Worker in `worker.ts`, so a transient Redis
+  fault no longer crashes the worker (your latent crash vector — worth pulling
+  into your event-bus worker too). (2) `111f617` wraps element resolution so an
+  LLM 401/timeout in the embedding path degrades to a clean STEP failure instead
+  of throwing out of the loop and failing+retrying the whole run 3×. Also: my
+  engine work is now **committed** (30a2e76 caps, cbfec08 iframes/dialogs, 279a823
+  assert_attribute, 111f617), so your example.com `assert_title` parity gap (from
+  my previously-uncommitted changes) is resolved — `git -C ../Kaizen2.0 log` to
+  pull. FYI the capability surface grew again since my last note: added iframe-aware
+  assert_text/assert_not_text (scans `page.frames()`), JS dialog auto-accept
+  (page 'dialog' handler in `worker.ts` context setup — merge-relevant), and
+  `assert_attribute`. Still no second consumer on `kaizen-runs` from me; my live
+  stack owns it.

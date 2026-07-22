@@ -76,6 +76,10 @@ const logger = pino({
 const obs = new PinoObservability(logger);
 const billing = new PostgresBillingMeter(obs);
 const cacheRedis = createRedisConnection();
+// Without an 'error' listener, a transient Redis fault (ECONNRESET, failover)
+// is an unhandled EventEmitter 'error' that crashes the whole worker process.
+// ioredis auto-reconnects; log and let it recover.
+cacheRedis.on('error', (err) => obs.log('warn', 'redis.cache_connection_error', { error: err.message }));
 const llm = new OpenAIGateway(billing, obs, undefined, cacheRedis);
 const domPruner = new PlaywrightDOMPruner();
 const sharedPool = new SharedPoolService(cacheRedis, obs);
@@ -217,6 +221,15 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
   });
 
   const page = await context.newPage();
+
+  // Auto-accept native JS dialogs (alert/confirm/prompt). Without a handler,
+  // Playwright DISMISSES dialogs — so a "click OK" flow gets Cancel and a click
+  // that pops a confirm can stall. Accepting matches the common QA intent; the
+  // message is logged for the run timeline. (A future action can opt into dismiss.)
+  page.on('dialog', (dialog) => {
+    obs.log('info', 'worker.dialog_accepted', { runId, type: dialog.type(), message: dialog.message() });
+    void dialog.accept().catch(() => { /* already handled/closed */ });
+  });
 
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
 
@@ -514,31 +527,45 @@ async function executeStep(
         selectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
       }
     }
-  } else if (step.action === 'assert_text') {
-    // A content assertion ("verify X appears / the cart contains X") does NOT
-    // need the element resolver to pick the right element — the DOM pruner
-    // frequently never even surfaces the relevant node (e.g. the product link
-    // in the cart table), so asking the LLM to pick from its candidate list is
-    // the wrong model. We assert against the whole page body directly; the
-    // engine's assert_text checks the value is present anywhere on the page.
+  } else if (step.action === 'assert_text' || step.action === 'assert_not_text') {
+    // Whole-page content assertions ("verify X appears" / "verify X is gone") do
+    // NOT need the element resolver — the DOM pruner frequently never surfaces the
+    // relevant node. The engine scans the whole page body directly.
     selectorSet = {
       selectors: [{ selector: 'body', strategy: 'css', confidence: 1 }],
       fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null,
     };
   } else {
-    // Other assertions (assert_visible) verify CURRENT page state — they must
-    // never read a cached selector (it can embed run-specific data, e.g. a
-    // header link named with a previous run's email). Use the no-cache resolver.
-    const isAssertionAction = step.action === 'assert_visible';
-    const needsElement = step.action !== 'navigate' && step.action !== 'press_key' && step.action !== 'wait';
-    selectorSet = needsElement
-      ? await (isAssertionAction ? assertionResolver : resolver).resolve(step, resolutionContext)
-      : { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+    // Actions that operate on the page / keyboard / URL / title need no element.
+    const NO_ELEMENT_ACTIONS = new Set(['navigate', 'press_key', 'wait', 'go_back', 'go_forward', 'reload', 'assert_url', 'assert_title']);
+    // State / negative assertions verify CURRENT page state — they must never read
+    // a cached selector (it can embed run-specific data, e.g. a header link named
+    // with a previous run's email). Use the no-cache resolver.
+    const NO_CACHE_ASSERTIONS = new Set(['assert_visible', 'assert_not_visible', 'assert_enabled', 'assert_disabled', 'assert_checked', 'assert_attribute']);
+    const needsElement = !NO_ELEMENT_ACTIONS.has(step.action);
+    const useNoCache = NO_CACHE_ASSERTIONS.has(step.action);
+    try {
+      selectorSet = needsElement
+        ? await (useNoCache ? assertionResolver : resolver).resolve(step, resolutionContext)
+        : { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+    } catch (e: any) {
+      // A resolution error (e.g. an LLM 401/timeout in the embedding path) must
+      // degrade to a STEP failure, not escape the step loop as a job error — a
+      // thrown error here would fail+retry the WHOLE run 3× and lose the timeline.
+      // Empty selectors → the step fails cleanly, healing runs, stop-on-fail records
+      // the rest as skipped, and the run completes as 'failed'.
+      obs.log('warn', 'worker.resolution_failed', { runId, action: step.action, error: e.message });
+      selectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+    }
   }
 
-  // Assertions must never be persisted to the selector cache (see above) — the
-  // write-side guard. Re-verify every run.
-  const isAssertion = step.action === 'assert_text' || step.action === 'assert_visible';
+  // Assertions must never be persisted to the selector cache — re-verify every run.
+  const ASSERTION_ACTIONS = new Set([
+    'assert_text', 'assert_not_text', 'assert_visible', 'assert_not_visible',
+    'assert_url', 'assert_title', 'assert_enabled', 'assert_disabled', 'assert_checked',
+    'assert_count', 'assert_attribute',
+  ]);
+  const isAssertion = ASSERTION_ACTIONS.has(step.action);
 
   if (selectorSet.resolutionSource) {
     runLog?.log('resolve', `resolved via ${selectorSet.resolutionSource}${selectorSet.tokensUsed ? ` · ${selectorSet.tokensUsed} tok` : ''}`, {
@@ -736,11 +763,12 @@ worker.on('failed', (job, err) => {
   logger.error({ event: 'job_failed', jobId: job?.id, error: err.message });
 });
 
-// Without an 'error' listener, a transient Redis blip (ECONNRESET) becomes an
-// unhandled EventEmitter error and kills the process mid-run. BullMQ reconnects
-// on its own; we only need to observe.
+// A BullMQ Worker emits 'error' for connection-level faults (Redis blips, etc.).
+// Without this listener the EventEmitter 'error' is unhandled and crashes the
+// process — one transient Redis reset would kill the worker. Log and let BullMQ
+// reconnect.
 worker.on('error', (err) => {
-  logger.warn({ event: 'worker_connection_error', error: err.message });
+  logger.error({ event: 'worker_error', error: err.message });
 });
 
 // ─── Graceful Shutdown ────────────────────────────────────────────────────────
