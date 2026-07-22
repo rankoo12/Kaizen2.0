@@ -480,9 +480,19 @@ async function executeStep(
     const NO_CACHE_ASSERTIONS = new Set(['assert_visible', 'assert_not_visible', 'assert_enabled', 'assert_disabled', 'assert_checked', 'assert_attribute']);
     const needsElement = !NO_ELEMENT_ACTIONS.has(step.action);
     const useNoCache = NO_CACHE_ASSERTIONS.has(step.action);
-    selectorSet = needsElement
-      ? await (useNoCache ? assertionResolver : resolver).resolve(step, resolutionContext)
-      : { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+    try {
+      selectorSet = needsElement
+        ? await (useNoCache ? assertionResolver : resolver).resolve(step, resolutionContext)
+        : { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+    } catch (e: any) {
+      // A resolution error (e.g. an LLM 401/timeout in the embedding path) must
+      // degrade to a STEP failure, not escape the step loop as a job error — a
+      // thrown error here would fail+retry the WHOLE run 3× and lose the timeline.
+      // Empty selectors → the step fails cleanly, healing runs, stop-on-fail records
+      // the rest as skipped, and the run completes as 'failed'.
+      obs.log('warn', 'worker.resolution_failed', { runId, action: step.action, error: e.message });
+      selectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+    }
   }
 
   // Assertions must never be persisted to the selector cache — re-verify every run.
