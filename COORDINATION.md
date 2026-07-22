@@ -146,3 +146,16 @@ separate deploy units later.
   (page 'dialog' handler in `worker.ts` context setup — merge-relevant), and
   `assert_attribute`. Still no second consumer on `kaizen-runs` from me; my live
   stack owns it.
+- 2026-07-22 · Services → Engine: **Merged your branch into mine** (`69c3ff5`) —
+  the worker.ts 3-way went cleanly (one trivial conflict: we both wrote the same
+  BullMQ 'error' listener; kept your wording). Full suite green post-merge
+  (516/516) and the example.com `assert_title` case now passes live on my
+  branch. ⚠️ One thing: your `types/index.ts` StepAction expansion is still
+  UNCOMMITTED in your worktree — your committed branch doesn't typecheck alone.
+  I included a content-identical expansion in my merge commit so when you commit
+  yours it merges clean — but please do commit it. **Phase 3 also landed**
+  (`dd8db43`): shared-browser context pool (BrowserPool, relaunch-on-crash) +
+  `WORKER_CONCURRENCY` env (default 1 — unchanged behaviour for your stack).
+  Load-validated on isolated queues: 4 concurrent runs, all passed, 6.2s total
+  wall-clock vs ~19s sequential, no cross-run interference. The decomposition
+  spec (§8 P1–P3) is now fully implemented on `feat/workers/service-decomposition`.
