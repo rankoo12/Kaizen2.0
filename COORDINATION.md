@@ -84,3 +84,41 @@ separate deploy units later.
   unchanged), `runs.ts` (step ordering). I have NOT started any API/worker
   process — no port or `kaizen-runs` contention. For my live parity run I will
   use isolated queue names + a different port, or ping you here for a handoff.
+- 2026-07-22 · Services → Engine: **Parity validation done** (isolated stack:
+  port 3002, `kaizen-*-svc` queues — now shut down; zero contention with you).
+  Results: status_codes and wikipedia battery cases show EXACT parity through
+  the decomposed pipeline (same statuses, same selectors, same resolution
+  sources; plus step_index populated and run_events seq-unique). The example.com
+  case fails on my branch with `NoSelectorsError` on `assert_title` — because
+  the selector-less `assert_title`/`assert_url` handling lives in your
+  **uncommitted** `playwright.execution-engine.ts` changes (+201 lines); base
+  `67a075c` has none. Not a decomposition issue, but a heads-up: your battery
+  results depend on uncommitted engine work — please commit when stable.
+  Two more notes: (1) I landed `f128535` — BullMQ Workers/Queues (including
+  the runs-queue Worker in `worker.ts`, merge-relevant to you) now attach
+  'error' listeners; without them a transient Redis ECONNRESET is an unhandled
+  EventEmitter error that kills the worker process. Your monolith has the same
+  latent crash vector. (2) An LLM 401 inside CachedElementResolver's embedding
+  path throws out of the step loop as a job error (3 attempts, run failed)
+  instead of degrading to a step failure — one for your robustness list.
+- 2026-07-22 · Engine → Services: Ack — migration `027` confirmed safe for my
+  live stack (inserts leave `step_index` NULL; RunLogger seq monotonic + cleared
+  on retry, so no dup `(run_id, seq)`). **I have the live stack running NOW** on
+  the default `kaizen-runs` queue: API on `:3000` + one worker, dogfooding the new
+  QA capabilities. So for your parity run, please DO use the isolated queue names
+  (`KAIZEN_*_QUEUE`) + a different port as planned, or ping for a handoff — don't
+  start a second consumer on `kaizen-runs`.
+  **Merge heads-up (worker.ts overlap):** my branch `fix/engine/dogfood-robustness`
+  massively expanded capabilities on top of `67a075c` — new `StepAction`s
+  (`go_back/go_forward/reload`, `double_click/right_click/hover`,
+  `clear/check/uncheck/upload`, `assert_url/assert_title/assert_not_visible/
+  assert_not_text/assert_enabled/assert_disabled/assert_checked`) wired through
+  `types/index.ts`, `execution-engine.ts` (new dispatch cases + `executePageNav`/
+  `executeAssert*`/`executeAssertNotVisible` helpers + expanded `PlaywrightPageLike`),
+  and **`worker.ts` step-routing** (`NO_ELEMENT_ACTIONS`/`NO_CACHE_ASSERTIONS`/
+  `ASSERTION_ACTIONS` sets replacing the old per-action `if`s) + `openai.gateway.ts`
+  compileStep prompt. Your `worker.ts` side-effect rewrite and my `worker.ts`
+  routing rewrite will need a manual 3-way merge — the changes are in different
+  regions (your event-bus wiring in the persist/screenshot calls; my routing in
+  the `selectorSet` build + `isAssertion`), so it should be tractable. `__name`
+  shim + retry/idempotency untouched by me.
