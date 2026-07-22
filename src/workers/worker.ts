@@ -112,11 +112,18 @@ const screenshots = new ScreenshotService(obs);
 
 // Event bus + co-located consumers (Phase 1 modular monolith): the step loop
 // publishes side-effects; these BullMQ Workers drain them off the per-step
-// critical path. Phase 2 moves the same start functions behind their own
-// entrypoints. Spec: docs/specs/workers/spec-service-decomposition.md §3
+// critical path. Phase 2 runs the same start functions behind their own
+// entrypoints (src/services/{screenshot,persistence}) — set
+// DISABLE_INPROCESS_CONSUMERS=1 there so this process stays a pure producer
+// and jobs aren't split between two consumers.
+// Spec: docs/specs/workers/spec-service-decomposition.md §3, §8
 const bus: IEventBus = new BullMQEventBus(cacheRedis, obs);
-const screenshotConsumer = startScreenshotConsumer({ redis: cacheRedis, screenshots, obs });
-const persistenceConsumer = startPersistenceConsumer({ redis: cacheRedis, obs });
+const inprocessConsumers = process.env.DISABLE_INPROCESS_CONSUMERS !== '1';
+const screenshotConsumer = inprocessConsumers ? startScreenshotConsumer({ redis: cacheRedis, screenshots, obs }) : null;
+const persistenceConsumer = inprocessConsumers ? startPersistenceConsumer({ redis: cacheRedis, obs }) : null;
+if (!inprocessConsumers) {
+  logger.info({ event: 'inprocess_consumers_disabled', note: 'expecting dedicated screenshot/persistence services' });
+}
 
 const notifier = new LogNotifier(obs);
 const healingEngine = new HealingEngine(
@@ -743,7 +750,7 @@ const shutdown = async (signal: string): Promise<void> => {
   // Stop claiming run jobs first, then drain the co-located consumers (their
   // queues survive in Redis — anything unfinished resumes on next boot).
   await worker.close();
-  await Promise.allSettled([screenshotConsumer.close(), persistenceConsumer.close()]);
+  await Promise.allSettled([screenshotConsumer?.close(), persistenceConsumer?.close()]);
   await bus.close();
   await closePool();
   process.exit(0);
@@ -755,5 +762,5 @@ process.on('SIGINT', () => void shutdown('SIGINT'));
 logger.info({
   event: 'worker_started',
   queue: RUNS_QUEUE_NAME,
-  consumers: [SCREENSHOTS_QUEUE_NAME, PERSIST_QUEUE_NAME],
+  consumers: inprocessConsumers ? [SCREENSHOTS_QUEUE_NAME, PERSIST_QUEUE_NAME] : [],
 });
