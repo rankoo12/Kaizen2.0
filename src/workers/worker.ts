@@ -450,31 +450,35 @@ async function executeStep(
         selectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
       }
     }
-  } else if (step.action === 'assert_text') {
-    // A content assertion ("verify X appears / the cart contains X") does NOT
-    // need the element resolver to pick the right element — the DOM pruner
-    // frequently never even surfaces the relevant node (e.g. the product link
-    // in the cart table), so asking the LLM to pick from its candidate list is
-    // the wrong model. We assert against the whole page body directly; the
-    // engine's assert_text checks the value is present anywhere on the page.
+  } else if (step.action === 'assert_text' || step.action === 'assert_not_text') {
+    // Whole-page content assertions ("verify X appears" / "verify X is gone") do
+    // NOT need the element resolver — the DOM pruner frequently never surfaces the
+    // relevant node. The engine scans the whole page body directly.
     selectorSet = {
       selectors: [{ selector: 'body', strategy: 'css', confidence: 1 }],
       fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null,
     };
   } else {
-    // Other assertions (assert_visible) verify CURRENT page state — they must
-    // never read a cached selector (it can embed run-specific data, e.g. a
-    // header link named with a previous run's email). Use the no-cache resolver.
-    const isAssertionAction = step.action === 'assert_visible';
-    const needsElement = step.action !== 'navigate' && step.action !== 'press_key' && step.action !== 'wait';
+    // Actions that operate on the page / keyboard / URL / title need no element.
+    const NO_ELEMENT_ACTIONS = new Set(['navigate', 'press_key', 'wait', 'go_back', 'go_forward', 'reload', 'assert_url', 'assert_title']);
+    // State / negative assertions verify CURRENT page state — they must never read
+    // a cached selector (it can embed run-specific data, e.g. a header link named
+    // with a previous run's email). Use the no-cache resolver.
+    const NO_CACHE_ASSERTIONS = new Set(['assert_visible', 'assert_not_visible', 'assert_enabled', 'assert_disabled', 'assert_checked']);
+    const needsElement = !NO_ELEMENT_ACTIONS.has(step.action);
+    const useNoCache = NO_CACHE_ASSERTIONS.has(step.action);
     selectorSet = needsElement
-      ? await (isAssertionAction ? assertionResolver : resolver).resolve(step, resolutionContext)
+      ? await (useNoCache ? assertionResolver : resolver).resolve(step, resolutionContext)
       : { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
   }
 
-  // Assertions must never be persisted to the selector cache (see above) — the
-  // write-side guard. Re-verify every run.
-  const isAssertion = step.action === 'assert_text' || step.action === 'assert_visible';
+  // Assertions must never be persisted to the selector cache — re-verify every run.
+  const ASSERTION_ACTIONS = new Set([
+    'assert_text', 'assert_not_text', 'assert_visible', 'assert_not_visible',
+    'assert_url', 'assert_title', 'assert_enabled', 'assert_disabled', 'assert_checked',
+    'assert_count', 'assert_attribute',
+  ]);
+  const isAssertion = ASSERTION_ACTIONS.has(step.action);
 
   if (selectorSet.resolutionSource) {
     runLog?.log('resolve', `resolved via ${selectorSet.resolutionSource}${selectorSet.tokensUsed ? ` · ${selectorSet.tokensUsed} tok` : ''}`, {
