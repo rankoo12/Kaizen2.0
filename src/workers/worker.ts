@@ -70,6 +70,10 @@ const logger = pino({
 const obs = new PinoObservability(logger);
 const billing = new PostgresBillingMeter(obs);
 const cacheRedis = createRedisConnection();
+// Without an 'error' listener, a transient Redis fault (ECONNRESET, failover)
+// is an unhandled EventEmitter 'error' that crashes the whole worker process.
+// ioredis auto-reconnects; log and let it recover.
+cacheRedis.on('error', (err) => obs.log('warn', 'redis.cache_connection_error', { error: err.message }));
 const llm = new OpenAIGateway(billing, obs, undefined, cacheRedis);
 const domPruner = new PlaywrightDOMPruner();
 const sharedPool = new SharedPoolService(cacheRedis, obs);
@@ -188,6 +192,15 @@ async function processRun(payload: RunJobPayload): Promise<void> {
   });
 
   const page = await context.newPage();
+
+  // Auto-accept native JS dialogs (alert/confirm/prompt). Without a handler,
+  // Playwright DISMISSES dialogs — so a "click OK" flow gets Cancel and a click
+  // that pops a confirm can stall. Accepting matches the common QA intent; the
+  // message is logged for the run timeline. (A future action can opt into dismiss.)
+  page.on('dialog', (dialog) => {
+    obs.log('info', 'worker.dialog_accepted', { runId, type: dialog.type(), message: dialog.message() });
+    void dialog.accept().catch(() => { /* already handled/closed */ });
+  });
 
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
 
@@ -654,6 +667,14 @@ worker.on('completed', (job) => {
 
 worker.on('failed', (job, err) => {
   logger.error({ event: 'job_failed', jobId: job?.id, error: err.message });
+});
+
+// A BullMQ Worker emits 'error' for connection-level faults (Redis blips, etc.).
+// Without this listener the EventEmitter 'error' is unhandled and crashes the
+// process — one transient Redis reset would kill the worker. Log and let BullMQ
+// reconnect.
+worker.on('error', (err) => {
+  logger.error({ event: 'worker_error', error: err.message });
 });
 
 // ─── Graceful Shutdown ────────────────────────────────────────────────────────
