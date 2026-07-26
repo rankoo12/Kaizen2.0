@@ -12,13 +12,38 @@
 // ─── Test Compilation ────────────────────────────────────────────────────────
 
 export type StepAction =
+  // ── Navigation ──
   | 'navigate'
+  | 'go_back'
+  | 'go_forward'
+  | 'reload'
+  // ── Pointer interactions ──
   | 'click'
   | 'click_random'
+  | 'double_click'
+  | 'right_click'
+  | 'hover'
+  // ── Form interactions ──
   | 'type'
+  | 'clear'
   | 'select'
+  | 'check'
+  | 'uncheck'
+  | 'upload'
+  // ── Positive assertions ──
   | 'assert_visible'
   | 'assert_text'
+  | 'assert_url'
+  | 'assert_title'
+  | 'assert_enabled'
+  | 'assert_disabled'
+  | 'assert_checked'
+  | 'assert_count'
+  | 'assert_attribute'
+  // ── Negative assertions ──
+  | 'assert_not_visible'
+  | 'assert_not_text'
+  // ── Timing / keyboard / scroll ──
   | 'wait'
   | 'press_key'
   | 'scroll';
