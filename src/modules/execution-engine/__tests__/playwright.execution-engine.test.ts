@@ -17,12 +17,27 @@ describe('PlaywrightExecutionEngine', () => {
 
     mockPage = {
       goto: jest.fn(),
+      goBack: jest.fn(),
+      goForward: jest.fn(),
+      reload: jest.fn(),
       click: jest.fn(),
+      dblclick: jest.fn(),
+      hover: jest.fn(),
+      check: jest.fn(),
+      uncheck: jest.fn(),
       fill: jest.fn(),
       selectOption: jest.fn(),
+      setInputFiles: jest.fn(),
       isVisible: jest.fn(),
+      getAttribute: jest.fn(),
+      isEnabled: jest.fn(),
+      isDisabled: jest.fn(),
+      isChecked: jest.fn(),
       waitForSelector: jest.fn(),
       waitForTimeout: jest.fn(),
+      title: jest.fn(),
+      url: jest.fn(),
+      locator: jest.fn(),
       evaluate: jest.fn(),
       $eval: jest.fn(),
       keyboard: { press: jest.fn() },
@@ -103,6 +118,49 @@ describe('PlaywrightExecutionEngine', () => {
       expect(result.status).toBe('failed');
       expect(result.errorType).toBe('MissingValueError');
       expect(mockPage.keyboard.press).not.toHaveBeenCalled();
+    });
+  });
+
+  // ─── wait ────────────────────────────────────────────────────────────────────
+
+  describe('wait', () => {
+    const makeWait = (value: string | null): StepAST => ({
+      action: 'wait',
+      value,
+      targetDescription: null,
+      url: null,
+      rawText: `wait ${value}`,
+      contentHash: 'w1',
+      targetHash: 'test-target-hash',
+    });
+    const noSel: SelectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+
+    it('waits a fixed duration for a numeric value without needing a selector', async () => {
+      mockPage.waitForTimeout.mockResolvedValueOnce(undefined);
+      const result = await engine.executeStep(makeWait('6000'), noSel, mockPage);
+      expect(result.status).toBe('passed');
+      expect(mockPage.waitForTimeout).toHaveBeenCalledWith(6000);
+    });
+
+    it('does NOT fail a numeric wait with NoSelectorsError (regression: wait ran before the guard)', async () => {
+      mockPage.waitForTimeout.mockResolvedValueOnce(undefined);
+      const result = await engine.executeStep(makeWait('500'), noSel, mockPage);
+      expect(result.status).toBe('passed');
+      expect(result.errorType).not.toBe('NoSelectorsError');
+    });
+
+    it('waits for the resolved selector when the value is non-numeric', async () => {
+      mockPage.waitForSelector.mockResolvedValueOnce(undefined);
+      const withSel: SelectorSet = { ...noSel, selectors: [{ selector: '#late', strategy: 'css', confidence: 0.9 }] };
+      const result = await engine.executeStep(makeWait('for the spinner to appear'), withSel, mockPage);
+      expect(result.status).toBe('passed');
+      expect(mockPage.waitForSelector).toHaveBeenCalledWith('#late', { timeout: 10_000 });
+    });
+
+    it('fails with WaitError (not NoSelectorsError) when there is neither a duration nor a target', async () => {
+      const result = await engine.executeStep(makeWait(null), noSel, mockPage);
+      expect(result.status).toBe('failed');
+      expect(result.errorType).toBe('WaitError');
     });
   });
 
@@ -293,6 +351,173 @@ describe('PlaywrightExecutionEngine', () => {
       await expect(
         engine.executeStep(makeStep(null), selectorSet, mockPage),
       ).rejects.toThrow(/requires StepAST\.value/);
+    });
+  });
+
+  // ─── new capabilities (QA parity) ─────────────────────────────────────────────
+
+  const oneSelector = (sel = '#el'): SelectorSet => ({
+    selectors: [{ selector: sel, strategy: 'css', confidence: 0.9 }],
+    fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null,
+  });
+  const emptySet: SelectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+  const bodySet: SelectorSet = { selectors: [{ selector: 'body', strategy: 'css', confidence: 1 }], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+  const mkStep = (action: StepAST['action'], over: Partial<StepAST> = {}): StepAST => ({
+    action, targetDescription: 'the thing', value: null, url: null,
+    rawText: `${action} the thing`, contentHash: 'c', targetHash: 't', ...over,
+  });
+
+  describe('interactions', () => {
+    it('double_click calls page.dblclick', async () => {
+      mockPage.dblclick.mockResolvedValueOnce(undefined);
+      const r = await engine.executeStep(mkStep('double_click'), oneSelector('#row'), mockPage);
+      expect(r.status).toBe('passed');
+      expect(mockPage.dblclick).toHaveBeenCalledWith('#row', { timeout: 10_000 });
+    });
+
+    it('right_click calls page.click with button:right', async () => {
+      mockPage.click.mockResolvedValueOnce(undefined);
+      const r = await engine.executeStep(mkStep('right_click'), oneSelector('#menu'), mockPage);
+      expect(r.status).toBe('passed');
+      expect(mockPage.click).toHaveBeenCalledWith('#menu', { button: 'right', timeout: 10_000 });
+    });
+
+    it('hover calls page.hover', async () => {
+      mockPage.hover.mockResolvedValueOnce(undefined);
+      const r = await engine.executeStep(mkStep('hover'), oneSelector('#avatar'), mockPage);
+      expect(r.status).toBe('passed');
+      expect(mockPage.hover).toHaveBeenCalledWith('#avatar', { timeout: 10_000 });
+    });
+
+    it('clear empties the field via fill("")', async () => {
+      mockPage.fill.mockResolvedValueOnce(undefined);
+      const r = await engine.executeStep(mkStep('clear'), oneSelector('#search'), mockPage);
+      expect(r.status).toBe('passed');
+      expect(mockPage.fill).toHaveBeenCalledWith('#search', '', { timeout: 10_000 });
+    });
+
+    it('check calls page.check and uncheck calls page.uncheck', async () => {
+      mockPage.check.mockResolvedValueOnce(undefined);
+      mockPage.uncheck.mockResolvedValueOnce(undefined);
+      expect((await engine.executeStep(mkStep('check'), oneSelector('#box'), mockPage)).status).toBe('passed');
+      expect(mockPage.check).toHaveBeenCalledWith('#box', { timeout: 10_000 });
+      expect((await engine.executeStep(mkStep('uncheck'), oneSelector('#box'), mockPage)).status).toBe('passed');
+      expect(mockPage.uncheck).toHaveBeenCalledWith('#box', { timeout: 10_000 });
+    });
+
+    it('upload sets input files from value', async () => {
+      mockPage.setInputFiles.mockResolvedValueOnce(undefined);
+      const r = await engine.executeStep(mkStep('upload', { value: '/tmp/x.pdf' }), oneSelector('#file'), mockPage);
+      expect(r.status).toBe('passed');
+      expect(mockPage.setInputFiles).toHaveBeenCalledWith('#file', '/tmp/x.pdf', { timeout: 10_000 });
+    });
+  });
+
+  describe('page navigation (no selector needed)', () => {
+    it('go_back / go_forward / reload call the page methods', async () => {
+      mockPage.goBack.mockResolvedValueOnce(undefined);
+      mockPage.goForward.mockResolvedValueOnce(undefined);
+      mockPage.reload.mockResolvedValueOnce(undefined);
+      expect((await engine.executeStep(mkStep('go_back'), emptySet, mockPage)).status).toBe('passed');
+      expect((await engine.executeStep(mkStep('go_forward'), emptySet, mockPage)).status).toBe('passed');
+      expect((await engine.executeStep(mkStep('reload'), emptySet, mockPage)).status).toBe('passed');
+      expect(mockPage.goBack).toHaveBeenCalled();
+      expect(mockPage.goForward).toHaveBeenCalled();
+      expect(mockPage.reload).toHaveBeenCalled();
+    });
+  });
+
+  describe('assert_url / assert_title', () => {
+    it('assert_url passes when the current URL contains the value, throws otherwise', async () => {
+      mockPage.url.mockReturnValue('https://shop.example.com/checkout/step-1');
+      expect((await engine.executeStep(mkStep('assert_url', { value: '/checkout', targetDescription: null }), emptySet, mockPage)).status).toBe('passed');
+      mockPage.url.mockReturnValue('https://shop.example.com/home');
+      await expect(engine.executeStep(mkStep('assert_url', { value: '/checkout', targetDescription: null }), emptySet, mockPage)).rejects.toThrow(/assert_url failed/);
+    });
+
+    it('assert_title passes/fails on page-title containment', async () => {
+      mockPage.title.mockResolvedValue('My Store — Checkout');
+      expect((await engine.executeStep(mkStep('assert_title', { value: 'Checkout', targetDescription: null }), emptySet, mockPage)).status).toBe('passed');
+      mockPage.title.mockResolvedValue('My Store — Home');
+      await expect(engine.executeStep(mkStep('assert_title', { value: 'Checkout', targetDescription: null }), emptySet, mockPage)).rejects.toThrow(/assert_title failed/);
+    });
+  });
+
+  describe('state assertions', () => {
+    it('assert_enabled passes when enabled, throws when not', async () => {
+      mockPage.isEnabled.mockResolvedValueOnce(true);
+      expect((await engine.executeStep(mkStep('assert_enabled'), oneSelector(), mockPage)).status).toBe('passed');
+      mockPage.isEnabled.mockResolvedValueOnce(false);
+      await expect(engine.executeStep(mkStep('assert_enabled'), oneSelector(), mockPage)).rejects.toThrow(/assert_enabled failed/);
+    });
+    it('assert_disabled passes when disabled, throws when not', async () => {
+      mockPage.isDisabled.mockResolvedValueOnce(true);
+      expect((await engine.executeStep(mkStep('assert_disabled'), oneSelector(), mockPage)).status).toBe('passed');
+      mockPage.isDisabled.mockResolvedValueOnce(false);
+      await expect(engine.executeStep(mkStep('assert_disabled'), oneSelector(), mockPage)).rejects.toThrow(/assert_disabled failed/);
+    });
+    it('assert_checked passes when checked, throws when not', async () => {
+      mockPage.isChecked.mockResolvedValueOnce(true);
+      expect((await engine.executeStep(mkStep('assert_checked'), oneSelector(), mockPage)).status).toBe('passed');
+      mockPage.isChecked.mockResolvedValueOnce(false);
+      await expect(engine.executeStep(mkStep('assert_checked'), oneSelector(), mockPage)).rejects.toThrow(/assert_checked failed/);
+    });
+
+    it('assert_attribute passes when the attribute contains the expected value, throws otherwise', async () => {
+      mockPage.getAttribute.mockResolvedValueOnce('/login?ref=home');
+      expect((await engine.executeStep(mkStep('assert_attribute', { value: 'href=/login' }), oneSelector('a'), mockPage)).status).toBe('passed');
+      expect(mockPage.getAttribute).toHaveBeenCalledWith('a', 'href', { timeout: 10_000 });
+      mockPage.getAttribute.mockResolvedValueOnce('/home');
+      await expect(engine.executeStep(mkStep('assert_attribute', { value: 'href=/login' }), oneSelector('a'), mockPage)).rejects.toThrow(/assert_attribute failed/);
+    });
+
+    it('assert_attribute (no "=") asserts mere presence of the attribute', async () => {
+      mockPage.getAttribute.mockResolvedValueOnce('');
+      expect((await engine.executeStep(mkStep('assert_attribute', { value: 'disabled' }), oneSelector('button'), mockPage)).status).toBe('passed');
+      mockPage.getAttribute.mockResolvedValueOnce(null);
+      await expect(engine.executeStep(mkStep('assert_attribute', { value: 'disabled' }), oneSelector('button'), mockPage)).rejects.toThrow(/assert_attribute failed/);
+    });
+
+    // Regression (dogfood defect): "verify the input has value 42" read getAttribute('value'),
+    // which returns the static default, not the live typed value → false failure. The `value`
+    // attribute must be read from the live control via $eval, NOT getAttribute.
+    it('assert_attribute value= reads the LIVE control value (not the static attribute)', async () => {
+      mockPage.$eval.mockResolvedValueOnce('42');
+      expect((await engine.executeStep(mkStep('assert_attribute', { value: 'value=42' }), oneSelector('input'), mockPage)).status).toBe('passed');
+      expect(mockPage.$eval).toHaveBeenCalled();
+      // The static-attribute path must NOT be used for `value`.
+      expect(mockPage.getAttribute).not.toHaveBeenCalled();
+      mockPage.$eval.mockResolvedValueOnce('7');
+      await expect(engine.executeStep(mkStep('assert_attribute', { value: 'value=42' }), oneSelector('input'), mockPage)).rejects.toThrow(/assert_attribute failed/);
+    });
+  });
+
+  describe('negative assertions', () => {
+    it('assert_not_visible passes when no element is resolved (absent)', async () => {
+      expect((await engine.executeStep(mkStep('assert_not_visible'), emptySet, mockPage)).status).toBe('passed');
+    });
+    it('assert_not_visible passes when the resolved element is hidden', async () => {
+      mockPage.isVisible.mockResolvedValueOnce(false);
+      expect((await engine.executeStep(mkStep('assert_not_visible'), oneSelector('#gone'), mockPage)).status).toBe('passed');
+    });
+    it('assert_not_visible throws when a genuinely-matching element is visible', async () => {
+      mockPage.isVisible.mockResolvedValueOnce(true);
+      mockPage.$eval.mockResolvedValueOnce('input text the thing placeholder'); // descriptor contains "thing"
+      await expect(engine.executeStep(mkStep('assert_not_visible'), oneSelector('#here'), mockPage)).rejects.toThrow(/assert_not_visible failed/);
+    });
+
+    it('assert_not_visible passes when the visible resolved element does NOT match the target (resolver stretched)', async () => {
+      mockPage.isVisible.mockResolvedValueOnce(true);
+      mockPage.$eval.mockResolvedValueOnce('button enable'); // no "thing" → unrelated pick → target absent
+      expect((await engine.executeStep(mkStep('assert_not_visible'), oneSelector('#enable'), mockPage)).status).toBe('passed');
+    });
+    it('assert_not_text passes when the text is absent', async () => {
+      mockPage.$eval.mockResolvedValue(false);
+      expect((await engine.executeStep(mkStep('assert_not_text', { value: 'Out of stock', targetDescription: null }), bodySet, mockPage)).status).toBe('passed');
+    });
+    it('assert_not_text throws when the text is present', async () => {
+      mockPage.$eval.mockResolvedValueOnce(true);
+      await expect(engine.executeStep(mkStep('assert_not_text', { value: 'Out of stock', targetDescription: null }), bodySet, mockPage)).rejects.toThrow(/assert_not_text failed/);
     });
   });
 

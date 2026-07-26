@@ -24,16 +24,23 @@ function makePage(domState: {
           (domState.ids ?? []).includes(id) ? { id } : null,
         querySelector: (sel: string) =>
           (domState.selectors ?? []).some((s) => sel.includes(s.split('[')[0]) || sel === s)
-            ? { matches: true }
+            // A matched CAPTCHA iframe must also pass the detector's visibility gate
+            // (getBoundingClientRect >= 50px). Return a visibly-sized element.
+            ? { matches: true, getBoundingClientRect: () => ({ width: 300, height: 78 }) }
             : null,
       };
       // Replace globals the detector uses and run the function
       const origDoc = (global as any).document;
+      const origWin = (global as any).window;
       (global as any).document = fakeDoc;
+      // The generic-CAPTCHA visibility gate calls window.getComputedStyle; stub it
+      // (jest testEnvironment is 'node', so window is otherwise undefined).
+      (global as any).window = { getComputedStyle: () => ({ display: 'block', visibility: 'visible' }) };
       try {
         return fn();
       } finally {
         (global as any).document = origDoc;
+        (global as any).window = origWin;
       }
     }),
   };

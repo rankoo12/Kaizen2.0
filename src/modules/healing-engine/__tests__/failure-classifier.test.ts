@@ -40,13 +40,22 @@ describe('classifyErrorSignal', () => {
 describe('classifyDOMSignal', () => {
   const leaf = (name: string): AXNode => ({ role: 'button', name });
 
-  it('returns SparsePage when axAfter is null', () => {
-    expect(classifyDOMSignal(null, null, 'button')).toBe('SparsePage');
+  // SparsePage requires a populated axBefore — the tree was readable before the
+  // step and vanished after (a genuine page-unload). A null axBefore means the AX
+  // API is just unavailable, which must NOT be read as SparsePage.
+  const readableBefore: AXNode = { role: 'root', children: [leaf('a'), leaf('b'), leaf('c'), leaf('d'), leaf('e')] };
+
+  it('returns SparsePage when the after-tree is null but the page was readable before', () => {
+    expect(classifyDOMSignal(readableBefore, null, 'button')).toBe('SparsePage');
   });
 
-  it('returns SparsePage when fewer than 5 nodes', () => {
+  it('returns SparsePage when the after-tree collapses to fewer than 5 nodes', () => {
     const sparse: AXNode = { role: 'root', children: [leaf('a'), leaf('b')] };
-    expect(classifyDOMSignal(null, sparse, 'button')).toBe('SparsePage');
+    expect(classifyDOMSignal(readableBefore, sparse, 'button')).toBe('SparsePage');
+  });
+
+  it('does NOT report SparsePage when both trees are null (AX API unavailable)', () => {
+    expect(classifyDOMSignal(null, null, '#some-id')).toBe('SelectorPresent');
   });
 
   it('returns SelectorGone when aria-label target not in after tree', () => {
