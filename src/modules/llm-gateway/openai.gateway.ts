@@ -129,7 +129,7 @@ Action rules:
 - "type"   : filling a text input or textarea
 - "navigate": going to a URL
 - "assert_visible": verifying an element is present/visible WITHOUT checking its text (e.g. "verify the cart icon is shown")
-- "assert_text": verifying an element's TEXT contains/shows/matches an expected value. Put the element in targetDescription and the expected text in value. Examples: "validate the email appears in the header" → targetDescription: "the header", value: "the email"; "verify the item name matches the one selected" → targetDescription: "the item name", value: "{{selectedItem}}". Preserve {{variable}} tokens verbatim in value.
+- "assert_text": verifying that an expected value IS present/shown ("contains", "shows", "displays", "says", "appears", "matches"). Put the element in targetDescription and the expected text in value. Examples: "validate the email appears in the header" → targetDescription: "the header", value: "the email"; "verify the item name matches the one selected" → targetDescription: "the item name", value: "{{selectedItem}}"; "verify the page contains the text No results found" → assert_text, value: "No results found" (the words INSIDE the expected text never make this a negative assertion). Preserve {{variable}} tokens verbatim in value.
 - "double_click": double-clicking an element ("double click the row").
 - "right_click": right-click / open the context menu on an element.
 - "hover": hovering over an element to reveal a menu or tooltip ("hover over the avatar").
@@ -140,10 +140,19 @@ Action rules:
 - "assert_url": verifying the current page URL contains a value. Put the expected URL or fragment in value; targetDescription null. ("verify the URL contains /checkout")
 - "assert_title": verifying the page title. Put the expected title text in value; targetDescription null.
 - "assert_not_visible": verifying an element is NOT present or NOT visible ("verify the error is gone", "the spinner should disappear"). Element in targetDescription.
-- "assert_not_text": verifying some text is NOT anywhere on the page ("verify 'Out of stock' is not shown"). Put the text in value; targetDescription null.
+- "assert_not_text": verifying some text is NOT anywhere on the page. Use this ONLY when the SENTENCE is phrased as a negation/absence: "is not shown", "does not contain", "should not appear", "is gone", "is removed", "no longer shows". ("verify 'Out of stock' is not shown"). Put the text in value; targetDescription null.
 - "assert_enabled" / "assert_disabled": verifying an element is enabled / disabled ("verify Submit is disabled"). Element in targetDescription.
 - "assert_checked": verifying a checkbox or radio is checked ("verify the Remember me box is checked"). Element in targetDescription.
 - "assert_attribute": verifying an element's HTML attribute. Element in targetDescription, and value is "attribute=expectedValue". Examples: "verify the Login link points to /login" → targetDescription: "the Login link", value: "href=/login"; "verify the Subscribe button has class active" → targetDescription: "the Subscribe button", value: "class=active".
+
+CRITICAL — assertion polarity (present vs. absent):
+- Decide positive ("assert_text") vs. negative ("assert_not_text") — and likewise "assert_visible" vs. "assert_not_visible" — SOLELY from the sentence's verb/phrasing, NEVER from words that happen to appear inside the expected/quoted text.
+- The expected text is an OPAQUE payload. A negation, "no", "not", "missing", "invalid", "does not exist", "fail", or similar WITHIN the text being checked does NOT make the assertion negative.
+    * "verify the page contains 'User does not exist'" → assert_text (positive), value: "User does not exist"
+    * "verify the error 'No results found' is shown" → assert_text, value: "No results found"
+    * "check that 'Payment failed' appears" → assert_text, value: "Payment failed"
+    * "verify 'Welcome back' is NOT displayed" → assert_not_text, value: "Welcome back"
+- Only an explicit negation of the VERB ("is not shown", "does not contain", "is gone/removed", "no longer appears") selects the negative action.
 
 Radio buttons and checkboxes MUST use "click" to toggle, or "check"/"uncheck" to force a state; never "select".
 

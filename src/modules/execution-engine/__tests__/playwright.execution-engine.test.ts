@@ -477,6 +477,19 @@ describe('PlaywrightExecutionEngine', () => {
       mockPage.getAttribute.mockResolvedValueOnce(null);
       await expect(engine.executeStep(mkStep('assert_attribute', { value: 'disabled' }), oneSelector('button'), mockPage)).rejects.toThrow(/assert_attribute failed/);
     });
+
+    // Regression (dogfood defect): "verify the input has value 42" read getAttribute('value'),
+    // which returns the static default, not the live typed value → false failure. The `value`
+    // attribute must be read from the live control via $eval, NOT getAttribute.
+    it('assert_attribute value= reads the LIVE control value (not the static attribute)', async () => {
+      mockPage.$eval.mockResolvedValueOnce('42');
+      expect((await engine.executeStep(mkStep('assert_attribute', { value: 'value=42' }), oneSelector('input'), mockPage)).status).toBe('passed');
+      expect(mockPage.$eval).toHaveBeenCalled();
+      // The static-attribute path must NOT be used for `value`.
+      expect(mockPage.getAttribute).not.toHaveBeenCalled();
+      mockPage.$eval.mockResolvedValueOnce('7');
+      await expect(engine.executeStep(mkStep('assert_attribute', { value: 'value=42' }), oneSelector('input'), mockPage)).rejects.toThrow(/assert_attribute failed/);
+    });
   });
 
   describe('negative assertions', () => {

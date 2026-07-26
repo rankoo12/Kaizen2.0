@@ -36,17 +36,20 @@ describe('filterCandidatesByAction — type', () => {
     expect(result).toEqual([textbox, searchbox, combobox]);
   });
 
-  it('removes link candidates (the MDN "Skip to search" bug)', () => {
-    const result = filterCandidatesByAction([link, button], 'type');
-    // No compatible roles found → falls back to full list (custom widget safety net)
-    expect(result).toEqual([link, button]);
+  it('in fallback, drops link/button when a non-incompatible candidate remains (MDN "Skip to search" fix)', () => {
+    // A custom widget with a non-standard role + a "Skip to search" link and a
+    // button. No textbox/searchbox/combobox → fallback. We must NOT hand the
+    // resolver the link/button; keep only the custom-role widget.
+    const customWidget = makeCandidate('application', 'Rich search');
+    const result = filterCandidatesByAction([link, button, customWidget], 'type');
+    expect(result).toEqual([customWidget]);
   });
 
-  it('falls back to full list when NO compatible roles exist (custom widget safety)', () => {
+  it('falls back to the full list only when EVERY candidate is incompatible (last-resort safety net)', () => {
+    // link + button are both type-incompatible; trimming would empty the list, so
+    // we keep the original rather than resolve against nothing.
     const result = filterCandidatesByAction([link, button], 'type');
-    expect(result).toHaveLength(2);
-    expect(result).toContain(link);
-    expect(result).toContain(button);
+    expect(result).toEqual([link, button]);
   });
 
   it('treats "fill" the same as "type"', () => {

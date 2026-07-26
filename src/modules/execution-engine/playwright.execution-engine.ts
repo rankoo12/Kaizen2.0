@@ -475,7 +475,22 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
         const eq = step.value.indexOf('=');
         const attr = (eq >= 0 ? step.value.slice(0, eq) : step.value).trim();
         const expected = (eq >= 0 ? step.value.slice(eq + 1) : '').trim();
-        const actual = await page.getAttribute(selector, attr, { timeout: ACTION_TIMEOUT_MS }).catch(() => null);
+        // The `value` *attribute* on a form control reflects only its initial
+        // default — typing updates the live IDL property, not the attribute. A user
+        // asserting "the field has value 42" means the current value, so read the
+        // live property for form controls (getAttribute would report the stale/empty
+        // default and falsely fail). Other attributes read normally.
+        const actual = attr.toLowerCase() === 'value'
+          ? await page.$eval(selector, (el: Element) => {
+              const tag = el.tagName.toLowerCase();
+              if (tag === 'input' || tag === 'textarea') return (el as HTMLInputElement).value;
+              if (tag === 'select') {
+                const s = el as HTMLSelectElement;
+                return (s.options[s.selectedIndex] && s.options[s.selectedIndex].value) ?? s.value;
+              }
+              return el.getAttribute('value');
+            }).catch(() => null)
+          : await page.getAttribute(selector, attr, { timeout: ACTION_TIMEOUT_MS }).catch(() => null);
         const ok = expected === ''
           ? actual !== null
           : (actual ?? '').toLowerCase().includes(expected.toLowerCase());
@@ -496,8 +511,30 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
           for (const target of targets) {
             const present = await target.$eval(
               'body',
-              (root: Element, search: string) =>
-                (root.textContent ?? '').replace(/\s+/g, ' ').trim().toLowerCase().includes(search),
+              // Match VISIBLE text only. `textContent` includes <script>/<style>
+              // source and display:none content, so it reports words the user never
+              // sees (e.g. "Delete" inside an onclick handler's deleteElement() code)
+              // — a false "present" that turns a correct assert_not_text into a
+              // false failure. `innerText` excludes non-rendered nodes and hidden
+              // elements, matching human perception. Form-control values are also
+              // checked (innerText omits them) so this stays symmetric with
+              // assert_text — a string is "present" here iff assert_text would find it.
+              (root: Element, search: string) => {
+                const norm = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim().toLowerCase();
+                const visible = (root as HTMLElement).innerText ?? root.textContent;
+                if (norm(visible).includes(search)) return true;
+                for (const el of Array.from(root.querySelectorAll('input, textarea, select'))) {
+                  const tag = el.tagName.toLowerCase();
+                  let v: string | null = null;
+                  if (tag === 'input' || tag === 'textarea') v = (el as HTMLInputElement).value;
+                  else {
+                    const s = el as HTMLSelectElement;
+                    v = (s.options[s.selectedIndex] && s.options[s.selectedIndex].text) || s.value;
+                  }
+                  if (v != null && norm(v).includes(search)) return true;
+                }
+                return false;
+              },
               needleN,
             ).catch(() => false);
             if (present) return true;
@@ -564,12 +601,24 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
             }
             if (v != null && lc(v).includes(search)) return { selector: selFor(el), text: tidy(v).slice(0, 200) };
           }
-          // 2) Innermost = the deepest element whose visible text contains the needle.
+          // 2) VISIBLE text only. `textContent` includes <script>/<style> source and
+          //    display:none content — matching there is a false positive (e.g. the
+          //    word "Delete" inside an inline deleteElement() handler). `innerText`
+          //    reflects what a human actually sees. Gate on the body's visible text
+          //    first so a genuinely-absent needle returns null fast (and, crucially,
+          //    is reported absent — the mirror bug is a false "present").
+          const rootVisible = lc((root as HTMLElement).innerText ?? root.textContent);
+          if (!rootVisible.includes(search)) return null;
+          // 3) Localize to the innermost element whose OWN visible text contains the
+          //    needle. innerText is undefined on non-HTML nodes (e.g. SVG) — skip those.
           for (let i = all.length - 1; i >= 0; i--) {
-            const el = all[i];
-            if (lc(el.textContent ?? '').includes(search)) return { selector: selFor(el), text: tidy(el.textContent).slice(0, 200) };
+            const el = all[i] as HTMLElement;
+            const t = el.innerText;
+            if (t != null && lc(t).includes(search)) return { selector: selFor(el), text: tidy(t).slice(0, 200) };
           }
-          return null;
+          // Present in the body's visible text but not localizable to one element
+          // (rare — e.g. text split across inline siblings). Report the body.
+          return { selector: 'body', text: tidy((root as HTMLElement).innerText).slice(0, 200) };
         };
         // ~8s budget (20 × 400ms) for async / dynamically-rendered content. Each
         // attempt scans the main document AND every iframe — page.frames() is a flat
