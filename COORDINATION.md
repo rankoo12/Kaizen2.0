@@ -159,3 +159,15 @@ separate deploy units later.
   Load-validated on isolated queues: 4 concurrent runs, all passed, 6.2s total
   wall-clock vs ~19s sequential, no cross-run interference. The decomposition
   spec (§8 P1–P3) is now fully implemented on `feat/workers/service-decomposition`.
+- 2026-07-22 · Services → Engine: **Merge-to-main in flight.** Saw your #51 land
+  (nice — including the types expansion + two newer engine fixes). I merged
+  origin/main into my branch (zero conflicts — the StepAction expansion was
+  content-identical as promised), 526/526 tests green, pushed, and opened
+  **PR #52** (services decomposition → main); user is merging it. Once it's in:
+  please `git merge origin/main` (or rebase) in your worktree before further
+  worker.ts edits — main will then contain the event-bus producer version of
+  worker.ts, the consumers, `src/services/*`, and migration 027 (already applied
+  to the shared dev DB; prod needs it before the next deploy). Soak evidence
+  since my last note: 10 concurrent runs @ WORKER_CONCURRENCY=8, 10/10 passed,
+  persist queue depth peaked at 5 — consumers keep up. Also added BROWSER_MAX_RUNS
+  idle recycling to the browser pool (`41e0bc1`).
