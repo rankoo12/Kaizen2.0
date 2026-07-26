@@ -9,9 +9,13 @@
   "scripts": {
     "dev": "tsx watch src/api/server.ts",
     "dev:worker": "tsx watch src/workers/worker.ts",
+    "dev:screenshot": "tsx watch src/services/screenshot/index.ts",
+    "dev:persistence": "tsx watch src/services/persistence/index.ts",
     "build": "tsc --project tsconfig.build.json",
     "start": "node dist/api/server.js",
     "start:worker": "node dist/workers/worker.js",
+    "start:screenshot": "node dist/services/screenshot/index.js",
+    "start:persistence": "node dist/services/persistence/index.js",
     "db:migrate": "tsx scripts/migrate.ts",
     "typecheck": "tsc --noEmit",
     "lint": "eslint src --ext .ts",

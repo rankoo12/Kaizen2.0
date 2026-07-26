@@ -1,6 +1,7 @@
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 import type { StepAST } from '../types';
+import type { PersistJobData, ScreenshotJobData } from '../modules/event-bus/interfaces';
 
 export type RunJobPayload = {
   runId: string;
@@ -29,7 +30,12 @@ export type RunJobPayload = {
   seedVariables?: Record<string, string>;
 };
 
-export const RUNS_QUEUE_NAME = 'kaizen-runs';
+// Queue names are env-overridable so an isolated stack (second worktree, CI)
+// can run against the shared Redis without stealing jobs from the primary
+// consumers. Defaults preserve production behaviour.
+export const RUNS_QUEUE_NAME = process.env.KAIZEN_RUNS_QUEUE ?? 'kaizen-runs';
+export const SCREENSHOTS_QUEUE_NAME = process.env.KAIZEN_SCREENSHOTS_QUEUE ?? 'kaizen-screenshots';
+export const PERSIST_QUEUE_NAME = process.env.KAIZEN_PERSIST_QUEUE ?? 'kaizen-persist';
 
 /**
  * Creates a Redis connection configured for BullMQ.
@@ -53,6 +59,41 @@ export function createRunQueue(): Queue<RunJobPayload> {
       // has time to recover; processRun clears prior rows on entry so a retry
       // produces clean results. Without this, a transient fault stranded the run
       // in 'queued'/'running' forever.
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 3000 },
+      removeOnComplete: 100,
+      removeOnFail: 200,
+    },
+  });
+}
+
+/**
+ * Side-effect queues — worker service decomposition Phase 1.
+ * Spec: docs/specs/workers/spec-service-decomposition.md §6
+ *
+ * Same retry posture as the run queue (transient-fault retries with backoff);
+ * both consumers are idempotent (upsert by client-generated id / deterministic
+ * screenshot key), so a retry after a mid-write fault is safe. Kept as options
+ * objects separate from the run queue's — run jobs and side-effect jobs tune
+ * independently.
+ */
+
+export function createScreenshotQueue(): Queue<ScreenshotJobData> {
+  return new Queue<ScreenshotJobData>(SCREENSHOTS_QUEUE_NAME, {
+    connection: createRedisConnection(),
+    defaultJobOptions: {
+      attempts: 3,
+      backoff: { type: 'exponential', delay: 3000 },
+      removeOnComplete: 100,
+      removeOnFail: 200,
+    },
+  });
+}
+
+export function createPersistQueue(): Queue<PersistJobData> {
+  return new Queue<PersistJobData>(PERSIST_QUEUE_NAME, {
+    connection: createRedisConnection(),
+    defaultJobOptions: {
       attempts: 3,
       backoff: { type: 'exponential', delay: 3000 },
       removeOnComplete: 100,

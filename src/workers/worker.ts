@@ -22,8 +22,10 @@ dotenv.config();
 import { materializeGcsKeyFromEnv } from '../bootstrap/gcs-key-from-env';
 materializeGcsKeyFromEnv();
 
+import { randomUUID } from 'node:crypto';
 import { Worker } from 'bullmq';
-import { chromium, type Page } from 'playwright';
+import { type Page } from 'playwright';
+import { BrowserPool } from './browser-pool';
 import { cancelKey } from './cancel-keys';
 import { runStepLoop } from './step-loop';
 import pino from 'pino';
@@ -53,8 +55,13 @@ import { EscalationStrategy } from '../modules/healing-engine/strategies/escalat
 import { LogNotifier } from '../modules/healing-engine/notifier/log.notifier';
 import { classify } from '../modules/healing-engine/failure-classifier';
 import { ScreenshotService } from '../modules/media/screenshot.service';
+import { BullMQEventBus } from '../modules/event-bus/bullmq.event-bus';
+import type { IEventBus, StepResultRow, StepResultStatus } from '../modules/event-bus/interfaces';
+import { markRunAttempt } from '../modules/event-bus/attempt-fence';
+import { startScreenshotConsumer } from './consumers/screenshot.consumer';
+import { startPersistenceConsumer } from './consumers/persistence.consumer';
 import { getPool, closePool } from '../db/pool';
-import { createRedisConnection, RUNS_QUEUE_NAME } from '../queue';
+import { createRedisConnection, RUNS_QUEUE_NAME, SCREENSHOTS_QUEUE_NAME, PERSIST_QUEUE_NAME } from '../queue';
 import type { RunJobPayload } from '../queue';
 import type { StepAST, ClassifiedFailure, SelectorSet, RunContext } from '../types';
 
@@ -107,6 +114,24 @@ const assertionResolver = new CompositeElementResolver(assertionResolvers, obs, 
 const engine = new PlaywrightExecutionEngine(obs);
 const challengeDetector = new PageChallengeDetector();
 const screenshots = new ScreenshotService(obs);
+// Phase 3: one shared Chromium, N isolated contexts — the pool relaunches
+// after a crash. Spec: spec-service-decomposition.md §7
+const browserPool = new BrowserPool();
+
+// Event bus + co-located consumers (Phase 1 modular monolith): the step loop
+// publishes side-effects; these BullMQ Workers drain them off the per-step
+// critical path. Phase 2 runs the same start functions behind their own
+// entrypoints (src/services/{screenshot,persistence}) — set
+// DISABLE_INPROCESS_CONSUMERS=1 there so this process stays a pure producer
+// and jobs aren't split between two consumers.
+// Spec: docs/specs/workers/spec-service-decomposition.md §3, §8
+const bus: IEventBus = new BullMQEventBus(cacheRedis, obs);
+const inprocessConsumers = process.env.DISABLE_INPROCESS_CONSUMERS !== '1';
+const screenshotConsumer = inprocessConsumers ? startScreenshotConsumer({ redis: cacheRedis, screenshots, obs }) : null;
+const persistenceConsumer = inprocessConsumers ? startPersistenceConsumer({ redis: cacheRedis, obs }) : null;
+if (!inprocessConsumers) {
+  logger.info({ event: 'inprocess_consumers_disabled', note: 'expecting dedicated screenshot/persistence services' });
+}
 
 const notifier = new LogNotifier(obs);
 const healingEngine = new HealingEngine(
@@ -146,7 +171,7 @@ async function isCancelled(runId: string): Promise<boolean> {
   }
 }
 
-async function processRun(payload: RunJobPayload): Promise<void> {
+async function processRun(payload: RunJobPayload, attempt: number): Promise<void> {
   const { runId, tenantId, compiledSteps, baseUrl } = payload;
   // stepIds[i] back-references compiledSteps[i] to its test_steps row id.
   // Optional in the payload for backwards-compat with pre-spec queue jobs;
@@ -156,6 +181,11 @@ async function processRun(payload: RunJobPayload): Promise<void> {
   const span = obs.startSpan('worker.processRun', { runId, tenantId });
 
   await markRunRunning(runId);
+
+  // Fence consumers BEFORE the clears below: envelopes published by a
+  // superseded attempt that are still in flight would otherwise land after the
+  // clear and re-insert stale rows. Spec: spec-service-decomposition.md §4.4
+  await markRunAttempt(cacheRedis, runId, attempt);
 
   // Idempotency: a BullMQ retry (after a transient infra fault) re-runs this job
   // from the top. Clear any rows a prior attempt persisted so results and the run
@@ -170,13 +200,20 @@ async function processRun(payload: RunJobPayload): Promise<void> {
 
   logger.info({ event: 'run_started', runId, tenantId, stepCount: compiledSteps.length });
 
-  // Persisted chronological run log → powers the full-run report.
+  // Persisted chronological run log → powers the full-run report. Flushes are
+  // published to the persist queue (async), not written inline.
   // Spec: docs/specs/tests-ux/spec-run-report-view.md
-  const runLog = new RunLogger(tenantId, runId, obs);
+  const runLog = new RunLogger(tenantId, runId, obs, (rows) =>
+    bus.publish({ kind: 'persist.run_events', tenantId, runId, rows, attempt }),
+  );
   runLog.log('run', `Run started · ${compiledSteps.length} step(s) · ${baseUrl}`, { data: { baseUrl, stepCount: compiledSteps.length } });
 
-  // Enforcement: Docker environments absolutely require headless: true without xvfb
-  const browser = await chromium.launch({ headless: true });
+  // One shared browser, one isolated context per run (Phase 3): contexts are
+  // cheap and fully sandboxed (cookies/storage/pages) while browser launches
+  // cost seconds — the pool owns launch/relaunch and recycles the browser at
+  // idle after BROWSER_MAX_RUNS runs (memory hygiene). This run closes ONLY
+  // its context; the browser outlives it for concurrent + subsequent runs.
+  const browser = await browserPool.acquire();
   const context = await browser.newContext({ baseURL: baseUrl });
 
   // __name shim: tsx/esbuild (keepNames) wraps named inner declarations inside
@@ -211,9 +248,9 @@ async function processRun(payload: RunJobPayload): Promise<void> {
     loopResult = await runStepLoop(runId, compiledSteps, {
       isCancelled,
       executeStep: (step, stepIndex, previousAfterPng, runContext) =>
-        executeStep(step, page, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext, runLog),
+        executeStep(step, page, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext, runLog, attempt),
       recordSkippedSteps: (steps, startIndex, reason) =>
-        recordSkippedSteps(tenantId, runId, steps, startIndex, reason, stepIds),
+        recordSkippedSteps(tenantId, runId, steps, startIndex, reason, stepIds, attempt),
       onStepFailed: (stepIndex, step) => {
         logger.warn({ event: 'step_failed', runId, action: step.action, rawText: step.rawText });
         // Stop-on-fail observability — fired every time the loop bails on
@@ -231,8 +268,10 @@ async function processRun(payload: RunJobPayload): Promise<void> {
       },
     }, payload.seedVariables);
   } finally {
+    // Close only this run's context — the pooled browser stays up for other
+    // runs; release() lets the pool recycle it once idle and past budget.
     await context.close();
-    await browser.close();
+    await browserPool.release();
     // Always clean up the cancellation key so it doesn't linger in Redis.
     await cacheRedis.del(cancelKey(runId)).catch(() => {});
   }
@@ -249,10 +288,18 @@ async function processRun(payload: RunJobPayload): Promise<void> {
   span.end();
 }
 
+/**
+ * SYNCHRONOUS step_result insert — failure path only. The healing engine
+ * FK-references the row from healing_events and the healed-update targets it
+ * by id, so the row must exist in the DB before healing starts. Hot-path rows
+ * (passed/skipped) go async via publishStepResult below.
+ * Spec: docs/specs/workers/spec-service-decomposition.md §4 (P1 scope).
+ */
 async function insertStepResult(
   tenantId: string,
   runId: string,
   step: StepAST,
+  stepIndex: number,
   status: 'passed' | 'failed' | 'healed' | 'skipped',
   selectorUsed: string | null,
   screenshotKey: string | null,
@@ -277,13 +324,13 @@ async function insertStepResult(
     // Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §3.5
     const { rows } = await getPool().query<{ id: string }>(
       `INSERT INTO step_results
-         (tenant_id, run_id, step_id, content_hash, target_hash, status, selector_used,
+         (tenant_id, run_id, step_id, step_index, content_hash, target_hash, status, selector_used,
           screenshot_key, duration_ms, resolution_source, similarity_score,
           dom_candidates, llm_picked_kaizen_id, tokens_used, archetype_name, error_type,
           captured_name, captured_value)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
        RETURNING id`,
-      [tenantId, runId, stepId, step.contentHash, step.targetHash, status, selectorUsed,
+      [tenantId, runId, stepId, stepIndex, step.contentHash, step.targetHash, status, selectorUsed,
        screenshotKey, durationMs, resolutionSource, similarityScore,
        domCandidates ? JSON.stringify(domCandidates) : null,
        llmPickedKaizenId, tokensUsed, archetypeName, errorType,
@@ -294,6 +341,23 @@ async function insertStepResult(
     obs.log('warn', 'worker.step_result_insert_failed', { error: e.message });
     return null;
   }
+}
+
+/**
+ * ASYNC step_result persistence — the hot path (passed/skipped rows, which
+ * nothing FK-references synchronously). Mints the row id client-side
+ * (spec §4.2) and publishes; the persistence consumer upserts on that id, so
+ * redelivery is idempotent. Fire-and-forget: publish never throws.
+ */
+function publishStepResult(
+  row: Omit<StepResultRow, 'id' | 'status'> & { status: Extract<StepResultStatus, 'passed' | 'skipped'> },
+  attempt: number,
+): void {
+  void bus.publish({
+    kind: 'persist.step_result',
+    row: { ...row, id: randomUUID() },
+    attempt,
+  });
 }
 
 /**
@@ -309,23 +373,30 @@ async function recordSkippedSteps(
   startIndex: number,
   reason: 'prior_step_failed',
   stepIds: (string | null)[] = [],
+  attempt: number = 0,
 ): Promise<void> {
   for (let i = startIndex; i < compiledSteps.length; i++) {
-    await insertStepResult(
-      tenantId, runId, compiledSteps[i],
-      'skipped',
-      null,    // selectorUsed
-      null,    // screenshotKey
-      0,       // durationMs
-      null,    // resolutionSource
-      null,    // similarityScore
-      null,    // domCandidates
-      null,    // llmPickedKaizenId
-      0,       // tokensUsed
-      null,    // archetypeName
-      reason,  // errorType — carries the skip reason
-      stepIds[i] ?? null,  // stepId — back-reference to test_steps for timeline display
-    ).catch((e: any) => obs.log('warn', 'worker.skip_record_failed', { error: e.message, stepIndex: i }));
+    publishStepResult({
+      tenantId,
+      runId,
+      stepId: stepIds[i] ?? null,  // back-reference to test_steps for timeline display
+      stepIndex: i,
+      contentHash: compiledSteps[i].contentHash,
+      targetHash: compiledSteps[i].targetHash,
+      status: 'skipped',
+      selectorUsed: null,
+      screenshotKey: null,
+      durationMs: 0,
+      resolutionSource: null,
+      similarityScore: null,
+      domCandidates: null,
+      llmPickedKaizenId: null,
+      tokensUsed: 0,
+      archetypeName: null,
+      errorType: reason,  // carries the skip reason
+      capturedName: null,
+      capturedValue: null,
+    }, attempt);
   }
 }
 
@@ -360,6 +431,7 @@ async function executeStep(
   stepId: string | null = null,
   runContext: RunContext = { variables: {} },
   runLog?: RunLogger,
+  attempt: number = 0,
 ): Promise<{ status: 'passed' | 'failed'; healed: boolean; afterPng: Buffer | null }> {
   // Resolve {{variable}} tokens captured by earlier steps before doing anything
   // else, so resolution, execution, and persistence all see the concrete values.
@@ -383,9 +455,8 @@ async function executeStep(
   // Reuse the previous step's after-screenshot as this step's before-screenshot.
   // Only capture a fresh one for the very first step (no previous).
   const beforePng = previousAfterPng ?? await page.screenshot({ type: 'png' }).catch(() => null);
-  if (!previousAfterPng) {
-    void screenshots.upload(beforePng!, tenantId, runId, stepIndex, 'before')
-      .catch((e) => obs.log('warn', 'worker.screenshot_upload_failed', { phase: 'before', error: e.message }));
+  if (!previousAfterPng && beforePng) {
+    void bus.publish({ kind: 'screenshot.upload', tenantId, runId, stepIndex, timing: 'before', png: beforePng, attempt });
   }
 
   // ── Challenge detection ───────────────────────────────────────────────────
@@ -397,9 +468,12 @@ async function executeStep(
     obs.log('warn', 'worker.challenge_detected', { runId, stepIndex, type: challenge.type, url: page.url() });
     obs.increment('worker.challenge_detected', { type: challenge.type });
     const afterPng = await page.screenshot({ type: 'png' }).catch(() => null);
-    const afterKey = await screenshots.upload(afterPng!, tenantId, runId, stepIndex, 'after');
+    const afterKey = afterPng ? screenshots.keyFor(tenantId, runId, stepIndex, 'after') : null;
+    if (afterPng) {
+      void bus.publish({ kind: 'screenshot.upload', tenantId, runId, stepIndex, timing: 'after', png: afterPng, attempt });
+    }
     void insertStepResult(
-      tenantId, runId, step, 'failed', null, afterKey,
+      tenantId, runId, step, stepIndex, 'failed', null, afterKey,
       Date.now() - stepStart, null, null, null, null, 0,
       null,
       challenge.type,
@@ -527,9 +601,15 @@ async function executeStep(
     { stepIndex, level: result.status === 'passed' ? 'info' : 'error', data: { status: result.status, selector: result.selectorUsed, durationMs: result.durationMs } },
   );
 
-  // ── After screenshot (upload and get key) ─────────────────────────────────
+  // ── After screenshot ──────────────────────────────────────────────────────
+  // The stored key is deterministic, so it's recorded on the step_result NOW
+  // while the bytes upload asynchronously via the screenshot consumer —
+  // GCS never blocks the step loop. Spec: spec-service-decomposition.md §4.1
   const afterPng = await page.screenshot({ type: 'png' }).catch(() => null);
-  const afterKey = await screenshots.upload(afterPng!, tenantId, runId, stepIndex, 'after');
+  const afterKey = afterPng ? screenshots.keyFor(tenantId, runId, stepIndex, 'after') : null;
+  if (afterPng) {
+    void bus.publish({ kind: 'screenshot.upload', tenantId, runId, stepIndex, timing: 'after', png: afterPng, attempt });
+  }
 
   // ── Success path ──────────────────────────────────────────────────────────
   // navigate and press_key pass with selectorUsed: null — check status only
@@ -579,7 +659,20 @@ async function executeStep(
       }
     }
 
-    void insertStepResult(tenantId, runId, step, 'passed', result.selectorUsed, afterKey, Date.now() - stepStart, selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null, selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0, selectorSet.archetypeName ?? null, null, stepId, captureKey, capturedValue);
+    publishStepResult({
+      tenantId, runId, stepId, stepIndex,
+      contentHash: step.contentHash, targetHash: step.targetHash,
+      status: 'passed',
+      selectorUsed: result.selectorUsed, screenshotKey: afterKey,
+      durationMs: Date.now() - stepStart,
+      resolutionSource: selectorSet.resolutionSource, similarityScore: selectorSet.similarityScore,
+      domCandidates: selectorSet.candidates ?? null,
+      llmPickedKaizenId: selectorSet.llmPickedKaizenId ?? null,
+      tokensUsed: selectorSet.tokensUsed ?? 0,
+      archetypeName: selectorSet.archetypeName ?? null,
+      errorType: null,
+      capturedName: captureKey, capturedValue,
+    }, attempt);
     await runLog?.flush();
     return { status: 'passed', healed: false, afterPng };
   }
@@ -596,9 +689,10 @@ async function executeStep(
   const lastGoodPng = await fetchLastGoodScreenshot(tenantId, step.contentHash);
   const failureClass = classify(error, axBefore, axAfter, selectorSet.selectors[0]?.selector ?? '', afterPng, lastGoodPng);
 
-  // Insert failed step_result now so healing_events can reference it
+  // Insert failed step_result now (synchronously) so healing_events can
+  // FK-reference it and the healed-update below can target it.
   const stepResultId = await insertStepResult(
-    tenantId, runId, step, 'failed',
+    tenantId, runId, step, stepIndex, 'failed',
     selectorSet.selectors[0]?.selector ?? null, afterKey, Date.now() - stepStart,
     selectorSet.resolutionSource, selectorSet.similarityScore, selectorSet.candidates ?? null,
     selectorSet.llmPickedKaizenId ?? null, selectorSet.tokensUsed ?? 0,
@@ -652,7 +746,7 @@ const worker = new Worker<RunJobPayload>(
   async (job) => {
     logger.info({ event: 'job_received', jobId: job.id, runId: job.data.runId });
     try {
-      await processRun(job.data);
+      await processRun(job.data, job.attemptsMade);
     } catch (err: any) {
       // Only mark the run failed once retries are exhausted — otherwise a retry
       // would overwrite a transient 'failed' and the run flickers. Rethrow either
@@ -667,7 +761,11 @@ const worker = new Worker<RunJobPayload>(
   },
   {
     connection: createRedisConnection(),
-    concurrency: 1,
+    // Phase 3: N runs in parallel, each in its own BrowserContext from the
+    // shared browser; side-effects already drain via the event bus. 1 remains
+    // the safe default — raise deliberately via WORKER_CONCURRENCY.
+    // Spec: spec-service-decomposition.md §7
+    concurrency: Math.max(1, Number(process.env.WORKER_CONCURRENCY ?? 1) || 1),
   },
 );
 
@@ -691,7 +789,12 @@ worker.on('error', (err) => {
 
 const shutdown = async (signal: string): Promise<void> => {
   logger.info({ event: 'shutdown', signal });
+  // Stop claiming run jobs first, then drain the co-located consumers (their
+  // queues survive in Redis — anything unfinished resumes on next boot).
   await worker.close();
+  await Promise.allSettled([screenshotConsumer?.close(), persistenceConsumer?.close()]);
+  await bus.close();
+  await browserPool.close();
   await closePool();
   process.exit(0);
 };
@@ -699,4 +802,8 @@ const shutdown = async (signal: string): Promise<void> => {
 process.on('SIGTERM', () => void shutdown('SIGTERM'));
 process.on('SIGINT', () => void shutdown('SIGINT'));
 
-logger.info({ event: 'worker_started', queue: RUNS_QUEUE_NAME });
+logger.info({
+  event: 'worker_started',
+  queue: RUNS_QUEUE_NAME,
+  consumers: inprocessConsumers ? [SCREENSHOTS_QUEUE_NAME, PERSIST_QUEUE_NAME] : [],
+});

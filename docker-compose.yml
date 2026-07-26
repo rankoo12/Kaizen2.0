@@ -68,6 +68,9 @@ services:
       - REDIS_URL=redis://redis:6379
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - CHOKIDAR_USEPOLLING=true
+      # The compose stack runs the dedicated screenshot/persistence services
+      # below — the worker stays a pure event-bus producer.
+      - DISABLE_INPROCESS_CONSUMERS=1
     env_file:
       - .env
     volumes:
@@ -76,6 +79,51 @@ services:
     # Standard dev worker explicitly executes DB migrations
     command: >
       sh -c "npm run db:migrate && npm run dev:worker"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+  # ── Side-effect consumer services (worker decomposition Phase 2) ──────────
+  # Same consumer logic the worker co-locates in Phase 1, as their own deploy
+  # units. Spec: docs/specs/workers/spec-service-decomposition.md §8
+
+  screenshot:
+    build:
+      context: .
+      dockerfile: Dockerfile.screenshot
+      target: development
+    environment:
+      - NODE_ENV=development
+      - REDIS_URL=redis://redis:6379
+      - CHOKIDAR_USEPOLLING=true
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: npm run dev:screenshot
+    depends_on:
+      redis:
+        condition: service_healthy
+
+  persistence:
+    build:
+      context: .
+      dockerfile: Dockerfile.persistence
+      target: development
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgres://kaizen:kaizen@postgres:5432/kaizen
+      - REDIS_URL=redis://redis:6379
+      - CHOKIDAR_USEPOLLING=true
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: npm run dev:persistence
     depends_on:
       postgres:
         condition: service_healthy
