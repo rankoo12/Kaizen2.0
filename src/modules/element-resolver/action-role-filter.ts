@@ -53,6 +53,24 @@ const CHECK_ROLES = new Set([
  */
 const SELECT_ROLES = new Set(['combobox', 'listbox']);
 
+/**
+ * Well-known standard roles that are STRUCTURALLY incompatible with a text-entry
+ * action — an element with one of these roles is never a freeform text field.
+ * Used only in the fallback path (below) to refuse categorically-wrong targets
+ * while still preserving custom/unknown-role widgets.
+ *
+ * Dogfood origin: on sites where the real search input is hidden behind a
+ * responsive toggle (e.g. MDN), the type-role filter finds no textbox and falls
+ * back to the full list — the LLM then "types" into a "Skip to search" LINK,
+ * which silently no-ops and cascades into a failed assertion. Dropping these
+ * roles turns that into a clean resolution failure instead of a phantom success.
+ */
+const TYPE_INCOMPATIBLE_ROLES = new Set([
+  'link', 'button', 'checkbox', 'radio', 'switch', 'tab',
+  'menuitem', 'menuitemcheckbox', 'menuitemradio', 'option',
+  'heading', 'img', 'listbox', 'list', 'listitem',
+]);
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**
@@ -69,15 +87,21 @@ export function filterCandidatesByAction(
   if (compatibleRoles === null) return candidates;
 
   const filtered = candidates.filter((c) => compatibleRoles.has(c.role));
+  if (filtered.length > 0) return filtered;
 
-  // If filtering removes every candidate, fall back to the full list so the
-  // resolver can still attempt to identify custom widgets (e.g. a rich-text
-  // editor rendered as <div role="application"> with no explicit input role).
-  if (filtered.length === 0) {
-    return candidates;
+  // No role-compatible candidate — likely a custom widget without a standard
+  // input role. Fall back so the resolver can still identify it (e.g. a rich-text
+  // editor rendered as <div role="application">). But for text-entry actions,
+  // still drop roles that categorically cannot accept typing (link/button/…) so
+  // we never type into a link; keep the full list only if that would remove
+  // everything (pure last-resort — no regression for all-incompatible pages).
+  const incompatible = getIncompatibleRoles(action);
+  if (incompatible) {
+    const trimmed = candidates.filter((c) => !incompatible.has(c.role));
+    if (trimmed.length > 0) return trimmed;
   }
 
-  return filtered;
+  return candidates;
 }
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -97,6 +121,22 @@ function getRolesForAction(action: string): Set<string> | null {
       return SELECT_ROLES;
 
     // click, navigate, press_key, wait, hover, scroll — any role is valid
+    default:
+      return null;
+  }
+}
+
+/**
+ * Standard roles that are categorically wrong for `action`, applied only in the
+ * fallback path to avoid handing the resolver an impossible target. Returns null
+ * for actions where no such hard exclusion is warranted.
+ */
+function getIncompatibleRoles(action: string): Set<string> | null {
+  switch (action) {
+    case 'type':
+    case 'fill':
+    case 'clear':
+      return TYPE_INCOMPATIBLE_ROLES;
     default:
       return null;
   }
