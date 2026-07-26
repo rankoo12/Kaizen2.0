@@ -210,9 +210,10 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
 
   // One shared browser, one isolated context per run (Phase 3): contexts are
   // cheap and fully sandboxed (cookies/storage/pages) while browser launches
-  // cost seconds — the pool owns launch/relaunch. This run closes ONLY its
-  // context; the browser outlives it for concurrent + subsequent runs.
-  const browser = await browserPool.get();
+  // cost seconds — the pool owns launch/relaunch and recycles the browser at
+  // idle after BROWSER_MAX_RUNS runs (memory hygiene). This run closes ONLY
+  // its context; the browser outlives it for concurrent + subsequent runs.
+  const browser = await browserPool.acquire();
   const context = await browser.newContext({ baseURL: baseUrl });
 
   // __name shim: tsx/esbuild (keepNames) wraps named inner declarations inside
@@ -267,8 +268,10 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
       },
     }, payload.seedVariables);
   } finally {
-    // Close only this run's context — the pooled browser stays up for other runs.
+    // Close only this run's context — the pooled browser stays up for other
+    // runs; release() lets the pool recycle it once idle and past budget.
     await context.close();
+    await browserPool.release();
     // Always clean up the cancellation key so it doesn't linger in Redis.
     await cacheRedis.del(cancelKey(runId)).catch(() => {});
   }

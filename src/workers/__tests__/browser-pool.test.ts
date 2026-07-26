@@ -77,4 +77,47 @@ describe('BrowserPool', () => {
     await expect(pool.close()).resolves.toBeUndefined();
     expect(launcher).not.toHaveBeenCalled();
   });
+
+  describe('recycling (BROWSER_MAX_RUNS)', () => {
+    it('recycles the browser at idle once the run budget is spent', async () => {
+      const launcher = jest.fn(async () => fakeBrowser());
+      const pool = new BrowserPool(launcher, 2);
+
+      const first = await pool.acquire();
+      await pool.release();
+      expect(await pool.acquire()).toBe(first); // budget not spent yet
+      await pool.release();                      // 2nd release → recycle
+      expect(first.close).toHaveBeenCalled();
+
+      const next = await pool.acquire();
+      expect(next).not.toBe(first);
+      expect(launcher).toHaveBeenCalledTimes(2);
+    });
+
+    it('never recycles while other runs are still active', async () => {
+      const launcher = jest.fn(async () => fakeBrowser());
+      const pool = new BrowserPool(launcher, 1); // budget spent by the FIRST run
+
+      const b = await pool.acquire(); // run A
+      await pool.acquire();           // run B (same browser)
+      await pool.release();           // A done — B still active → no recycle
+      expect(b.close).not.toHaveBeenCalled();
+
+      await pool.release();           // B done — idle → recycle
+      expect(b.close).toHaveBeenCalled();
+    });
+
+    it('a crash-relaunch resets the run budget', async () => {
+      const launcher = jest.fn(async () => fakeBrowser());
+      const pool = new BrowserPool(launcher, 2);
+
+      const first = (await pool.acquire()) as ReturnType<typeof fakeBrowser>;
+      await pool.release();
+      first._kill();                  // crash after 1 run
+
+      const second = await pool.acquire(); // relaunch → budget restarts at 1
+      await pool.release();
+      expect(second.close).not.toHaveBeenCalled(); // only 1 run on this browser
+    });
+  });
 });
