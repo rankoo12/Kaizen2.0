@@ -17,6 +17,9 @@ export type StepAction =
   | 'go_back'
   | 'go_forward'
   | 'reload'
+  // ── Tab / window management ──
+  | 'switch_tab'
+  | 'close_tab'
   // ── Pointer interactions ──
   | 'click'
   | 'click_random'
