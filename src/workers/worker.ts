@@ -28,6 +28,7 @@ import { type Page } from 'playwright';
 import { BrowserPool } from './browser-pool';
 import { cancelKey } from './cancel-keys';
 import { runStepLoop } from './step-loop';
+import { handleTabAction } from './tab-manager';
 import pino from 'pino';
 import { PinoObservability } from '../modules/observability/pino.observability';
 import { PostgresBillingMeter } from '../modules/billing-meter/postgres.billing-meter';
@@ -229,16 +230,27 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
     g.__name = g.__name || ((fn) => fn);
   });
 
-  const page = await context.newPage();
+  // Auto-accept native JS dialogs (alert/confirm/prompt) on EVERY page in the
+  // context — including tabs opened later by a click (target=_blank/window.open).
+  // Without a handler Playwright DISMISSES dialogs, so a "click OK" flow gets
+  // Cancel and a confirm can stall. Accepting matches the common QA intent.
+  const attachDialogHandler = (p: Page): void => {
+    p.on('dialog', (dialog) => {
+      obs.log('info', 'worker.dialog_accepted', { runId, type: dialog.type(), message: dialog.message() });
+      void dialog.accept().catch(() => { /* already handled/closed */ });
+    });
+  };
+  // Newly opened tabs/windows join the same context; attach the dialog handler to
+  // each so it's active no matter which tab a step later switches to.
+  context.on('page', attachDialogHandler);
 
-  // Auto-accept native JS dialogs (alert/confirm/prompt). Without a handler,
-  // Playwright DISMISSES dialogs — so a "click OK" flow gets Cancel and a click
-  // that pops a confirm can stall. Accepting matches the common QA intent; the
-  // message is logged for the run timeline. (A future action can opt into dismiss.)
-  page.on('dialog', (dialog) => {
-    obs.log('info', 'worker.dialog_accepted', { runId, type: dialog.type(), message: dialog.message() });
-    void dialog.accept().catch(() => { /* already handled/closed */ });
-  });
+  const page = await context.newPage();
+  attachDialogHandler(page);
+
+  // The "current tab" the step loop operates on. A switch_tab step repoints
+  // `tabs.current`; because the executeStep closure reads it fresh each call,
+  // every subsequent step runs against the newly-focused tab.
+  const tabs = { current: page };
 
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
 
@@ -249,7 +261,7 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
     loopResult = await runStepLoop(runId, compiledSteps, {
       isCancelled,
       executeStep: (step, stepIndex, previousAfterPng, runContext) =>
-        executeStep(step, page, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext, runLog, attempt),
+        executeStep(step, tabs.current, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext, runLog, attempt, (p) => { tabs.current = p; }),
       recordSkippedSteps: (steps, startIndex, reason) =>
         recordSkippedSteps(tenantId, runId, steps, startIndex, reason, stepIds, attempt),
       onStepFailed: (stepIndex, step) => {
@@ -433,6 +445,7 @@ async function executeStep(
   runContext: RunContext = { variables: {} },
   runLog?: RunLogger,
   attempt: number = 0,
+  setCurrentPage?: (p: Page) => void,
 ): Promise<{ status: 'passed' | 'failed'; healed: boolean; afterPng: Buffer | null }> {
   // Resolve {{variable}} tokens captured by earlier steps before doing anything
   // else, so resolution, execution, and persistence all see the concrete values.
@@ -483,6 +496,27 @@ async function executeStep(
     runLog?.log('execute', `step ${String(stepIndex + 1).padStart(2, '0')} blocked by ${challenge.type} challenge`, { stepIndex, level: 'error', data: { challenge: challenge.type } });
     await runLog?.flush();
     return { status: 'failed', healed: false, afterPng };
+  }
+
+  // ── Tab / window management ────────────────────────────────────────────────
+  // switch_tab / close_tab operate on the browser CONTEXT (the set of open tabs),
+  // not a DOM element, and must repoint the step loop's current page. Handled here
+  // in the worker (the engine only ever knows one page) via the setCurrentPage
+  // callback the step loop provides. No resolver/engine involvement.
+  if (step.action === 'switch_tab' || step.action === 'close_tab') {
+    const outcome = await handleTabAction(step, page, setCurrentPage);
+    const focusPage = outcome.page ?? page;
+    const afterPng = await focusPage.screenshot({ type: 'png' }).catch(() => null);
+    const afterKey = afterPng ? screenshots.keyFor(tenantId, runId, stepIndex, 'after') : null;
+    if (afterPng) void bus.publish({ kind: 'screenshot.upload', tenantId, runId, stepIndex, timing: 'after', png: afterPng, attempt });
+    void insertStepResult(
+      tenantId, runId, step, stepIndex, outcome.ok ? 'passed' : 'failed',
+      null, afterKey, Date.now() - stepStart, null, null, null, null, 0, null,
+      outcome.ok ? null : 'TabActionError', stepId,
+    );
+    runLog?.log('execute', `${step.action} ${outcome.ok ? '✓' : '✗'} ${outcome.detail}`, { stepIndex, level: outcome.ok ? 'info' : 'error', data: { detail: outcome.detail } });
+    await runLog?.flush();
+    return { status: outcome.ok ? 'passed' : 'failed', healed: false, afterPng };
   }
 
   // ── Resolve selectors ─────────────────────────────────────────────────────

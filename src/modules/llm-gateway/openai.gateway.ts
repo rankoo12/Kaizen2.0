@@ -114,7 +114,7 @@ export class OpenAIGateway implements ILLMGateway {
             role: 'system',
             content: `You are a UI test compiler. Extract the user's intent into a JSON object matching this schema exactly:
 {
-  "action": "navigate" | "go_back" | "go_forward" | "reload" | "click" | "click_random" | "double_click" | "right_click" | "hover" | "drag_and_drop" | "type" | "clear" | "select" | "check" | "uncheck" | "upload" | "assert_visible" | "assert_not_visible" | "assert_text" | "assert_not_text" | "assert_url" | "assert_title" | "assert_enabled" | "assert_disabled" | "assert_checked" | "assert_count" | "assert_attribute" | "wait" | "press_key" | "scroll",
+  "action": "navigate" | "go_back" | "go_forward" | "reload" | "switch_tab" | "close_tab" | "click" | "click_random" | "double_click" | "right_click" | "hover" | "drag_and_drop" | "type" | "clear" | "select" | "check" | "uncheck" | "upload" | "assert_visible" | "assert_not_visible" | "assert_text" | "assert_not_text" | "assert_url" | "assert_title" | "assert_enabled" | "assert_disabled" | "assert_checked" | "assert_count" | "assert_attribute" | "wait" | "press_key" | "scroll",
   "targetDescription": "string | null",
   "value": "string | null",
   "url": "string | null"
@@ -138,6 +138,8 @@ Action rules:
 - "check" / "uncheck": explicitly setting a checkbox to checked / unchecked ("check the terms box", "uncheck the newsletter option"). Use "click" for a plain tap/toggle.
 - "upload": choosing a file for a file input ("upload resume.pdf"). Put the file name/path in value.
 - "go_back" / "go_forward" / "reload": browser back, forward, or refresh. targetDescription is null.
+- "switch_tab": switch focus to another browser tab/window ("switch to the new tab", "go to the newly opened window", "switch back to the original tab", "switch to the second tab"). Put the tab hint in value: "new" (newly opened — the default), "first" (original), an ordinal/number ("second"), or a page-title fragment. targetDescription null.
+- "close_tab": close the current tab and return to the previous one ("close the tab", "close this window"). targetDescription and value null.
 - "assert_url": verifying the current page URL contains a value. Put the expected URL or fragment in value; targetDescription null. ("verify the URL contains /checkout")
 - "assert_title": verifying the page title. Put the expected title text in value; targetDescription null.
 - "assert_not_visible": verifying an element is NOT present or NOT visible ("verify the error is gone", "the spinner should disappear"). Element in targetDescription.
