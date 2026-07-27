@@ -43,6 +43,7 @@ import { DBArchetypeResolver } from '../modules/element-resolver/db.archetype-re
 import { ArchetypeElementResolver } from '../modules/element-resolver/archetype.element-resolver';
 import { pickRandomCandidate, resolveCardTitle, seededIndex } from '../modules/element-resolver/random-element.selector';
 import { findRepeatedTargets } from '../modules/element-resolver/random-target';
+import { resolveCountSelector } from '../modules/element-resolver/countable';
 import { interpolateStep } from './run-context';
 import { RunLogger } from './run-logger';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
@@ -579,6 +580,20 @@ async function executeStep(
       selectors: [{ selector: 'body', strategy: 'css', confidence: 1 }],
       fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null,
     };
+  } else if (step.action === 'assert_count') {
+    // assert_count counts a REPEATED GROUP, not a single element — the single-element
+    // resolver would return one #id and always count 1. Resolve a group selector
+    // directly off the live page (a grounded repeated-sibling group, else a semantic
+    // role sweep). Returns empty selectors when nothing is confidently countable, so
+    // the engine fails LOUDLY rather than silently passing a wrong count.
+    const target = step.targetDescription ?? '';
+    const found = await resolveCountSelector(page, target).catch(() => null);
+    selectorSet = found
+      ? {
+          selectors: [{ selector: found.selector, strategy: 'css' as const, confidence: 0.9 }],
+          fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null,
+        }
+      : { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
   } else if (step.action === 'drag_and_drop') {
     // Two-target step: SOURCE = targetDescription, DESTINATION = value.
     // Resolve the source through the normal (cached) resolver so it warms like any

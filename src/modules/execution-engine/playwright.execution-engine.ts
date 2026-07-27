@@ -94,6 +94,14 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
         return await this.executeAssertNotVisible(step, selectorSet, pw, start);
       }
 
+      // assert_count compares a live group count against an expected number. An empty
+      // selectorSet means the counting primitive could not confidently identify what
+      // to count → fail LOUDLY (never pass a count assertion on a guess). Handled
+      // before the generic no-selectors guard so the failure names the target.
+      if (step.action === 'assert_count') {
+        return await this.executeAssertCount(step, selectorSet, pw, start);
+      }
+
       // All remaining actions require at least one selector
       if (selectorSet.selectors.length === 0) {
         this.observability.increment('engine.step_failed', { action: step.action, reason: 'no_selectors' });
@@ -699,6 +707,65 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
       default:
         throw new Error(`Unsupported action: ${(step as StepAST).action}`);
     }
+  }
+
+  /**
+   * Verify the number of matching elements against an expected count.
+   * `value` carries the expected number with an optional comparison prefix:
+   * "5" (exact), ">=3", ">2", "<=4", "<10". The worker's counting primitive resolves
+   * a selector matching every visible member of the counted group; here we count it
+   * and compare. An empty selector set (primitive found nothing countable) fails
+   * loudly — a count assertion must never pass without a real count.
+   */
+  private async executeAssertCount(
+    step: StepAST,
+    selectorSet: SelectorSet,
+    page: PlaywrightPageLike,
+    start: number,
+  ): Promise<StepExecutionResult> {
+    const raw = (step.value ?? '').trim();
+    const m = raw.match(/^(>=|<=|>|<|=)?\s*(\d+)$/);
+    if (!m) {
+      return this.failResult(
+        start,
+        'AssertCountBadValue',
+        `assert_count needs a numeric expected count (e.g. "5", ">=3"); got "${step.value ?? '(null)'}".`,
+      );
+    }
+    const op = m[1] && m[1] !== '=' ? m[1] : '==';
+    const expected = parseInt(m[2], 10);
+
+    const selector = selectorSet.selectors[0]?.selector;
+    if (!selector) {
+      this.observability.increment('engine.step_failed', { action: 'assert_count', reason: 'unresolved' });
+      return this.failResult(
+        start,
+        'CountTargetUnresolved',
+        `assert_count could not identify a countable group for "${step.targetDescription}". Refusing to pass on a guess.`,
+      );
+    }
+
+    const actual = await page.locator(selector).count();
+    const ok =
+      op === '>=' ? actual >= expected
+      : op === '<=' ? actual <= expected
+      : op === '>' ? actual > expected
+      : op === '<' ? actual < expected
+      : actual === expected;
+
+    this.observability.log('info', 'engine.assert_count_check', {
+      target: step.targetDescription, op, expected, actual, selector,
+    });
+
+    if (!ok) {
+      return this.failResult(
+        start,
+        'AssertCountFailed',
+        `assert_count failed: expected ${op === '==' ? '' : `${op} `}${expected} "${step.targetDescription}", found ${actual}.`,
+      );
+    }
+    this.observability.increment('engine.assert_count_ok');
+    return this.passResult(start, selector);
   }
 
   private passResult(start: number, selectorUsed: string | null): StepExecutionResult {

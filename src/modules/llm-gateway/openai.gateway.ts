@@ -114,7 +114,7 @@ export class OpenAIGateway implements ILLMGateway {
             role: 'system',
             content: `You are a UI test compiler. Extract the user's intent into a JSON object matching this schema exactly:
 {
-  "action": "navigate" | "go_back" | "go_forward" | "reload" | "switch_tab" | "close_tab" | "click" | "click_random" | "double_click" | "right_click" | "hover" | "drag_and_drop" | "type" | "clear" | "select" | "check" | "uncheck" | "upload" | "assert_visible" | "assert_not_visible" | "assert_text" | "assert_not_text" | "assert_url" | "assert_title" | "assert_enabled" | "assert_disabled" | "assert_checked" | "assert_attribute" | "wait" | "press_key" | "scroll",
+  "action": "navigate" | "go_back" | "go_forward" | "reload" | "switch_tab" | "close_tab" | "click" | "click_random" | "double_click" | "right_click" | "hover" | "drag_and_drop" | "type" | "clear" | "select" | "check" | "uncheck" | "upload" | "assert_visible" | "assert_not_visible" | "assert_text" | "assert_not_text" | "assert_url" | "assert_title" | "assert_enabled" | "assert_disabled" | "assert_checked" | "assert_count" | "assert_attribute" | "wait" | "press_key" | "scroll",
   "targetDescription": "string | null",
   "value": "string | null",
   "url": "string | null"
@@ -147,6 +147,7 @@ Action rules:
 - "assert_enabled" / "assert_disabled": verifying an element is enabled / disabled ("verify Submit is disabled"). Element in targetDescription.
 - "assert_checked": verifying a checkbox or radio is checked ("verify the Remember me box is checked"). Element in targetDescription.
 - "assert_attribute": verifying an element's HTML attribute. Element in targetDescription, and value is "attribute=expectedValue". Examples: "verify the Login link points to /login" → targetDescription: "the Login link", value: "href=/login"; "verify the Subscribe button has class active" → targetDescription: "the Subscribe button", value: "class=active".
+- "assert_count": verifying HOW MANY repeated elements/items are on the page ("verify there are 5 products", "there should be at least 3 results", "the table has 10 rows"). Put the plural THING being counted in targetDescription (keep its distinguishing noun: "products", "search results", "rows", "cart items"), and the expected number in value. Encode inexact phrasing as a comparison prefix on the number: "at least N" / "N or more" / "minimum N" → ">=N"; "more than N" / "over N" → ">N"; "at most N" / "no more than N" / "up to N" → "<=N"; "fewer than N" / "less than N" / "under N" → "<N"; exact ("exactly N", "N items", "there are N") → "N". Examples: "verify there are 5 products" → targetDescription: "products", value: "5"; "there should be at least 3 search results" → targetDescription: "search results", value: ">=3"; "confirm no more than 4 rows are shown" → targetDescription: "rows", value: "<=4".
 
 CRITICAL — assertion polarity (present vs. absent):
 - Decide positive ("assert_text") vs. negative ("assert_not_text") — and likewise "assert_visible" vs. "assert_not_visible" — SOLELY from the sentence's verb/phrasing, NEVER from words that happen to appear inside the expected/quoted text.
