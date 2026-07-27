@@ -14,6 +14,7 @@ interface PlaywrightPageLike {
   click(selector: string, options?: { timeout?: number; button?: 'left' | 'right' | 'middle' }): Promise<void>;
   dblclick(selector: string, options?: { timeout?: number }): Promise<void>;
   hover(selector: string, options?: { timeout?: number }): Promise<void>;
+  dragAndDrop(source: string, target: string, options?: { timeout?: number }): Promise<void>;
   check(selector: string, options?: { timeout?: number }): Promise<void>;
   uncheck(selector: string, options?: { timeout?: number }): Promise<void>;
   fill(selector: string, value: string, options?: { timeout?: number }): Promise<void>;
@@ -128,11 +129,24 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
             })()
           : step;
 
+      // Two-target actions (drag_and_drop) need a DROP destination in addition to
+      // the source held in selectorSet.selectors. The worker resolves it into
+      // destinationSelectors; take the first that validates. If a drag has no
+      // destination, fail cleanly rather than silently no-op.
+      let destSelector: string | undefined;
+      if (step.action === 'drag_and_drop') {
+        destSelector = selectorSet.destinationSelectors?.[0]?.selector;
+        if (!destSelector) {
+          this.observability.increment('engine.step_failed', { action: step.action, reason: 'no_destination' });
+          return this.failResult(start, 'NoSelectorsError', `No drop destination resolved for drag_and_drop from "${step.targetDescription}" to "${step.value}".`);
+        }
+      }
+
       // Try each selector in confidence order (already sorted by LLMElementResolver)
       let lastError: Error | null = null;
       for (const entry of selectorSet.selectors) {
         try {
-          const matched = await this.dispatchAction(effectiveStep, entry.selector, pw, useCheck);
+          const matched = await this.dispatchAction(effectiveStep, entry.selector, pw, useCheck, destSelector);
 
           this.observability.increment('engine.step_passed', {
             action: step.action,
@@ -343,6 +357,7 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
     selector: string,
     page: PlaywrightPageLike,
     useCheck = false,
+    destSelector?: string,
   ): Promise<string | void> {
     switch (step.action) {
       // click_random resolves to a concrete element in the worker (a random
@@ -384,6 +399,12 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
 
       case 'hover':
         await page.hover(selector, { timeout: ACTION_TIMEOUT_MS });
+        break;
+
+      case 'drag_and_drop':
+        // `selector` is the drag SOURCE; destSelector is the drop DESTINATION
+        // (guaranteed present — executeStep fails the step earlier if it's missing).
+        await page.dragAndDrop(selector, destSelector as string, { timeout: ACTION_TIMEOUT_MS });
         break;
 
       case 'check':
