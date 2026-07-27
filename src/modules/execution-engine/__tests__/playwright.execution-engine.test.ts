@@ -23,6 +23,7 @@ describe('PlaywrightExecutionEngine', () => {
       click: jest.fn(),
       dblclick: jest.fn(),
       hover: jest.fn(),
+      dragAndDrop: jest.fn(),
       check: jest.fn(),
       uncheck: jest.fn(),
       fill: jest.fn(),
@@ -380,6 +381,24 @@ describe('PlaywrightExecutionEngine', () => {
       const r = await engine.executeStep(mkStep('right_click'), oneSelector('#menu'), mockPage);
       expect(r.status).toBe('passed');
       expect(mockPage.click).toHaveBeenCalledWith('#menu', { button: 'right', timeout: 10_000 });
+    });
+
+    it('drag_and_drop calls page.dragAndDrop with source + destination selectors', async () => {
+      mockPage.dragAndDrop.mockResolvedValueOnce(undefined);
+      const set: SelectorSet = {
+        ...oneSelector('#source'),
+        destinationSelectors: [{ selector: '#dest', strategy: 'css', confidence: 0.9 }],
+      };
+      const r = await engine.executeStep(mkStep('drag_and_drop', { value: 'the dropzone' }), set, mockPage);
+      expect(r.status).toBe('passed');
+      expect(mockPage.dragAndDrop).toHaveBeenCalledWith('#source', '#dest', { timeout: 10_000 });
+    });
+
+    it('drag_and_drop fails cleanly (no dragAndDrop call) when the destination is unresolved', async () => {
+      const r = await engine.executeStep(mkStep('drag_and_drop', { value: 'the dropzone' }), oneSelector('#source'), mockPage);
+      expect(r.status).toBe('failed');
+      expect(r.errorType).toBe('NoSelectorsError');
+      expect(mockPage.dragAndDrop).not.toHaveBeenCalled();
     });
 
     it('hover calls page.hover', async () => {

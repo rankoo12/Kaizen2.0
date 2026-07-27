@@ -114,7 +114,7 @@ export class OpenAIGateway implements ILLMGateway {
             role: 'system',
             content: `You are a UI test compiler. Extract the user's intent into a JSON object matching this schema exactly:
 {
-  "action": "navigate" | "go_back" | "go_forward" | "reload" | "click" | "click_random" | "double_click" | "right_click" | "hover" | "type" | "clear" | "select" | "check" | "uncheck" | "upload" | "assert_visible" | "assert_not_visible" | "assert_text" | "assert_not_text" | "assert_url" | "assert_title" | "assert_enabled" | "assert_disabled" | "assert_checked" | "assert_count" | "assert_attribute" | "wait" | "press_key" | "scroll",
+  "action": "navigate" | "go_back" | "go_forward" | "reload" | "click" | "click_random" | "double_click" | "right_click" | "hover" | "drag_and_drop" | "type" | "clear" | "select" | "check" | "uncheck" | "upload" | "assert_visible" | "assert_not_visible" | "assert_text" | "assert_not_text" | "assert_url" | "assert_title" | "assert_enabled" | "assert_disabled" | "assert_checked" | "assert_count" | "assert_attribute" | "wait" | "press_key" | "scroll",
   "targetDescription": "string | null",
   "value": "string | null",
   "url": "string | null"
@@ -133,6 +133,7 @@ Action rules:
 - "double_click": double-clicking an element ("double click the row").
 - "right_click": right-click / open the context menu on an element.
 - "hover": hovering over an element to reveal a menu or tooltip ("hover over the avatar").
+- "drag_and_drop": dragging one element onto another ("drag the card to the Done column", "drag Item A onto Box B", "reorder X above Y"). Put the element BEING DRAGGED (the source) in targetDescription, and the DROP TARGET (the destination) in value. Example: "drag the Sauce Labs Backpack card to the cart" → targetDescription: "the Sauce Labs Backpack card", value: "the cart". Both must be concrete element descriptions.
 - "clear": emptying an existing input or textarea ("clear the search box"). Use "type" to enter text; "clear" to empty it.
 - "check" / "uncheck": explicitly setting a checkbox to checked / unchecked ("check the terms box", "uncheck the newsletter option"). Use "click" for a plain tap/toggle.
 - "upload": choosing a file for a file input ("upload resume.pdf"). Put the file name/path in value.
