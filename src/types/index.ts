@@ -26,6 +26,7 @@ export type StepAction =
   | 'double_click'
   | 'right_click'
   | 'hover'
+  | 'drag_and_drop'
   // ── Form interactions ──
   | 'type'
   | 'clear'
@@ -168,6 +169,12 @@ export type SelectorSet = {
   candidates?: CompactCandidate[];
   /** The kaizenId the LLM selected from those candidates. Null on cache hits. */
   llmPickedKaizenId?: string | null;
+  /**
+   * Second-target selectors for two-target actions (drag_and_drop): these locate
+   * the DROP DESTINATION. `selectors` holds the drag SOURCE; these hold the target.
+   * Populated by the worker's drag_and_drop routing; undefined for every other action.
+   */
+  destinationSelectors?: SelectorEntry[];
   /**
    * LLM tokens consumed during element resolution for this step.
    * Non-zero only when resolveElement was called (resolutionSource === 'llm').
