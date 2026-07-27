@@ -43,7 +43,13 @@ export class PlaywrightDOMPruner implements IDOMPruner {
       const elements = Array.from(document.querySelectorAll(
         'button, a, input, textarea, select, ' +
         '[role="button"], [role="link"], [role="checkbox"], ' +
-        '[role="combobox"], [role="searchbox"], [role="tab"], [role="menuitem"], [role="textbox"]',
+        '[role="combobox"], [role="searchbox"], [role="tab"], [role="menuitem"], [role="textbox"], ' +
+        // Drag-and-drop targets: HTML5 draggable elements and common DnD-library
+        // hooks (jQuery UI, generic aria-grabbed). These are usually plain <div>s
+        // that the interactive-role query above never surfaces, so drag_and_drop
+        // resolution otherwise falls back to the nearest link. Rare on non-drag
+        // pages, so this adds negligible candidate noise elsewhere.
+        '[draggable="true"], [aria-grabbed], .ui-draggable, .ui-droppable, .ui-sortable, .ui-sortable > *',
       )) as HTMLElement[];
 
       const results: any[] = [];
@@ -69,7 +75,7 @@ export class PlaywrightDOMPruner implements IDOMPruner {
         const attributes: Record<string, string> = {};
         for (const attr of [
           'id', 'name', 'placeholder', 'aria-label', 'aria-labelledby',
-          'type', 'href', 'title', 'data-testid', 'data-qa', 'data-test', 'role',
+          'type', 'href', 'title', 'data-testid', 'data-qa', 'data-test', 'role', 'draggable',
         ]) {
           const val = el.getAttribute(attr);
           if (val) attributes[attr] = val;
@@ -161,8 +167,17 @@ export class PlaywrightDOMPruner implements IDOMPruner {
           .replace(/\s+/g, ' ')
           .substring(0, 100);
 
-        // For buttons and links, fall back to visible text as accessible name
-        if (!accessibleName && (tagName === 'button' || tagName === 'a')) {
+        // For buttons and links, fall back to visible text as accessible name.
+        // Also for drag targets (draggable divs / jQuery-UI items), which have no
+        // intrinsic accessible name — their visible text (e.g. a column header "A")
+        // is what a drag step's targetDescription refers to.
+        const isDragEl =
+          el.getAttribute('draggable') === 'true' ||
+          el.hasAttribute('aria-grabbed') ||
+          el.classList.contains('ui-draggable') ||
+          el.classList.contains('ui-droppable') ||
+          el.classList.contains('ui-sortable');
+        if (!accessibleName && (tagName === 'button' || tagName === 'a' || isDragEl)) {
           accessibleName = textContent.substring(0, 80);
         }
 

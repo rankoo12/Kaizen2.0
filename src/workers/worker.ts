@@ -63,7 +63,7 @@ import { startPersistenceConsumer } from './consumers/persistence.consumer';
 import { getPool, closePool } from '../db/pool';
 import { createRedisConnection, RUNS_QUEUE_NAME, SCREENSHOTS_QUEUE_NAME, PERSIST_QUEUE_NAME } from '../queue';
 import type { RunJobPayload } from '../queue';
-import type { StepAST, ClassifiedFailure, SelectorSet, RunContext } from '../types';
+import type { StepAST, ClassifiedFailure, SelectorSet, SelectorEntry, RunContext } from '../types';
 
 // ─── Module Setup ─────────────────────────────────────────────────────────────
 
@@ -545,6 +545,26 @@ async function executeStep(
       selectors: [{ selector: 'body', strategy: 'css', confidence: 1 }],
       fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null,
     };
+  } else if (step.action === 'drag_and_drop') {
+    // Two-target step: SOURCE = targetDescription, DESTINATION = value.
+    // Resolve the source through the normal (cached) resolver so it warms like any
+    // interaction. Resolve the destination through the NO-CACHE resolver: it shares
+    // this step's targetHash, so writing it to selector_cache under that key would
+    // collide with the source's cached selector — assertionResolver reads/writes
+    // nothing, avoiding the collision. Both selectors ride to the engine together.
+    try {
+      const sourceSet = await resolver.resolve(step, resolutionContext);
+      let destinationSelectors: SelectorEntry[] = [];
+      if (step.value) {
+        const destStep: StepAST = { ...step, action: 'click', targetDescription: step.value, value: null };
+        const destSet = await assertionResolver.resolve(destStep, resolutionContext);
+        destinationSelectors = destSet.selectors;
+      }
+      selectorSet = { ...sourceSet, destinationSelectors };
+    } catch (e: any) {
+      obs.log('warn', 'worker.resolution_failed', { runId, action: step.action, error: e.message });
+      selectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+    }
   } else {
     // Actions that operate on the page / keyboard / URL / title need no element.
     const NO_ELEMENT_ACTIONS = new Set(['navigate', 'press_key', 'wait', 'go_back', 'go_forward', 'reload', 'assert_url', 'assert_title']);
