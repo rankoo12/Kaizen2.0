@@ -521,6 +521,61 @@ describe('PlaywrightExecutionEngine', () => {
     });
   });
 
+  describe('assert_count', () => {
+    // The worker's counting primitive resolves a selector matching every visible
+    // member of the counted group; the engine counts it and compares to the expected N.
+    const countSel = oneSelector('[data-kzc-abc123]');
+    const withCount = (n: number) => mockPage.locator.mockReturnValue({ count: async () => n });
+
+    it('passes when the live count exactly matches (value "N")', async () => {
+      withCount(5);
+      const r = await engine.executeStep(mkStep('assert_count', { targetDescription: 'products', value: '5' }), countSel, mockPage);
+      expect(r.status).toBe('passed');
+      expect(r.selectorUsed).toBe('[data-kzc-abc123]');
+      expect(mockPage.locator).toHaveBeenCalledWith('[data-kzc-abc123]');
+    });
+
+    it('FAILS loudly on an off-by-one exact count — the false-pass firewall', async () => {
+      withCount(4);
+      const r = await engine.executeStep(mkStep('assert_count', { targetDescription: 'products', value: '5' }), countSel, mockPage);
+      expect(r.status).toBe('failed');
+      expect(r.errorType).toBe('AssertCountFailed');
+      expect(r.errorMessage).toContain('found 4');
+      expect(r.errorMessage).toContain('5');
+    });
+
+    it('supports ">=" (at least): passes at/above the threshold, fails below', async () => {
+      withCount(5);
+      expect((await engine.executeStep(mkStep('assert_count', { targetDescription: 'results', value: '>=3' }), countSel, mockPage)).status).toBe('passed');
+      withCount(2);
+      const r = await engine.executeStep(mkStep('assert_count', { targetDescription: 'results', value: '>=3' }), countSel, mockPage);
+      expect(r.status).toBe('failed');
+      expect(r.errorType).toBe('AssertCountFailed');
+    });
+
+    it('supports "<=" (at most): passes at/below the threshold, fails above', async () => {
+      withCount(4);
+      expect((await engine.executeStep(mkStep('assert_count', { targetDescription: 'rows', value: '<=4' }), countSel, mockPage)).status).toBe('passed');
+      withCount(5);
+      expect((await engine.executeStep(mkStep('assert_count', { targetDescription: 'rows', value: '<=4' }), countSel, mockPage)).status).toBe('failed');
+    });
+
+    it('FAILS with CountTargetUnresolved when nothing countable was resolved (empty selectors)', async () => {
+      const r = await engine.executeStep(mkStep('assert_count', { targetDescription: 'widgets', value: '3' }), emptySet, mockPage);
+      expect(r.status).toBe('failed');
+      expect(r.errorType).toBe('CountTargetUnresolved');
+      // Never counts a phantom selector — refuses before touching the page.
+      expect(mockPage.locator).not.toHaveBeenCalled();
+    });
+
+    it('FAILS with AssertCountBadValue when the expected count is not numeric', async () => {
+      const r = await engine.executeStep(mkStep('assert_count', { targetDescription: 'products', value: 'lots' }), countSel, mockPage);
+      expect(r.status).toBe('failed');
+      expect(r.errorType).toBe('AssertCountBadValue');
+      expect(mockPage.locator).not.toHaveBeenCalled();
+    });
+  });
+
   // ─── result shape ────────────────────────────────────────────────────────────
 
   it('always returns null screenshotKey and domSnapshotKey in Phase 1', async () => {
