@@ -593,9 +593,13 @@ export class LLMElementResolver implements IElementResolver {
         [JSON.stringify(newWindow), newScore, success, targetHash, domain],
       );
 
-      // Invalidate Redis so the next resolve reads fresh data from Postgres
-      // instead of serving a stale cached entry for up to 1 hour.
-      if (this.redis) {
+      // Invalidate Redis ONLY on failure. On failure the selector is now suspect
+      // and confidence has dropped, so the next resolve must re-read Postgres (and
+      // possibly miss + re-resolve). On SUCCESS the cached selector is confirmed
+      // good and the Redis payload (selectors + embeddings) is unchanged — evicting
+      // it here would wipe the L1 hot-cache entry that CachedElementResolver.writeRedis
+      // just wrote on the same step, so L1 could never survive to serve a repeat run.
+      if (!success && this.redis) {
         const evicted = await invalidateRedisCache(this.redis, targetHash, domain);
         if (evicted > 0) {
           this.observability.increment('resolver.redis_invalidated', { count: String(evicted) });

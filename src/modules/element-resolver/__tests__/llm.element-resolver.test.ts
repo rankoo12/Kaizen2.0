@@ -8,7 +8,13 @@ jest.mock('../../../db/pool', () => ({
   getPool: jest.fn().mockReturnValue({ query: jest.fn() }),
 }));
 
+jest.mock('../redis-cache.utils', () => ({
+  ...jest.requireActual('../redis-cache.utils'),
+  invalidateRedisCache: jest.fn().mockResolvedValue(0),
+}));
+
 import { getPool } from '../../../db/pool';
+import { invalidateRedisCache } from '../redis-cache.utils';
 
 describe('LLMElementResolver', () => {
   let resolver: LLMElementResolver;
@@ -165,6 +171,32 @@ describe('LLMElementResolver', () => {
 
     await expect(resolver.recordSuccess('nonexistent', 'example.com', '#btn')).resolves.not.toThrow();
     expect(mockQuery).toHaveBeenCalledTimes(1);
+  });
+
+  // Fix A regression: the outcome-window update must invalidate the L1 Redis hot
+  // cache ONLY on failure. Invalidating on success wiped the sel: entry that
+  // CachedElementResolver.writeRedis had just written on the same step, so L1
+  // never survived and every warm run fell back to a Postgres round-trip.
+  describe('Redis hot-cache invalidation on outcome update', () => {
+    const mockRedis = { get: jest.fn(), setex: jest.fn() } as any;
+
+    it('does NOT invalidate Redis on SUCCESS but DOES on FAILURE', async () => {
+      const r = new LLMElementResolver(mockDOMPruner, mockLLMGateway, mockObservability, undefined, mockRedis);
+
+      // success path
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ outcome_window: [true] }] })
+        .mockResolvedValueOnce({ rows: [] });
+      await r.recordSuccess('hash', 'example.com', '#btn');
+      expect(invalidateRedisCache).not.toHaveBeenCalled();
+
+      // failure path
+      mockQuery
+        .mockResolvedValueOnce({ rows: [{ outcome_window: [true] }] })
+        .mockResolvedValueOnce({ rows: [] });
+      await r.recordFailure('hash', 'example.com', '#btn');
+      expect(invalidateRedisCache).toHaveBeenCalledWith(mockRedis, 'hash', 'example.com');
+    });
   });
 });
 

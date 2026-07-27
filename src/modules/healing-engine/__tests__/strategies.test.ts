@@ -1,6 +1,7 @@
 import { FallbackSelectorStrategy } from '../strategies/fallback-selector.strategy';
 import { AdaptiveWaitStrategy } from '../strategies/adaptive-wait.strategy';
 import { EscalationStrategy } from '../strategies/escalation.strategy';
+import { ResolveAndRetryStrategy } from '../strategies/resolve-and-retry.strategy';
 import type { ClassifiedFailure, HealingContext } from '../../../types';
 
 const makeFailure = (failureClass: ClassifiedFailure['failureClass'], selectors: Array<{ selector: string }> = []): ClassifiedFailure => ({
@@ -104,5 +105,25 @@ describe('EscalationStrategy', () => {
     expect(notifier.notifyEscalation).toHaveBeenCalledTimes(1);
     expect(result.succeeded).toBe(false);
     expect(result.newSelector).toBeNull();
+  });
+});
+
+// ─── ResolveAndRetryStrategy ──────────────────────────────────────────────────
+
+describe('ResolveAndRetryStrategy', () => {
+  const strategy = new ResolveAndRetryStrategy({} as any, {} as any, {} as any, mockObs as any);
+
+  it('re-resolves for element-gone AND stale-selector timeouts', () => {
+    // Regression: a STALE cached selector times out and classifies as TIMING (the
+    // classifier can't prove SelectorGone for role/CSS-id selectors). TIMING used
+    // to be excluded here, so the one strategy that can fix a stale cache never
+    // ran — a stale selector could not self-heal. It must handle TIMING now.
+    expect(strategy.canHandle(makeFailure('ELEMENT_REMOVED'))).toBe(true);
+    expect(strategy.canHandle(makeFailure('ELEMENT_MUTATED'))).toBe(true);
+    expect(strategy.canHandle(makeFailure('TIMING'))).toBe(true);
+    expect(strategy.canHandle(makeFailure('ELEMENT_OBSCURED'))).toBe(true);
+    // Genuinely-unrelated classes still opt out.
+    expect(strategy.canHandle(makeFailure('LOGIC_FAILURE'))).toBe(false);
+    expect(strategy.canHandle(makeFailure('PAGE_NOT_LOADED'))).toBe(false);
   });
 });
