@@ -130,6 +130,31 @@ services:
       redis:
         condition: service_healthy
 
+  # ── Test Writer service (QA-engineer pipeline: RECON crawler) ─────────────
+  # Owns its own BrowserPool — crawl jobs must not starve run throughput.
+  # Spec: docs/specs/test-writer/spec-test-writer-service.md §3
+  testwriter:
+    build:
+      context: .
+      dockerfile: Dockerfile.testwriter
+      target: development
+    environment:
+      - NODE_ENV=development
+      - DATABASE_URL=postgres://kaizen:kaizen@postgres:5432/kaizen
+      - REDIS_URL=redis://redis:6379
+      - CHOKIDAR_USEPOLLING=true
+    env_file:
+      - .env
+    volumes:
+      - .:/app
+      - /app/node_modules
+    command: npm run dev:testwriter
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
   web:
     build:
       context: ./packages/web

@@ -30,12 +30,39 @@ export type RunJobPayload = {
   seedVariables?: Record<string, string>;
 };
 
+/**
+ * Test Writer job — one per analyze/suggest request.
+ * Spec: docs/specs/test-writer/spec-test-writer-service.md §4
+ *
+ * The API creates the generation_jobs row FIRST and enqueues its id, so job
+ * state/consent/scope are durable and auditable even if the queue drops the
+ * message. `authConsent` must be true whenever scope is 'authenticated' —
+ * enforced at the API and by a DB CHECK constraint (migration 028).
+ */
+export type TestWriterJobPayload = {
+  jobId: string;
+  tenantId: string;
+  suiteId: string;
+  targetUrl: string;
+  scope: 'public' | 'authenticated';
+  loginCaseId?: string;
+  authConsent: boolean;
+  options: {
+    maxPages: number;         // default 30, hard cap 50
+    maxScenarios: number;     // default 6, hard cap 10
+    includeNegative: boolean;
+    safeMode: boolean;
+    validate: boolean;
+  };
+};
+
 // Queue names are env-overridable so an isolated stack (second worktree, CI)
 // can run against the shared Redis without stealing jobs from the primary
 // consumers. Defaults preserve production behaviour.
 export const RUNS_QUEUE_NAME = process.env.KAIZEN_RUNS_QUEUE ?? 'kaizen-runs';
 export const SCREENSHOTS_QUEUE_NAME = process.env.KAIZEN_SCREENSHOTS_QUEUE ?? 'kaizen-screenshots';
 export const PERSIST_QUEUE_NAME = process.env.KAIZEN_PERSIST_QUEUE ?? 'kaizen-persist';
+export const TESTWRITER_QUEUE_NAME = process.env.KAIZEN_TESTWRITER_QUEUE ?? 'kaizen-testwriter';
 
 /**
  * Creates a Redis connection configured for BullMQ.
@@ -96,6 +123,20 @@ export function createPersistQueue(): Queue<PersistJobData> {
     defaultJobOptions: {
       attempts: 3,
       backoff: { type: 'exponential', delay: 3000 },
+      removeOnComplete: 100,
+      removeOnFail: 200,
+    },
+  });
+}
+
+export function createTestWriterQueue(): Queue<TestWriterJobPayload> {
+  return new Queue<TestWriterJobPayload>(TESTWRITER_QUEUE_NAME, {
+    connection: createRedisConnection(),
+    defaultJobOptions: {
+      // attempts: 1 — a recon/generation job is expensive (crawl + LLM) work.
+      // Failures are recorded on the generation_jobs row and retried only by
+      // explicit user action, never blindly by the queue.
+      attempts: 1,
       removeOnComplete: 100,
       removeOnFail: 200,
     },

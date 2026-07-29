@@ -1,0 +1,164 @@
+/// <reference lib="dom" />
+import type { CandidateNode } from '../../../types';
+import type { RevealCapture } from '../interfaces';
+import type { IObservability } from '../../observability/interfaces';
+import { normalizeHref, isSameOrigin } from './url-normalizer';
+
+/**
+ * Interactive probe protocol — reveal states unreachable by URL (tabs,
+ * accordions, menus, modals), then ALWAYS restore so the BFS continues from a
+ * known state.
+ * Spec ref: docs/specs/test-writer/spec-recon-crawler.md §4.2
+ *
+ * The caller (crawler) has already filtered candidates through the safety
+ * classifier — only 'safe-reveal' elements ever reach this module.
+ */
+
+const INTERACTIVE_QUERY =
+  'button, a, input, textarea, select, ' +
+  '[role="button"], [role="link"], [role="checkbox"], ' +
+  '[role="combobox"], [role="searchbox"], [role="tab"], [role="menuitem"], [role="textbox"]';
+
+// NOTE: the baseline attribute name is inlined inside the evaluate() closures
+// below — browser-context functions cannot reference Node-scope constants.
+const SETTLE_MS = 400;
+
+/**
+ * Stamp every currently-VISIBLE interactive element as "seen before probing".
+ * Visibility matters: accordion/tab/menu content is usually already in the DOM,
+ * just hidden — stamping it here would make the post-probe diff blind to
+ * exactly the reveals we're probing for.
+ */
+async function stampBaseline(pwPage: any): Promise<void> {
+  await pwPage.evaluate((query: string) => {
+    document.querySelectorAll(query).forEach((el) => {
+      const rect = (el as HTMLElement).getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return;
+      const style = window.getComputedStyle(el as HTMLElement);
+      if (style.display === 'none' || style.visibility === 'hidden') return;
+      el.setAttribute('data-kaizen-probe-baseline', '1');
+    });
+  }, INTERACTIVE_QUERY);
+}
+
+/** Collect (and stamp) interactive elements that appeared since the baseline. */
+async function collectRevealed(pwPage: any): Promise<{
+  elements: Array<{ role: string; name: string }>;
+  hrefs: string[];
+}> {
+  return pwPage.evaluate((query: string) => {
+    const isVisible = (el: Element): boolean => {
+      const rect = (el as HTMLElement).getBoundingClientRect();
+      if (rect.width === 0 || rect.height === 0) return false;
+      const style = window.getComputedStyle(el as HTMLElement);
+      return style.display !== 'none' && style.visibility !== 'hidden';
+    };
+
+    const fresh = Array.from(document.querySelectorAll(query))
+      .filter((el) => !el.hasAttribute('data-kaizen-probe-baseline') && isVisible(el));
+
+    const elements: Array<{ role: string; name: string }> = [];
+    const hrefs: string[] = [];
+    for (const el of fresh.slice(0, 40)) {
+      // Stamp so the next probe on this page doesn't recount it.
+      el.setAttribute('data-kaizen-probe-baseline', '1');
+      const tag = el.tagName.toLowerCase();
+      const role = el.getAttribute('role')
+        || (tag === 'a' ? 'link' : tag === 'button' ? 'button' : tag);
+      const name = (el.getAttribute('aria-label')
+        || (el as HTMLElement).innerText
+        || el.getAttribute('placeholder')
+        || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+      elements.push({ role, name });
+      const href = el.getAttribute('href');
+      if (href) hrefs.push(href);
+    }
+    return { elements, hrefs };
+  }, INTERACTIVE_QUERY);
+}
+
+export type ProbeContext = {
+  pageUrl: string;
+  rootOrigin: string;
+  obs: IObservability;
+};
+
+/**
+ * Probe up to `budget` safe-reveal candidates on the current page. Returns the
+ * reveals plus how many probes were actually performed.
+ */
+export async function runProbes(
+  page: unknown,
+  safeRevealCandidates: CandidateNode[],
+  budget: number,
+  ctx: ProbeContext,
+): Promise<{ reveals: RevealCapture[]; probesPerformed: number }> {
+  const pwPage = page as any;
+  const reveals: RevealCapture[] = [];
+  let probesPerformed = 0;
+
+  if (safeRevealCandidates.length === 0 || budget <= 0) {
+    return { reveals, probesPerformed };
+  }
+
+  await stampBaseline(pwPage);
+
+  for (const candidate of safeRevealCandidates.slice(0, budget)) {
+    probesPerformed++;
+    try {
+      await pwPage.click(`[data-kaizen-id='${candidate.kaizenId}']`, { timeout: 3_000 });
+    } catch {
+      ctx.obs.increment('testwriter.probe_click_failed');
+      continue; // element gone/covered — nothing revealed, nothing to restore
+    }
+
+    await pwPage.waitForTimeout(SETTLE_MS);
+
+    // A safe-reveal should never navigate; if it did anyway, restore FIRST and
+    // record the destination as a discovered link.
+    const revealedLinks: string[] = [];
+    let revealedElements: Array<{ role: string; name: string }> = [];
+
+    const urlAfter: string = pwPage.url();
+    if (urlAfter !== ctx.pageUrl) {
+      const normalized = normalizeHref(urlAfter, ctx.pageUrl);
+      if (normalized && isSameOrigin(normalized, ctx.rootOrigin)) revealedLinks.push(normalized);
+      await restoreUrl(pwPage, ctx.pageUrl);
+      ctx.obs.increment('testwriter.probe_unexpected_navigation');
+    } else {
+      try {
+        const collected = await collectRevealed(pwPage);
+        revealedElements = collected.elements;
+        for (const href of collected.hrefs) {
+          const normalized = normalizeHref(href, ctx.pageUrl);
+          if (normalized && isSameOrigin(normalized, ctx.rootOrigin)) revealedLinks.push(normalized);
+        }
+      } catch {
+        ctx.obs.increment('testwriter.probe_collect_failed');
+      }
+      // Close whatever the probe opened (modal, menu) so the next probe starts
+      // from a comparable state. Escape is harmless when nothing is open.
+      await pwPage.keyboard.press('Escape').catch(() => {});
+    }
+
+    if (revealedElements.length > 0 || revealedLinks.length > 0) {
+      reveals.push({
+        trigger: { role: candidate.role, name: candidate.name },
+        revealedElements,
+        revealedLinks: [...new Set(revealedLinks)],
+      });
+    }
+  }
+
+  return { reveals, probesPerformed };
+}
+
+/** goBack → verify → reload as last resort. The BFS must continue from pageUrl. */
+async function restoreUrl(pwPage: any, pageUrl: string): Promise<void> {
+  try {
+    await pwPage.goBack({ timeout: 10_000, waitUntil: 'domcontentloaded' });
+  } catch { /* fall through to the check below */ }
+  if (pwPage.url() !== pageUrl) {
+    await pwPage.goto(pageUrl, { timeout: 15_000, waitUntil: 'domcontentloaded' }).catch(() => {});
+  }
+}

@@ -21,3 +21,23 @@ export interface IDOMPruner {
    */
   prune(page: unknown, targetDescription: string): Promise<CandidateNode[]>;
 }
+
+/**
+ * IPageSurveyor — Test Writer RECON survey mode.
+ * Spec ref: docs/specs/test-writer/spec-recon-crawler.md §3
+ *
+ * Pass-1 AX extraction WITHOUT a target description or similarity filtering:
+ * during recon there is no step to match against — the crawler wants the whole
+ * interactive surface of the page, capped so a link farm can't blow up the
+ * capture. Kept as a separate interface so IDOMPruner's per-step contract is
+ * untouched.
+ */
+export interface IPageSurveyor {
+  /**
+   * Return up to `cap` visible interactive candidates for the whole page.
+   *
+   * @param page - Live Playwright Page instance (typed as unknown, as above)
+   * @param cap  - Maximum candidates to return (default 60)
+   */
+  survey(page: unknown, cap?: number): Promise<CandidateNode[]>;
+}
