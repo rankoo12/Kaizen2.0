@@ -58,3 +58,6 @@ screenshots/
 # AI sync artifacts — packed codebase must never be committed back
 kaizen-codebase.txt
 kaizen-codebase.*.txt
+
+# Throwaway debug scripts (underscore prefix = session scratch, never shipped)
+_*.mjs
