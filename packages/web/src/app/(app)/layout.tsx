@@ -1,16 +1,9 @@
-import { SideRail } from '@/components/organisms/app-shell/side-rail';
-import { ShellBackground } from '@/components/organisms/app-shell/shell-background';
+import KaizenApp from '@/components/design/kaizen-app';
 
-export default function AppShellLayout({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="relative flex h-screen w-full overflow-hidden bg-app-bg text-text">
-      <ShellBackground />
-      <div className="relative z-[2] flex w-full">
-        <SideRail />
-        <main className="relative flex-1 flex flex-col overflow-hidden">
-          {children}
-        </main>
-      </div>
-    </div>
-  );
+/* The authenticated experience is now the native macOS design (Kaizen (1)).
+ * It owns its own window chrome, sidebar and screen navigation, so the old
+ * SideRail/TopBar shell and the per-route pages are no longer rendered here.
+ * Auth gating stays enforced by middleware. */
+export default function AppShellLayout() {
+  return <KaizenApp />;
 }

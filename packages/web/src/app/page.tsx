@@ -1,17 +1,12 @@
-'use client';
+import { redirect } from 'next/navigation';
 
-import { useRouter } from 'next/navigation';
-import { WelcomeHero } from '@/components/organisms/welcome-hero';
-
-export default function WelcomePage() {
-  const router = useRouter();
-
-  return (
-    <div className="bg-welcome-bg h-screen w-full flex flex-col overflow-hidden relative m-0 p-0 font-sans text-white">
-      <WelcomeHero
-        onLogin={() => router.push('/login')}
-        onSignUp={() => router.push('/signup')}
-      />
-    </div>
-  );
+/* The root used to render WelcomeHero — a marketing page from the pre-redesign
+ * (nebula) system, with its own dark-only colours and no equivalent in the native
+ * design. Rather than leave a surface that contradicts the rest of the app, `/` now
+ * lands on sign-in; middleware bounces already-signed-in visitors on to /tests.
+ *
+ * `organisms/welcome-hero.tsx` is kept but unused — restore it here if a real landing
+ * page comes back. */
+export default function RootPage() {
+  redirect('/login');
 }

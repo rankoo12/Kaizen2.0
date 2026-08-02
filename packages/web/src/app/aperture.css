@@ -1,0 +1,243 @@
+/* Kaizen — APERTURE appearance.
+   Colours from Portal: ceramic test-chamber panels, concrete, black seams, and
+   the only two saturated things in the room — portal orange (the machine acting)
+   and portal blue (memory receiving).
+   Feeling from Satisfactory: throughput you can watch. Belts move, counters
+   climb, efficiency reads out. Automation should look like it is paying off. */
+
+[data-appearance=aperture]{
+  --font-ui:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",system-ui,sans-serif;
+
+  /* the void between chambers */
+  --wallpaper:radial-gradient(130% 100% at 50% -20%,#20242a 0%,#141619 52%,#0a0b0d 100%);
+
+  /* ceramic panels + concrete */
+  --window:#e6e4df;
+  --content:#f7f6f3;
+  --content-2:#efede8;
+  --chrome:rgba(247,246,243,.86);
+  --sidebar:rgba(224,221,215,.9);
+  --overlay:rgba(250,249,247,.96);
+
+  --text:#15171a;
+  --text-2:#565b61;
+  --text-3:#5f666e;
+  /* seams between panels are dark, not faint */
+  --sep:rgba(20,24,28,.13);
+  --sep-strong:rgba(20,24,28,.28);
+  --fill:rgba(20,24,28,.05);
+  --fill-2:rgba(20,24,28,.09);
+  --field:#fffffe;
+
+  /* portal orange — the machine acting, the AI firing */
+  --accent:#f56a11;
+  --accent-soft:rgba(245,106,17,.13);
+  --accent-text:#c4520a;
+
+  --pass:#2f8f4e;
+  --pass-soft:rgba(47,143,78,.13);
+  --fail:#d1341f;
+  --fail-soft:rgba(209,52,31,.12);
+  /* portal blue — memory, recall, the thing that already knows */
+  --heal:#0a84d8;
+  --heal-soft:rgba(10,132,216,.13);
+  --warn:#c07f00;
+  --warn-soft:rgba(192,127,0,.14);
+  --cache:#5a6570;
+  --cache-soft:rgba(90,101,112,.12);
+  --idle:#5f666e;
+  --idle-soft:rgba(95,102,110,.14);
+
+  /* machined, not soft */
+  --r-win:4px;
+  --r-card:3px;
+  --r-ctl:3px;
+
+  --shadow-1:0 1px 0 rgba(255,255,255,.9) inset,0 1px 2px rgba(20,24,28,.14);
+  --shadow-2:0 20px 48px -12px rgba(0,0,0,.5),0 0 0 1px rgba(20,24,28,.16);
+  --shadow-3:0 40px 100px -18px rgba(0,0,0,.7),0 0 0 1px rgba(20,24,28,.2);
+
+  --servo:cubic-bezier(.16,.84,.28,1);
+  --seam:rgba(20,24,28,.075);
+}
+
+/* ── chamber wall: ceramic panels divided by dark seams ──────────────── */
+[data-appearance=aperture] .win{
+  background-color:var(--window);
+  background-image:
+    linear-gradient(var(--seam) 1px,transparent 1px),
+    linear-gradient(90deg,var(--seam) 1px,transparent 1px),
+    linear-gradient(180deg,rgba(255,255,255,.55),transparent 40%);
+  background-size:176px 176px,176px 176px,100% 100%;
+  border:1px solid rgba(0,0,0,.45);
+}
+[data-appearance=aperture] main{background:transparent!important}
+[data-appearance=aperture] .toolbar{
+  background:linear-gradient(180deg,#fbfaf8,#eeece7);
+  border-bottom:1px solid var(--sep-strong);
+  box-shadow:0 1px 0 rgba(255,255,255,.8);
+}
+[data-appearance=aperture] .sidebar{
+  background:linear-gradient(180deg,#e9e7e2,#dedbd4);
+  border-right:1px solid var(--sep-strong);
+  box-shadow:inset -1px 0 0 rgba(255,255,255,.5);
+}
+
+/* panels sit proud of the wall, with a machined top highlight */
+[data-appearance=aperture] .card,[data-appearance=aperture] .list{
+  background:var(--content);
+  border:1px solid var(--sep-strong);
+  box-shadow:0 1px 0 rgba(255,255,255,.9) inset,0 2px 5px -1px rgba(20,24,28,.16);
+  position:relative;
+}
+/* chamfer — the corner cut of a wall plate */
+[data-appearance=aperture] .card::before,[data-appearance=aperture] .list::before{
+  content:"";position:absolute;top:-1px;right:-1px;width:11px;height:11px;
+  background:linear-gradient(225deg,var(--window) 49%,var(--sep-strong) 49% 52%,transparent 52%);z-index:2;
+}
+[data-appearance=aperture] .card-h,[data-appearance=aperture] .list-h{
+  background:linear-gradient(180deg,#f2f0eb,#e8e5df);
+  border-bottom:1px solid var(--sep-strong);
+}
+[data-appearance=aperture] .list-h{
+  font-family:var(--font-num);font-size:10.5px;letter-spacing:.12em;
+  text-transform:uppercase;color:var(--text-2);
+}
+/* Aperture signage: stencilled, tracked, always mono */
+[data-appearance=aperture] .toolbar-sub,[data-appearance=aperture] .side-label{
+  font-family:var(--font-num);letter-spacing:.1em;text-transform:uppercase;font-size:11px;
+}
+[data-appearance=aperture] .toolbar-title{letter-spacing:-.005em}
+[data-appearance=aperture] .toolbar-sub .num{color:var(--accent-text)}
+
+/* ── controls: stamped metal ─────────────────────────────────────────── */
+[data-appearance=aperture] .btn{
+  background:linear-gradient(180deg,#fdfcfa,#e9e6e0);
+  border:1px solid var(--sep-strong);
+  box-shadow:0 1px 0 rgba(255,255,255,.95) inset,0 1px 1.5px rgba(20,24,28,.14);
+}
+[data-appearance=aperture] .btn:hover{filter:brightness(.985)}
+[data-appearance=aperture] .btn:active{transform:translateY(1px) scale(1)}
+[data-appearance=aperture] .btn.pri{
+  background:linear-gradient(180deg,#ff9838,#ef6a0d);
+  color:#1e1305;border-color:#a3480a;text-shadow:0 1px 0 rgba(255,255,255,.3);
+  box-shadow:0 1px 0 rgba(255,255,255,.45) inset,0 2px 10px -2px rgba(245,106,17,.7);
+}
+[data-appearance=aperture] .btn.ghost{background:none;border-color:transparent;box-shadow:none}
+[data-appearance=aperture] .btn.ghost:hover{background:var(--fill)}
+[data-appearance=aperture] .seg{background:rgba(20,24,28,.07);border:1px solid var(--sep)}
+[data-appearance=aperture] .seg button[aria-pressed=true]{
+  background:linear-gradient(180deg,#fff,#f1efea);
+  box-shadow:0 0 0 1px var(--sep-strong),0 1px 2px rgba(20,24,28,.16);color:var(--text);
+}
+[data-appearance=aperture] .side-item[aria-current=true]{
+  background:linear-gradient(180deg,#ff9838,#ef6a0d);color:#1e1305;
+  text-shadow:0 1px 0 rgba(255,255,255,.28);
+  box-shadow:0 1px 3px rgba(245,106,17,.5);
+}
+[data-appearance=aperture] .side-item[aria-current=true] .side-count{color:#1e1305;opacity:1}
+[data-appearance=aperture] .side-item[aria-current=true] svg{opacity:.9}
+[data-appearance=aperture] .badge,[data-appearance=aperture] .mono-chip{
+  border-radius:2px;font-family:var(--font-num);letter-spacing:.06em;
+  text-transform:uppercase;font-size:10px;
+}
+[data-appearance=aperture] .light{border-radius:2px}
+[data-appearance=aperture] .field{background:#fff;border:1px solid var(--sep-strong);box-shadow:inset 0 1px 2px rgba(20,24,28,.09)}
+[data-appearance=aperture] .menubar.on-wallpaper{color:#cdd3d9}
+
+/* caution tape — only where a human is actually needed */
+[data-appearance=aperture] .hazard{
+  background-image:repeating-linear-gradient(45deg,rgba(209,52,31,.13) 0 8px,transparent 8px 16px);
+}
+
+/* ── SATISFACTION: throughput you can watch ──────────────────────────── */
+/* every meter is a conveyor belt, and the belt runs */
+[data-appearance=aperture] .meter{
+  background:#d8d5ce;border:1px solid var(--sep-strong);border-radius:2px;
+  box-shadow:inset 0 1px 2px rgba(20,24,28,.18);height:9px;
+}
+[data-appearance=aperture] .meter i{
+  border-radius:1px;position:relative;overflow:hidden;
+  box-shadow:0 0 8px -2px currentColor;
+}
+[data-appearance=aperture] .meter i::after{
+  content:"";position:absolute;inset:0;
+  background:repeating-linear-gradient(115deg,rgba(255,255,255,.42) 0 6px,transparent 6px 15px);
+  animation:belt 620ms linear infinite;
+}
+@keyframes belt{to{transform:translateX(15px)}}
+
+/* memory is portal blue wherever it reports throughput */
+[data-appearance=aperture] .meter i[style*="--cache"]{background:var(--heal)!important}
+
+/* the servo spinner: stepped, mechanical */
+[data-appearance=aperture] .spinner{
+  border-radius:0;border:none;
+  background:conic-gradient(var(--accent) 0 28%,transparent 28%);
+  -webkit-mask:radial-gradient(circle,transparent 40%,#000 42%);
+  mask:radial-gradient(circle,transparent 40%,#000 42%);
+  animation:spin 1s steps(12) infinite;
+}
+
+/* entrances: parts get fabricated in, not swung — a wipe plus a build flash */
+[data-appearance=aperture] .rise{animation:fabricate .46s var(--servo) both,build-flash .8s ease-out both}
+@keyframes fabricate{from{opacity:0;clip-path:inset(0 100% 0 0);transform:translateY(3px)}to{opacity:1;clip-path:inset(0 0 0 0);transform:none}}
+@keyframes build-flash{0%{box-shadow:0 0 0 1px var(--accent),0 0 22px -4px var(--accent)}100%{box-shadow:0 1px 0 rgba(255,255,255,.9) inset,0 2px 5px -1px rgba(20,24,28,.16)}}
+[data-appearance=aperture] .slide-in{animation:deploy .42s var(--servo) both}
+@keyframes deploy{from{opacity:0;clip-path:inset(0 0 0 100%);transform:translateX(14px)}to{opacity:1;clip-path:inset(0 0 0 0);transform:none}}
+[data-appearance=aperture] .sheet{animation:chamber-open .4s var(--servo)}
+@keyframes chamber-open{from{opacity:0;clip-path:inset(0 0 100% 0);transform:translateY(-10px)}to{opacity:1;clip-path:inset(0 0 0 0);transform:none}}
+[data-appearance=aperture] .popover{animation:pop .18s var(--servo)}
+
+/* the heal IS a portal: orange fires, blue receives */
+[data-appearance=aperture] .heal-row{animation:portal-flash 2.6s var(--servo) both}
+@keyframes portal-flash{
+  0%{background:rgba(245,106,17,.24);box-shadow:inset 3px 0 0 var(--accent)}
+  40%{background:rgba(10,132,216,.18);box-shadow:inset 3px 0 0 var(--heal)}
+  100%{background:transparent;box-shadow:inset 3px 0 0 transparent}
+}
+[data-appearance=aperture] .heal-new{animation:portal-in .52s .62s var(--servo) both}
+@keyframes portal-in{
+  from{opacity:0;transform:scaleX(.15);filter:blur(3px)}
+  to{opacity:1;transform:none;filter:none}
+}
+
+/* completed steps register with a mechanical settle */
+[data-appearance=aperture] .list .row{transition:background .1s}
+[data-appearance=aperture] .row.sel{box-shadow:inset 3px 0 0 var(--accent)}
+
+/* ── physicality: things you touch should move ───────────────────────── */
+[data-appearance=aperture] .card,[data-appearance=aperture] .list{transition:box-shadow .16s var(--servo),transform .16s var(--servo)}
+[data-appearance=aperture] .row{transition:background .1s,box-shadow .12s}
+[data-appearance=aperture] .row:hover{box-shadow:inset 2px 0 0 rgba(245,106,17,.42)}
+[data-appearance=aperture] .btn:hover{filter:brightness(.985);transform:translateY(-1px)}
+[data-appearance=aperture] .btn.pri:hover{filter:brightness(1.06);box-shadow:0 1px 0 rgba(255,255,255,.45) inset,0 4px 16px -3px rgba(245,106,17,.9)}
+[data-appearance=aperture] .side-item{transition:background .12s,transform .12s var(--servo)}
+[data-appearance=aperture] .side-item:hover{transform:translateX(2px)}
+[data-appearance=aperture] .side-item[aria-current=true]:hover{transform:none}
+[data-appearance=aperture] .tier-chip{box-shadow:0 1px 0 rgba(255,255,255,.4) inset,0 1px 4px -1px rgba(245,106,17,.7)}
+[data-appearance=aperture] .hud-panel{border:1px solid var(--sep-strong);animation:hud-assemble .48s var(--servo) both}
+@keyframes hud-assemble{0%{opacity:0;clip-path:inset(48% 0 48% 0);transform:scaleY(.7)}55%{opacity:1;clip-path:inset(0 0 0 0);transform:scaleY(1.02)}100%{opacity:1;clip-path:inset(0 0 0 0);transform:scaleY(1)}}
+[data-appearance=aperture] .hud-head{text-shadow:0 -1px 0 rgba(0,0,0,.25)}
+
+/* a run in flight reads as a machine that is running */
+[data-appearance=aperture] .working{animation:working 1.5s ease-in-out infinite}
+@keyframes working{0%,100%{box-shadow:0 0 0 0 rgba(245,106,17,0)}50%{box-shadow:0 0 18px -4px rgba(245,106,17,.75)}}
+
+/* completed steps land with a mechanical settle */
+[data-appearance=aperture] .step-land{animation:settle .4s var(--servo) both}
+@keyframes settle{0%{opacity:0;transform:translateX(-8px) scaleX(.99)}62%{transform:translateX(2px)}100%{opacity:1;transform:none}}
+
+[data-appearance=aperture] .toast{
+  border:1px solid var(--sep-strong);border-radius:2px;
+  font-family:var(--font-num);letter-spacing:.05em;text-transform:uppercase;font-size:11px;
+}
+[data-appearance=aperture] .zoom-scrim{background:rgba(8,10,12,.86)}
+[data-appearance=aperture] .dock{border-radius:3px}
+
+@media (prefers-reduced-motion:reduce){
+  [data-appearance=aperture] .rise,[data-appearance=aperture] .slide-in,
+  [data-appearance=aperture] .heal-row,[data-appearance=aperture] .heal-new,
+  [data-appearance=aperture] .sheet{animation:none}
+  [data-appearance=aperture] .meter i::after{animation:none;opacity:.35}
+}
