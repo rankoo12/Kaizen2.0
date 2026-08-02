@@ -51,6 +51,28 @@ function pickTopCandidate(candidates: CandidateNode[], target: string): Candidat
 
 const ELEMENT_EMBEDDING_THRESHOLD = 0.95;
 
+// When a step NAMES the kind of control it targets ("the College radio button", "the
+// second checkbox"), the resolved element's role must be compatible with that kind.
+// This guards the element-embedding SHORTCUT: it can return a cached selector for a
+// semantically-near-but-wrong element (a Sex checkbox for "College radio button"),
+// silently bypassing the LLM that would get it right. Ordered so "radio button" maps to
+// radio, not button. Targets that name no control kind → null → no guard (unchanged).
+const ROLE_KEYWORDS: Array<{ re: RegExp; roles: string[] }> = [
+  { re: /\bradio(\s*-?\s*button)?s?\b/, roles: ['radio'] },
+  { re: /\bcheck\s*-?\s*boxe?s?\b/, roles: ['checkbox'] },
+  { re: /\b(drop\s*-?\s*down|combobox|listbox)\b/, roles: ['combobox', 'listbox'] },
+  { re: /\b(text\s*-?\s*box|text\s*area|input|field)\b/, roles: ['textbox', 'searchbox', 'combobox', 'spinbutton'] },
+  { re: /\blinks?\b/, roles: ['link'] },
+  { re: /\btabs?\b/, roles: ['tab'] },
+  { re: /\boptions?\b/, roles: ['option'] },
+  { re: /\bbuttons?\b/, roles: ['button'] },
+];
+export function targetImpliedRoles(target: string): string[] | null {
+  const t = (target || '').toLowerCase();
+  for (const { re, roles } of ROLE_KEYWORDS) if (re.test(t)) return roles;
+  return null;
+}
+
 function toCompactCandidates(candidates: CandidateNode[]): CompactCandidate[] {
   return candidates.map((c) => ({
     kaizenId: c.kaizenId ?? '',
@@ -82,13 +104,24 @@ interface PlaywrightPageLike {
  *  - recordSuccess / recordFailure update outcome_window and recompute confidence_score
  */
 export class LLMElementResolver implements IElementResolver {
+  private readonly cacheReads: boolean;
+  private readonly cacheWrites: boolean;
   constructor(
     private readonly domPruner: IDOMPruner,
     private readonly llmGateway: ILLMGateway,
     private readonly observability: IObservability,
     private readonly sharedPool?: ISharedPoolService,
     private readonly redis?: Redis,
-  ) {}
+    // State/negative assertions verify the CURRENT page and must resolve FRESH: they must
+    // not READ the cross-run element_embedding cache (a prior — possibly wrong — resolution
+    // of the same phrase can return a confident but WRONG element, e.g. "College radio
+    // button" hitting a cached checkbox at similarity 1) nor WRITE back into it. The
+    // interaction resolver keeps both on (its whole value is learning across runs).
+    options?: { cacheReads?: boolean; cacheWrites?: boolean },
+  ) {
+    this.cacheReads = options?.cacheReads ?? true;
+    this.cacheWrites = options?.cacheWrites ?? true;
+  }
 
   async resolve(step: StepAST, context: ResolutionContext): Promise<SelectorSet> {
     const span = this.observability.startSpan('resolver.resolve', { tenantId: context.tenantId });
@@ -130,17 +163,43 @@ export class LLMElementResolver implements IElementResolver {
       // "type 'hello' in username" and "type 'test' in username" — same element,
       // different value, different targetHash — without an LLM call.
       const topCandidate = pickTopCandidate(candidates, step.targetDescription);
-      const elementHit = await this.elementEmbeddingLookup(topCandidate, context.tenantId, context.domain, context.pageUrl);
+      // Skip the cross-run element cache entirely for no-cache-read resolvers (assertions):
+      // fresh DOM candidates + LLM only, so a poisoned prior embedding can't hijack a verify.
+      const elementHit = this.cacheReads
+        ? await this.elementEmbeddingLookup(topCandidate, context.tenantId, context.domain, context.pageUrl)
+        : null;
       if (elementHit) {
         const validFromCache = await this.validateSelectors(elementHit.selectors, page);
         if (validFromCache.length > 0) {
-          this.observability.increment('resolver.cache_hit', { source: 'element_embedding' });
-          return { selectors: validFromCache, fromCache: true, cacheSource: 'tenant', resolutionSource: 'pgvector_element', similarityScore: elementHit.similarity, candidates: toCompactCandidates(candidates) };
+          // Role guard: if the step named a control kind, the cached element must BE that
+          // kind. Rejecting a role-mismatched shortcut (a checkbox for "radio button")
+          // falls through to the LLM, which sees every candidate and resolves correctly.
+          const wantRoles = targetImpliedRoles(step.targetDescription);
+          const gotRole = wantRoles ? await this.coarseRole(validFromCache[0].selector, page) : null;
+          if (wantRoles && gotRole && !wantRoles.includes(gotRole)) {
+            this.observability.log('info', 'resolver.cache_role_mismatch', { want: wantRoles, got: gotRole, selector: validFromCache[0].selector });
+          } else {
+            this.observability.increment('resolver.cache_hit', { source: 'element_embedding' });
+            return { selectors: validFromCache, fromCache: true, cacheSource: 'tenant', resolutionSource: 'pgvector_element', similarityScore: elementHit.similarity, candidates: toCompactCandidates(candidates) };
+          }
         }
       }
 
       // ── L5: LLM resolution ────────────────────────────────────────────────
       const llmResult = await this.llmGateway.resolveElement(step, candidates, context.tenantId);
+
+      // ── Frame candidate short-circuit ─────────────────────────────────────
+      // If the LLM picked an element INSIDE a child frame (e.g. a cookie-consent CMP
+      // iframe), its selectors resolve within that frame, not the page — the page-coupled
+      // validation below would find 0 matches and discard it. Validate in-frame and return
+      // a frame-scoped, session-only set (frame elements are never cached).
+      const pickedFrameCand = llmResult.llmPickedKaizenId
+        ? candidates.find((c) => c.kaizenId === llmResult.llmPickedKaizenId && c.frameUrl)
+        : undefined;
+      if (pickedFrameCand?.frameUrl) {
+        const frameSet = await this.resolveInFrame(pickedFrameCand, llmResult, candidates, context);
+        if (frameSet) return frameSet;
+      }
 
       // Discard any selector the LLM hallucinated or that no longer resolves.
       let validSelectors = await this.validateSelectors(llmResult.selectors, page, true);
@@ -267,8 +326,19 @@ export class LLMElementResolver implements IElementResolver {
                 cacheSelectors = [uniqueStable];
                 this.observability.increment('resolver.ambiguous_selector_disambiguated');
               } else {
-                skipCacheWrite = true;
-                this.observability.increment('resolver.ambiguous_selector_uncacheable');
+                // No pre-generated selector is unique — the Class-A blind spot:
+                // a contextual / repeated / unlabeled control with no id/testid, whose
+                // only unique handle was the transient data-kaizen-id (never cacheable →
+                // re-invokes the LLM every run). Synthesize a unique STRUCTURAL selector
+                // from the picked element so it caches and warm runs resolve at zero tokens.
+                const synthesized = await this.synthesizeUniqueSelector(page, kzSelector);
+                if (synthesized) {
+                  cacheSelectors = [synthesized];
+                  this.observability.increment('resolver.synthesized_scoped_selector');
+                } else {
+                  skipCacheWrite = true;
+                  this.observability.increment('resolver.ambiguous_selector_uncacheable');
+                }
               }
 
               validSelectors = [{ selector: kzSelector, strategy: 'css' as const, confidence: 1.0 }];
@@ -330,15 +400,38 @@ export class LLMElementResolver implements IElementResolver {
         // Use the exact ranked list the LLM was shown, not the full pruner output
         candidates: llmResult.llmPromptedCandidates ?? toCompactCandidates(candidates),
         llmPickedKaizenId: llmResult.llmPickedKaizenId ?? null,
-        tokensUsed: (llmResult.promptTokens ?? 0) + (llmResult.completionTokens ?? 0),
+        /* A prompt-cache hit replays a previous answer: no request is sent and the
+           billing meter emits nothing. The cached payload still carries the ORIGINAL
+           call's token counts, so copying them here charged the run for a call it never
+           made — step_results totalled 388 tokens against 181 actually billed, and a
+           repeat run showed "AI · 97 tok" while costing nothing. */
+        tokensUsed: llmResult.fromCache ? 0 : (llmResult.promptTokens ?? 0) + (llmResult.completionTokens ?? 0),
       };
+
+      // Last-resort synthesis: if the only usable selector is the transient data-kaizen-id
+      // (an unlabeled / attribute-less control — e.g. an unlabelled <input type=number>, or
+      // one of several identical checkboxes — with no pre-generated stable selector), build
+      // a unique STRUCTURAL selector from the picked element so it CACHES instead of
+      // re-invoking the LLM every run. Execution still uses kz this run; the cache stores
+      // the replayable structural selector for the next.
+      if (this.cacheWrites && !skipCacheWrite && !cacheSelectors && llmResult.llmPickedKaizenId) {
+        const only = validSelectors[0]?.selector ?? '';
+        if (sessionOnly || only.includes('data-kaizen-id')) {
+          const synthesized = await this.synthesizeUniqueSelector(page, `[data-kaizen-id='${llmResult.llmPickedKaizenId}']`);
+          if (synthesized) {
+            cacheSelectors = [synthesized];
+            sessionOnly = false;
+            this.observability.increment('resolver.synthesized_scoped_selector');
+          }
+        }
+      }
 
       // Only cache stable selectors — session-scoped data-kaizen-id must never be persisted.
       // When cacheSelectors is set the execution used kz-id but we persist a unique
       // stable selector. When skipCacheWrite is true we deliberately write nothing;
       // a future run will pay for one more LLM call but will not be poisoned by an
       // ambiguous cache hit.
-      if (!sessionOnly && !skipCacheWrite) {
+      if (this.cacheWrites && !sessionOnly && !skipCacheWrite) {
         const setToCache = cacheSelectors
           ? { ...selectorSet, selectors: cacheSelectors }
           : selectorSet;
@@ -408,6 +501,88 @@ export class LLMElementResolver implements IElementResolver {
   }
 
   /**
+   * Coarse ARIA-ish role of the element a selector resolves to — used to reject an
+   * element-embedding cache hit whose kind contradicts the step's named control.
+   * Returns null on any error (→ caller does not reject, i.e. fail-open).
+   */
+  private async coarseRole(selector: string, page: PlaywrightPageLike): Promise<string | null> {
+    try {
+      const loc = page.locator?.(selector);
+      if (!loc) return null;
+      return (await loc.first().evaluate((el) => {
+        const e = el as HTMLElement;
+        const explicit = e.getAttribute('role');
+        if (explicit) return explicit;
+        const tag = e.tagName.toLowerCase();
+        if (tag === 'a' && e.hasAttribute('href')) return 'link';
+        if (tag === 'button') return 'button';
+        if (tag === 'select') return 'combobox';
+        if (tag === 'textarea') return 'textbox';
+        if (tag === 'input') {
+          const type = (e.getAttribute('type') || 'text').toLowerCase();
+          if (type === 'radio') return 'radio';
+          if (type === 'checkbox') return 'checkbox';
+          if (type === 'submit' || type === 'button' || type === 'reset') return 'button';
+          if (type === 'number') return 'spinbutton';
+          return 'textbox';
+        }
+        return null;
+      })) ?? null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * Resolve an LLM-picked element that lives inside a child FRAME (e.g. a cookie-consent
+   * CMP iframe). Validates the candidate's selectors WITHIN that frame (not the page) and
+   * returns a frame-scoped, session-only SelectorSet the engine acts on via the frame.
+   * Returns null if the frame is gone or no selector resolves inside it.
+   */
+  private async resolveInFrame(
+    cand: CandidateNode,
+    // fromCache: a prompt-cache replay costs nothing, so the frame path must zero the
+    // tokens too — otherwise the same over-count reappears for iframe-resolved elements.
+    llmResult: { selectors?: SelectorEntry[]; llmPickedKaizenId?: string | null; promptTokens?: number; completionTokens?: number; llmPromptedCandidates?: CompactCandidate[]; fromCache?: boolean },
+    candidates: CandidateNode[],
+    context: ResolutionContext,
+  ): Promise<SelectorSet | null> {
+    try {
+      const page = context.page as unknown as { frames?: () => Array<{ url?: () => string; locator?: (s: string) => { count: () => Promise<number> } }> };
+      const frames = typeof page.frames === 'function' ? page.frames() : [];
+      const frame = frames.find((f) => (typeof f.url === 'function' ? f.url() : '') === cand.frameUrl);
+      if (!frame || !frame.locator) return null;
+
+      const kz: SelectorEntry[] = cand.kaizenId
+        ? [{ selector: `[data-kaizen-id='${cand.kaizenId}']`, strategy: 'css', confidence: 0.5 }]
+        : [];
+      const tryList: SelectorEntry[] = [...(llmResult.selectors ?? []), ...(cand.selectorCandidates ?? []), ...kz];
+
+      for (const s of tryList) {
+        try {
+          if ((await frame.locator(s.selector).count()) >= 1) {
+            this.observability.increment('resolver.frame_resolved');
+            return {
+              selectors: [s],
+              fromCache: false,
+              cacheSource: null,
+              resolutionSource: 'llm',
+              similarityScore: null,
+              candidates: llmResult.llmPromptedCandidates ?? toCompactCandidates(candidates),
+              llmPickedKaizenId: cand.kaizenId ?? null,
+              frameUrl: cand.frameUrl,
+              tokensUsed: llmResult.fromCache ? 0 : (llmResult.promptTokens ?? 0) + (llmResult.completionTokens ?? 0),
+            };
+          }
+        } catch { /* selector invalid in-frame — try next */ }
+      }
+      return null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
    * Returns true if the selector matches exactly one element on the page.
    * A selector that matches multiple elements is ambiguous — using it would
    * target the first DOM occurrence, which may not be the intended element.
@@ -443,6 +618,61 @@ export class LLMElementResolver implements IElementResolver {
       } catch {
         // selector malformed or otherwise unparseable; try the next one
       }
+    }
+    return null;
+  }
+
+  /**
+   * Synthesize a UNIQUE, stable, cacheable CSS selector for the element located by
+   * `anchorSelector` (the session-scoped data-kaizen-id), used when none of the
+   * pre-generated selectorCandidates is unique — the Class-A blind spot: repeated /
+   * contextually-disambiguated / unlabeled controls with no id/testid.
+   *
+   * Walks up from the element building a minimal `tag:nth-of-type(n)` path anchored on
+   * the nearest ancestor id, stopping as soon as the path is unique. Unlike the transient
+   * data-kaizen-id (which does not exist on a fresh page load), this structural selector
+   * is REPLAYABLE, so it can be cached — turning a step that re-invoked the LLM every run
+   * into a zero-token warm resolve. Warm runs execute it live and re-verify, so a drifted
+   * path fails and heals rather than false-passing.
+   *
+   * No named inner functions in the browser closure (tsx/esbuild keepNames would wrap them
+   * with __name and break serialization in pages without the worker's shim).
+   */
+  private async synthesizeUniqueSelector(
+    page: PlaywrightPageLike,
+    anchorSelector: string,
+  ): Promise<SelectorEntry | null> {
+    try {
+      const sel = await page.locator?.(anchorSelector).first().evaluate((el) => {
+        if (!(el instanceof Element)) return null;
+        const doc = el.ownerDocument;
+        const parts: string[] = [];
+        let node: Element | null = el;
+        let depth = 0;
+        while (node && node.nodeType === 1 && node !== doc.documentElement && depth < 8) {
+          depth++;
+          if (node.id && doc.querySelectorAll(`#${CSS.escape(node.id)}`).length === 1) {
+            parts.unshift(`#${CSS.escape(node.id)}`);
+            break;
+          }
+          let seg = node.tagName.toLowerCase();
+          const parent: Element | null = node.parentElement;
+          if (parent) {
+            const twins = Array.from(parent.children).filter((c) => c.tagName === node!.tagName);
+            if (twins.length > 1) seg += `:nth-of-type(${twins.indexOf(node!) + 1})`;
+          }
+          parts.unshift(seg);
+          if (doc.querySelectorAll(parts.join(' > ')).length === 1) break;
+          node = node.parentElement;
+        }
+        const out = parts.join(' > ');
+        return out && doc.querySelectorAll(out).length === 1 ? out : null;
+      });
+      if (typeof sel === 'string' && sel && (await this.isSelectorUnique(sel, page))) {
+        return { selector: sel, strategy: 'css' as const, confidence: 0.85 };
+      }
+    } catch {
+      /* synthesis failed — caller falls back to skipCacheWrite */
     }
     return null;
   }

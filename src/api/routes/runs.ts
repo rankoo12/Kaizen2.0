@@ -136,6 +136,13 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
     const { rows } = await pool.query(
       `SELECT r.id, r.case_id, r.suite_id, r.status, r.triggered_by,
               r.created_at, r.completed_at,
+              (EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) * 1000)::int AS duration_ms,
+              -- Run-scoped: step_results carry run_id, billing_events do not. Summing
+              -- billing rows by time window dropped any call recorded outside the run's
+              -- start/complete bracket, so the feed could show "free" for a run whose
+              -- own steps reported an AI resolution.
+              COALESCE((SELECT SUM(sr.tokens_used)::int FROM step_results sr
+                         WHERE sr.run_id = r.id), 0) AS total_tokens,
               tc.name AS case_name,
               ts.name AS suite_name
        FROM runs r
@@ -164,6 +171,8 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
         triggeredBy: r.triggered_by,
         createdAt:   r.created_at,
         completedAt: r.completed_at,
+        durationMs:  r.duration_ms,
+        totalTokens: r.total_tokens,
       })),
       total,
       page,
@@ -205,27 +214,24 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
     if (stepRows.length > 0) {
       const stepIds = stepRows.map((s: { id: string }) => s.id);
       const healingQuery = await pool.query(
-        `SELECT id, step_result_id, failure_class, strategy_used, attempts, succeeded, duration_ms
+        // old_selector/new_selector are the whole point of the heal trace — the UI shows
+        // "was X → now Y". They were being recorded and then dropped here.
+        `SELECT id, step_result_id, failure_class, strategy_used, attempts, succeeded,
+                old_selector, new_selector, duration_ms, created_at
          FROM healing_events
-         WHERE step_result_id = ANY($1::uuid[])`,
+         WHERE step_result_id = ANY($1::uuid[])
+         ORDER BY created_at ASC`,
         [stepIds]
       );
       healingRows = healingQuery.rows;
     }
 
-    // Fetch tokens used by this tenant during the run.
-    // Use created_at as fallback lower bound when started_at is NULL (worker hasn't
-    // called markRunRunning yet) to avoid returning 0 tokens for in-progress runs.
-    const { rows: llmRows } = await pool.query(
-      `SELECT id, quantity as tokens, created_at, metadata->>'purpose' as purpose
-       FROM billing_events
-       WHERE tenant_id = $1
-         AND event_type = 'LLM_CALL'
-         AND created_at >= COALESCE($2::timestamptz, $4::timestamptz)
-         AND created_at <= COALESCE($3::timestamptz, now())
-       ORDER BY created_at ASC`,
-      [run.tenant_id, run.started_at, run.completed_at, run.created_at]
-    );
+    /* The per-call billing_events query that used to live here is gone. It selected
+       every LLM_CALL in the run's time window purely to total them, and that total was
+       wrong twice over: billing_events has no run_id (so the window can't separate
+       concurrent runs of one tenant), and it double-counts nothing while missing
+       prompt-cache replays entirely. The total now comes from the run's own step results
+       below, so this was a wasted round-trip on every run-detail fetch. */
 
     run.stepResults = stepRows.map((step: any) => ({
       ...step,
@@ -234,8 +240,18 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
       tokens: step.tokens_used ?? 0,
     }));
 
-    // Also attach general total tokens to run itself
-    run.total_tokens = llmRows.reduce((sum: number, r: any) => sum + Number(r.tokens || 0), 0);
+    /* Total for this run, summed from its own step results so it agrees with what the
+       steps below it show. llmRows (billing_events in the run's time window) stays for
+       the per-call breakdown, but it must not be the total: billing_events has no run_id,
+       so the window can miss a call and report a run as free while its steps show an AI
+       resolution — which is exactly what "97 tokens in the step, free in the list" was. */
+    run.total_tokens = stepRows.reduce((sum: number, s: any) => sum + Number(s.tokens_used || 0), 0);
+
+    // Wall-clock duration. Without this the UI can only add up step durations, which
+    // excludes browser boot and teardown and so disagrees with the run list.
+    run.duration_ms = run.started_at && run.completed_at
+      ? new Date(run.completed_at).getTime() - new Date(run.started_at).getTime()
+      : null;
 
 
     return reply.send(run);
@@ -370,11 +386,18 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
       if (stepResult.target_hash) {
         if (verdict === 'passed' && stepResult.selector_used) {
           // Pin this selector_cache row — healing and re-resolution will never overwrite it.
+          //
+          // The shared-pool row (tenant_id IS NULL) has to be covered too. A step that
+          // resolved from the global brain has no tenant-scoped row at all, so scoping
+          // this update to tenant_id alone matched nothing and the pin silently did
+          // nothing — which is exactly what a user sees as "I pinned it and nothing
+          // happened". The failed verdict below already purges both scopes; this is the
+          // same reasoning applied to the positive verdict.
           await pool.query(
             `UPDATE selector_cache
              SET pinned_at = now()
              WHERE content_hash = $1
-               AND tenant_id = $2
+               AND (tenant_id = $2 OR (tenant_id IS NULL AND is_shared = true))
                AND $3 = ANY(
                  SELECT s->>'selector'
                  FROM jsonb_array_elements(selectors::jsonb) AS s

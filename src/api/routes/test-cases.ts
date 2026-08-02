@@ -219,12 +219,13 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
          LEFT JOIN LATERAL (
            SELECT r.id, r.status, r.completed_at,
                   (EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) * 1000)::int AS duration_ms,
-                  (SELECT SUM(quantity)::int FROM billing_events 
-                   WHERE tenant_id = tc.tenant_id 
-                     AND event_type = 'LLM_CALL' 
-                     AND created_at >= r.started_at 
-                     AND created_at <= COALESCE(r.completed_at, now())
-                  ) AS total_tokens
+                  -- Tokens come from the run's own step results, which carry a run_id.
+                  -- This used to sum billing_events falling inside the run's time window;
+                  -- billing_events has no run_id, so a row written a moment after
+                  -- completed_at was dropped and the run reported "free" while its steps
+                  -- plainly showed an AI resolution. Two sources, two answers.
+                  COALESCE((SELECT SUM(sr.tokens_used)::int FROM step_results sr
+                             WHERE sr.run_id = r.id), 0) AS total_tokens
            FROM runs r
            WHERE r.case_id = tc.id
            ORDER BY r.created_at DESC
@@ -349,12 +350,9 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       }>(
         `SELECT r.id, r.status, r.triggered_by, r.created_at, r.completed_at,
                 (EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) * 1000)::int AS duration_ms,
-                (SELECT SUM(quantity)::int FROM billing_events 
-                 WHERE tenant_id = tc.tenant_id 
-                   AND event_type = 'LLM_CALL' 
-                   AND created_at >= r.started_at 
-                   AND created_at <= COALESCE(r.completed_at, now())
-                ) AS total_tokens
+                -- Same run-scoped sum as the case list; see the note there.
+                COALESCE((SELECT SUM(sr.tokens_used)::int FROM step_results sr
+                           WHERE sr.run_id = r.id), 0) AS total_tokens
          FROM runs r
          JOIN test_cases tc ON tc.id = r.case_id
          WHERE r.case_id = $1
@@ -508,10 +506,36 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       const { rows } = await client.query(`SELECT id FROM test_cases WHERE id = $1 AND tenant_id = $2`, [caseId, tenantId]);
       if (rows.length === 0) return;
 
+      // Order matters: step_results reference test_steps (and healing_events
+      // reference step_results), so evidence has to go before the steps that
+      // produced it. Skipping this made DELETE fail with a 23503 FK violation on
+      // any case that had ever run — i.e. every case worth deleting.
+      await client.query(
+        `DELETE FROM healing_events
+          WHERE step_result_id IN (
+            SELECT sr.id FROM step_results sr
+             WHERE sr.run_id IN (SELECT id FROM runs WHERE case_id = $1)
+                OR sr.step_id IN (SELECT id FROM test_steps WHERE case_id = $1))`,
+        [caseId],
+      );
+      await client.query(
+        `DELETE FROM step_results
+          WHERE run_id IN (SELECT id FROM runs WHERE case_id = $1)
+             OR step_id IN (SELECT id FROM test_steps WHERE case_id = $1)`,
+        [caseId],
+      );
+      // A run can be another case's validation run; release that pointer first.
+      await client.query(
+        `UPDATE test_cases SET validation_run_id = NULL
+          WHERE validation_run_id IN (SELECT id FROM runs WHERE case_id = $1)`,
+        [caseId],
+      );
+      // run_events cascade from runs.
+      await client.query(`DELETE FROM runs WHERE case_id = $1`, [caseId]);
+      await client.query(`UPDATE generation_jobs SET login_case_id = NULL WHERE login_case_id = $1`, [caseId]);
       await client.query(`DELETE FROM test_case_steps WHERE case_id = $1`, [caseId]);
       await client.query(`DELETE FROM test_steps WHERE case_id = $1`,      [caseId]);
-      await client.query(`UPDATE runs SET case_id = NULL WHERE case_id = $1`, [caseId]);
-      await client.query(`DELETE FROM test_cases WHERE id = $1`,            [caseId]);
+      await client.query(`DELETE FROM test_cases WHERE id = $1`,           [caseId]);
     });
 
     return reply.status(204).send();

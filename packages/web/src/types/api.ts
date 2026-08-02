@@ -69,6 +69,20 @@ export type DomCandidate = {
   parentContext?: string;
 };
 
+/** A healing attempt against one step: what broke, what was tried, what it became. */
+export type HealingEvent = {
+  id: string;
+  failureClass: string;
+  strategyUsed: string;
+  attempts: number;
+  succeeded: boolean;
+  /** The selector that stopped working. Null when the failure wasn't selector-related. */
+  oldSelector: string | null;
+  /** The selector that replaced it. Null when healing didn't succeed. */
+  newSelector: string | null;
+  durationMs: number | null;
+};
+
 export type StepResult = {
   id: string;
   stepId: string;
@@ -91,6 +105,8 @@ export type StepResult = {
   capturedName: string | null;
   /** The value captured into capturedName. */
   capturedValue: string | null;
+  /** Healing attempts on this step, oldest first. Empty when it never needed healing. */
+  healingEvents: HealingEvent[];
 };
 
 export type RunDetail = RunSummary & {
