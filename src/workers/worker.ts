@@ -107,9 +107,19 @@ const resolver = new CompositeElementResolver(resolvers, obs, llm);
 // "verify ..." step always re-resolves against the live page and can never read
 // a stale selector that embedded run-specific data (e.g. a header link named
 // "<a previous run's email>"). Assertions also never write to the cache.
+//
+// The assertion LLM resolver is a DEDICATED instance that READS the shared brain (so a
+// verify reuses the interaction's correct resolution — e.g. "the second checkbox") but
+// never WRITES to it (a verify must not persist run-specific selectors). A confident-but-
+// wrong element-embedding hit (a checkbox for "College radio button") is caught by the
+// resolver's role guard, which drops a role-mismatched hit through to the LLM.
+const assertionLlmResolver = new LLMElementResolver(domPruner, llm, obs, sharedPool, cacheRedis, {
+  cacheReads: true,
+  cacheWrites: false,
+});
 const assertionResolvers: IElementResolver[] = [archetypeElementResolver];
 if (process.env.DISABLE_LLM !== '1') {
-  assertionResolvers.push(llmResolver);
+  assertionResolvers.push(assertionLlmResolver);
 }
 const assertionResolver = new CompositeElementResolver(assertionResolvers, obs, llm);
 
@@ -535,6 +545,10 @@ async function executeStep(
       const idx = seededIndex(`${runId}:${stepIndex}`, matches.length);
       const chosen = matches[idx];
       randomPickName = chosen.title;
+      // findRepeatedTargets' title extraction is e-commerce-hardcoded; fall back to the
+      // general card-title resolver at PICK time (element still stable, pre-click — some
+      // apps re-render the control on click and destroy any post-click reference).
+      if (!randomPickName) randomPickName = await resolveCardTitle(page, chosen.selector).catch(() => null);
       obs.increment('worker.click_random_picked', { poolSize: String(matches.length), source: 'direct' });
       selectorSet = {
         selectors: [{ selector: chosen.selector, strategy: 'css' as const, confidence: 0.9 }],
@@ -656,11 +670,42 @@ async function executeStep(
   let stepError: Error | null = null;
   let result: Awaited<ReturnType<typeof engine.executeStep>>;
 
+  // URL before the action, so we can tell whether this step navigated.
+  const urlBefore = (() => { try { return (page as { url?: () => string }).url?.() ?? ''; } catch { return ''; } })();
+
   try {
     result = await engine.executeStep(step, selectorSet, page);
   } catch (e: any) {
     result = { status: 'failed', selectorUsed: null, durationMs: 0, errorType: null, errorMessage: e.message ?? null, screenshotKey: null, domSnapshotKey: null };
     stepError = e;
+  }
+
+  // If this step navigated (login, category nav, an <a> click), let the destination SETTLE
+  // before the next step resolves — the first interaction after a nav (e.g. add-to-cart
+  // right after login) must not race a half-rendered page, which yields a transient
+  // selector that never caches AND a click that silently no-ops. All waits are bounded so
+  // a chatty page (long-poll / websocket) or a never-quiet DOM can never hang the run.
+  if (result.status !== 'failed') {
+    try {
+      const p = page as {
+        url?: () => string;
+        waitForLoadState?: (s: string, o?: { timeout?: number }) => Promise<void>;
+        evaluate?: (fn: () => unknown) => Promise<unknown>;
+      };
+      if (p.url && p.url() !== urlBefore) {
+        // Network settle (server-rendered navs). Instant when there is no network I/O.
+        await p.waitForLoadState?.('networkidle', { timeout: 2500 }).catch(() => {});
+        // DOM-quiescence settle: a CLIENT-SIDE route change (e.g. saucedemo login) does no
+        // network I/O, so `networkidle` returns immediately — we must instead wait for the
+        // DOM to stop mutating (the page finished rendering/hydrating). Bounded to 2s.
+        await p.evaluate?.(() => new Promise((resolve) => {
+          let timer = setTimeout(() => resolve(null), 400);
+          const mo = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(() => resolve(null), 400); });
+          mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+          setTimeout(() => { mo.disconnect(); resolve(null); }, 2000);
+        })).catch(() => {});
+      }
+    } catch { /* settling is best-effort — never fail a step on it */ }
   }
 
   runLog?.log(isAssertion ? 'assert' : 'execute',
@@ -693,7 +738,15 @@ async function executeStep(
     let capturedValue: string | null = null;
     if (captureKey) {
       capturedValue = randomPickName;
-      if (capturedValue == null && result.selectorUsed) {
+      // A generic action label ("Add to cart" / "Remove") is not the item name. For
+      // click_random capture, resolve the item title from the picked element's card —
+      // general, so it works on any product grid, not just the seeded e-commerce demos.
+      const genericName = capturedValue == null || /^(add to cart|remove|buy|add|select|choose)$/i.test(capturedValue.trim());
+      if (genericName && result.selectorUsed) {
+        const title = await resolveCardTitle(page, result.selectorUsed).catch(() => null);
+        if (title) capturedValue = title;
+      }
+      if ((capturedValue == null || capturedValue === '') && result.selectorUsed) {
         capturedValue = await page
           .$eval(result.selectorUsed, (el) => (el.textContent ?? '').trim())
           .catch(() => null);

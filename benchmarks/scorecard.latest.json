@@ -1,0 +1,109 @@
+{
+  "generatedAt": "2026-07-30T09:21:46.248Z",
+  "tests": [
+    {
+      "id": "long-hackernews-nav",
+      "category": "e2e-flow",
+      "verdictOk": false,
+      "mustLearnOk": true,
+      "wrongElement": false,
+      "blindSpotSteps": [],
+      "healedOnWarm": [],
+      "coldTokens": 0,
+      "warmTokens": 0,
+      "coldStatus": "failed",
+      "warmStatus": "failed",
+      "notes": [
+        "cold verdict: infra: infra: #\\34 9107562 > td:nth-of-type(3) > div:nth-of-type(1) > span > span:nth-of-type(3) > span > a",
+        "warm verdict: expected passed, got failed"
+      ],
+      "green": false,
+      "visual": {
+        "ran": false,
+        "pass": null,
+        "reason": "url/title claim — not visible in a screenshot",
+        "stepIndex": 6
+      }
+    },
+    {
+      "id": "long-wikipedia-research",
+      "category": "e2e-flow",
+      "verdictOk": true,
+      "mustLearnOk": true,
+      "wrongElement": false,
+      "blindSpotSteps": [],
+      "healedOnWarm": [],
+      "coldTokens": 398,
+      "warmTokens": 0,
+      "coldStatus": "passed",
+      "warmStatus": "passed",
+      "notes": [],
+      "green": true,
+      "visual": {
+        "ran": true,
+        "pass": true,
+        "confidence": 1,
+        "observed": "The page contains the text 'Web browser'.",
+        "reason": "The claim is true as the text 'Web browser' is visible on the page.",
+        "stepIndex": 9,
+        "diverges": false
+      }
+    },
+    {
+      "id": "long-guardian-sections",
+      "category": "e2e-flow",
+      "verdictOk": true,
+      "mustLearnOk": true,
+      "wrongElement": false,
+      "blindSpotSteps": [],
+      "healedOnWarm": [],
+      "coldTokens": 473,
+      "warmTokens": 168,
+      "coldStatus": "passed",
+      "warmStatus": "passed",
+      "notes": [],
+      "green": true,
+      "visual": {
+        "ran": false,
+        "pass": null,
+        "reason": "url/title claim — not visible in a screenshot",
+        "stepIndex": 9
+      }
+    },
+    {
+      "id": "long-amazon-multi-search",
+      "category": "e2e-flow",
+      "verdictOk": true,
+      "mustLearnOk": true,
+      "wrongElement": false,
+      "blindSpotSteps": [],
+      "healedOnWarm": [],
+      "coldTokens": 0,
+      "warmTokens": 0,
+      "coldStatus": "passed",
+      "warmStatus": "passed",
+      "notes": [],
+      "green": true,
+      "visual": {
+        "ran": false,
+        "pass": null,
+        "reason": "screenshot fetch failed",
+        "stepIndex": 9,
+        "error": "gs://kaizen-ss/00000000-0000-0000-0000-000000000001/dea93adb-43ef-4af6-8b13-93f60662fc5d/9/after.png"
+      }
+    }
+  ],
+  "aggregate": {
+    "total": 4,
+    "green": 3,
+    "verdictCorrect": 3,
+    "mustLearnPass": 4,
+    "wrongElement": 0,
+    "blindSpotSteps": 0,
+    "coldTokens": 871,
+    "warmTokens": 168,
+    "visualChecked": 1,
+    "visualPass": 1,
+    "visualDiverge": 0
+  }
+}

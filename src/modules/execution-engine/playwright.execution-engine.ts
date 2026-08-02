@@ -150,11 +150,21 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
         }
       }
 
+      // If the resolved element lives inside a child FRAME (e.g. a cookie-consent CMP
+      // iframe), act WITHIN that frame — a Playwright Frame exposes the same element API
+      // (click/fill/check/$eval/…) as a Page, so it drops straight into dispatchAction.
+      let execCtx: PlaywrightPageLike = pw;
+      if (selectorSet.frameUrl) {
+        const frames = (pw as unknown as { frames?: () => Array<{ url?: () => string }> }).frames?.() ?? [];
+        const frame = frames.find((f) => (typeof f.url === 'function' ? f.url() : '') === selectorSet.frameUrl);
+        if (frame) execCtx = frame as unknown as PlaywrightPageLike;
+      }
+
       // Try each selector in confidence order (already sorted by LLMElementResolver)
       let lastError: Error | null = null;
       for (const entry of selectorSet.selectors) {
         try {
-          const matched = await this.dispatchAction(effectiveStep, entry.selector, pw, useCheck, destSelector);
+          const matched = await this.dispatchAction(effectiveStep, entry.selector, execCtx, useCheck, destSelector);
 
           this.observability.increment('engine.step_passed', {
             action: step.action,

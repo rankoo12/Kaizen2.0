@@ -170,38 +170,42 @@ export async function resolveCardTitle(
   return page
     .$eval(selector, (el: Element) => {
       const clean = (s: string | null | undefined) => (s ?? '').replace(/\s+/g, ' ').trim();
+      const firstClass = (e: Element) => (typeof (e as HTMLElement).className === 'string' ? (e as HTMLElement).className : '').trim().split(' ')[0];
 
-      // 1. Climb to a product-card-like ancestor and read its title.
-      // nopCommerce/demowebshop: input.product-box-add-to-cart-button lives at
-      // div.item-box > div > div.details > div.add-info > div.buttons > input,
-      // with the title at div.details > h2.product-title > a — ~5 hops up.
-      const CARD_SELECTORS = [
-        '.item-box', '.product-item', '.product-card', '.details',
-        '[data-productid]', 'li.product', 'article',
-      ];
-      const TITLE_SELECTORS = [
-        'h2.product-title a', '.product-title a', '.product-title',
-        'h2 a', 'h2', 'h3 a', 'h3', '.product-name a', '.product-name',
-      ];
-      let node: Element | null = el;
+      // 1. Climb to the nearest REPEATED-ITEM container — a <tr>/<li>/<article> or a
+      // same-class repeated block (`.inventory_item`, `.product_pod`, `.item-box`) — so
+      // this works on ANY grid, not just nopCommerce. (Was hardcoded to demowebshop.)
+      let card: Element | null = null;
+      let node: Element | null = el.parentElement;
       for (let hops = 0; node && hops < 8; hops++) {
-        if (CARD_SELECTORS.some((s) => node!.matches?.(s))) {
-          for (const ts of TITLE_SELECTORS) {
-            const t = node.querySelector(ts);
-            const text = clean(t?.textContent);
-            if (text) return text;
-          }
-        }
+        const tag = node.tagName.toLowerCase();
+        const parent = node.parentElement;
+        const cls = firstClass(node);
+        const repeated = !!parent && Array.from(parent.children).filter((c) => c.tagName === node!.tagName && firstClass(c) === cls).length >= 2;
+        if (tag === 'tr' || tag === 'li' || tag === 'article' || (repeated && (tag === 'div' || tag === 'section'))) { card = node; break; }
         node = node.parentElement;
       }
 
-      // 2. The picked element itself, if it reads like a title (link/heading).
+      // 2. Inside the card, the title is a name/title-classed element or a heading.
+      const scope = card ?? el.parentElement ?? el;
+      const TITLE_SELECTORS = [
+        '[class*="name" i]', '[class*="title" i]', 'h1', 'h2', 'h3', 'h4',
+      ];
+      for (const ts of TITLE_SELECTORS) {
+        const text = clean(scope.querySelector(ts)?.textContent);
+        if (text && text.length > 1 && text.length < 80) return text;
+      }
+      // 3. Else the first substantial link that is not a generic action.
+      for (const a of Array.from(scope.querySelectorAll('a'))) {
+        const text = clean(a.textContent);
+        if (text.length > 2 && text.length < 80 && !/^(add to cart|remove|buy|add|select)$/i.test(text)) return text;
+      }
+      // 4. The picked element itself, if it reads like a title (link/heading).
       const tag = el.tagName.toLowerCase();
-      if (tag === 'a' || tag === 'h1' || tag === 'h2' || tag === 'h3') {
+      if (tag === 'a' || /^h[1-4]$/.test(tag)) {
         const own = clean(el.textContent);
         if (own) return own;
       }
-
       return null;
     })
     .catch(() => null);

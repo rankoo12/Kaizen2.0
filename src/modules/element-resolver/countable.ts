@@ -31,7 +31,7 @@ export interface CountablePageLike {
 
 /** One countable candidate gathered from the live DOM. */
 export type CountCandidate = {
-  kind: 'role' | 'group';
+  kind: 'role' | 'group' | 'classgroup';
   /** Members carry attribute `data-kzc-<token>`; `[data-kzc-<token>]` re-locates exactly them. */
   token: string;
   /** Number of VISIBLE members tagged. */
@@ -42,12 +42,20 @@ export type CountCandidate = {
   roleKwLen?: number;
 };
 
-export type CountResolution = { selector: string; count: number; method: 'role' | 'group' };
+export type CountResolution = { selector: string; count: number; method: 'role' | 'group' | 'classgroup' };
 
 /** Raw payload the in-browser gather step returns. */
 type GatherResult = {
   role: { token: string; count: number } | null;
   groups: Array<{ token: string; count: number; haystack: string }>;
+  /**
+   * Head-noun units grounded by their OWN class/id (not descendant text), optionally
+   * scoped to a container noun, and de-nested to the OUTERMOST match per subtree — so a
+   * single `.cart_item` inside `.cart_list` counts as one "item in the cart". This is what
+   * lets assert_count handle EXACTLY ONE (a role sweep counts singles fine, but a plain
+   * repeated-sibling group needs ≥2 and so cannot express "1 item").
+   */
+  classGroups: Array<{ token: string; count: number; haystack: string }>;
 };
 
 // ── Pure decision logic (unit-tested directly) ───────────────────────────────
@@ -72,6 +80,26 @@ export function countNounStems(target: string): string[] {
         .replace(/s$/, ''),
     )
     .filter(Boolean);
+}
+
+/**
+ * Split a count target into the HEAD noun(s) to count and an optional CONTAINER noun
+ * that scopes them: "items in the cart" → count "item" units scoped to "cart";
+ * "6 items" → count "item" units, unscoped. The container comes from an "in [the] X"
+ * phrase. Scoping is what disambiguates "items in the cart" (the `.cart_item` lines)
+ * from a coincidental `.inventory_item` grid that also stems to "item".
+ */
+export function parseCountTarget(target: string): { headStems: string[]; containerStem: string | null } {
+  const t = (target || '').toLowerCase();
+  const stems = countNounStems(t);
+  let containerStem: string | null = null;
+  const m = t.match(/\bin(?:side)?\s+(?:the\s+|a\s+|an\s+|your\s+|my\s+)?([a-z][a-z0-9]+)/);
+  if (m) {
+    const cs = countNounStems(m[1])[0];
+    if (cs) containerStem = cs;
+  }
+  const headStems = containerStem ? stems.filter((s) => s !== containerStem) : stems;
+  return { headStems: headStems.length ? headStems : stems, containerStem };
 }
 
 const ROLE_MAP: Array<{ kws: string[]; sel: string }> = [
@@ -108,14 +136,23 @@ export function matchRole(target: string): { sel: string; kwLen: number } | null
  *   1. Prefer a semantic ROLE sweep — a role candidate only exists when the target
  *      named a native countable kind (rows, links, buttons, …), and that literal intent
  *      wins over a class coincidence (e.g. "rows" must be <tr>, not Bootstrap `.row` divs).
- *   2. Else a GROUNDED repeated group (scoped to an actual list); pick the largest.
- *   3. Else null — never guess an ungrounded "biggest group on the page".
+ *   2. Else a CLASSGROUP — head-noun units grounded by their own class/id and scoped to
+ *      the container noun, de-nested to the outermost match. Counts down to EXACTLY ONE
+ *      (a plain repeated-sibling group can't: a single `.cart_item` isn't a "group").
+ *   3. Else a GROUNDED repeated group (≥2, noun in the class/text blob) — the fallback for
+ *      units whose noun lives only in descendant text (e.g. "products" → `col-md-3` wrappers).
+ *   4. Else null — never guess an ungrounded "biggest group on the page".
  */
 export function pickCountable(cands: CountCandidate[], target: string): CountCandidate | null {
   const roles = cands
     .filter((c) => c.kind === 'role' && c.count > 0)
     .sort((a, b) => (b.roleKwLen ?? 0) - (a.roleKwLen ?? 0) || b.count - a.count);
   if (roles.length) return roles[0];
+
+  // Classgroups are already head-grounded + container-scoped + de-nested in-browser, so any
+  // survivor is a legitimate unit. Prefer the largest count (the dominant repeated unit).
+  const classGroups = cands.filter((c) => c.kind === 'classgroup' && c.count >= 1).sort((a, b) => b.count - a.count);
+  if (classGroups.length) return classGroups[0];
 
   const stems = countNounStems(target);
   const grounded = cands
@@ -137,7 +174,14 @@ export function pickCountable(cands: CountCandidate[], target: string): CountCan
 // shim (e.g. a standalone Playwright harness — how it was live-verified). Inline
 // ANONYMOUS arrows (filter/forEach) are never wrapped, so the visibility predicate is
 // inlined at both use sites on purpose — do not "DRY" it back into a named helper.
-const GATHER_FN = (_body: Element, roleSel: string): GatherResult => {
+const GATHER_FN = (
+  _body: Element,
+  arg: { roleSel: string; headStems: string[]; containerStem: string | null },
+): GatherResult => {
+  const roleSel = arg.roleSel;
+  const headStems = arg.headStems || [];
+  const containerStem = arg.containerStem;
+
   let role: { token: string; count: number } | null = null;
   if (roleSel) {
     const vis = Array.from(document.querySelectorAll(roleSel)).filter((el) => {
@@ -201,7 +245,64 @@ const GATHER_FN = (_body: Element, roleSel: string): GatherResult => {
     }
   }
 
-  return { role, groups };
+  // ── classgroups: head-noun units grounded by their OWN class/id, scoped to the container
+  // noun, and de-nested to the outermost match — so ONE `.cart_item` in `.cart_list` counts
+  // as one "item in the cart" (a plain sibling group needs ≥2 and cannot express "1"). ──
+  const classGroups: Array<{ token: string; count: number; haystack: string }> = [];
+  if (headStems.length) {
+    const bySig = new Map<string, Element[]>();
+    for (const el of Array.from(document.querySelectorAll('[class], [id]'))) {
+      const clsName = typeof (el as HTMLElement).className === 'string' ? (el as HTMLElement).className : '';
+      const ownToks = `${clsName} ${el.id || ''}`.toLowerCase().split(/[^a-z0-9]+/).filter(Boolean);
+      if (!headStems.some((s) => ownToks.indexOf(s) >= 0)) continue;
+
+      // container scope: own tokens OR some ancestor's tokens include the container noun
+      if (containerStem) {
+        let scoped = ownToks.indexOf(containerStem) >= 0;
+        let p = el.parentElement;
+        let hops = 0;
+        while (!scoped && p && hops < 10) {
+          const pc = typeof (p as HTMLElement).className === 'string' ? (p as HTMLElement).className : '';
+          if (`${pc} ${p.id || ''}`.toLowerCase().split(/[^a-z0-9]+/).indexOf(containerStem) >= 0) scoped = true;
+          p = p.parentElement;
+          hops++;
+        }
+        if (!scoped) continue;
+      }
+
+      // de-nest: skip if an ancestor ALSO matches a head noun (that ancestor is the real unit)
+      let anc = el.parentElement;
+      let nested = false;
+      let hops2 = 0;
+      while (anc && hops2 < 12) {
+        const ac = typeof (anc as HTMLElement).className === 'string' ? (anc as HTMLElement).className : '';
+        const atoks = `${ac} ${anc.id || ''}`.toLowerCase().split(/[^a-z0-9]+/);
+        if (headStems.some((s) => atoks.indexOf(s) >= 0)) { nested = true; break; }
+        anc = anc.parentElement;
+        hops2++;
+      }
+      if (nested) continue;
+
+      if ((el as HTMLElement).hidden) continue;
+      const st = getComputedStyle(el);
+      if (!st || st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') continue;
+      const rect = el.getBoundingClientRect();
+      if (rect.width <= 0 || rect.height <= 0) continue;
+
+      const clsSig = Array.from(el.classList).sort().join('.');
+      const sig = el.tagName.toLowerCase() + (clsSig ? `.${clsSig}` : '');
+      const arr = bySig.get(sig);
+      if (arr) arr.push(el);
+      else bySig.set(sig, [el]);
+    }
+    for (const [sig, els] of Array.from(bySig.entries())) {
+      const token = Math.random().toString(36).slice(2, 10);
+      els.forEach((el) => el.setAttribute(`data-kzc-${token}`, '1'));
+      classGroups.push({ token, count: els.length, haystack: sig.toLowerCase() });
+    }
+  }
+
+  return { role, groups, classGroups };
 };
 
 // ── Orchestration ────────────────────────────────────────────────────────────
@@ -216,14 +317,18 @@ export async function resolveCountSelector(
   target: string,
 ): Promise<CountResolution | null> {
   const role = matchRole(target);
+  const { headStems, containerStem } = parseCountTarget(target);
   const gathered = await page
-    .$eval('body', GATHER_FN, role?.sel ?? '')
+    .$eval('body', GATHER_FN, { roleSel: role?.sel ?? '', headStems, containerStem })
     .catch(() => null as GatherResult | null);
   if (!gathered) return null;
 
   const cands: CountCandidate[] = [];
   if (gathered.role && gathered.role.count > 0) {
     cands.push({ kind: 'role', token: gathered.role.token, count: gathered.role.count, haystack: '', roleKwLen: role?.kwLen ?? 0 });
+  }
+  for (const g of gathered.classGroups ?? []) {
+    cands.push({ kind: 'classgroup', token: g.token, count: g.count, haystack: g.haystack });
   }
   for (const g of gathered.groups) {
     cands.push({ kind: 'group', token: g.token, count: g.count, haystack: g.haystack });
