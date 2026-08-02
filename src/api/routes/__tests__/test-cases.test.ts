@@ -143,4 +143,45 @@ describe('testCasesRoutes - Token Limit Enforcement', () => {
       error: 'INSUFFICIENT_TOKENS'
     });
   });
+
+  // Regression: DELETE used to remove test_steps while step_results still pointed at
+  // them, so deleting any case that had ever run failed with a 23503 FK violation.
+  // Evidence (healing_events -> step_results) has to be cleared before the steps.
+  it('deletes a case that has run history in FK-safe order', async () => {
+    mockQuery.mockResolvedValue({ rows: [] });
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'case-1' }] }); // ownership check
+
+    const response = await app.inject({ method: 'DELETE', url: '/cases/case-1' });
+    expect(response.statusCode).toBe(204);
+
+    const sql = mockQuery.mock.calls.map((c) => String(c[0]).replace(/\s+/g, ' '));
+    const at = (re: RegExp) => sql.findIndex((s) => re.test(s));
+
+    const healing = at(/DELETE FROM healing_events/);
+    const stepResults = at(/DELETE FROM step_results/);
+    const runs = at(/DELETE FROM runs/);
+    const caseSteps = at(/DELETE FROM test_case_steps/);
+    const steps = at(/DELETE FROM test_steps/);
+    const theCase = at(/DELETE FROM test_cases/);
+
+    // -1 means the statement was never issued at all.
+    expect({ healing, stepResults, runs, caseSteps, steps, theCase }).not.toEqual(
+      expect.objectContaining({ healing: -1, stepResults: -1, runs: -1, caseSteps: -1, steps: -1, theCase: -1 }),
+    );
+    for (const i of [healing, stepResults, runs, caseSteps, steps, theCase]) {
+      expect(i).toBeGreaterThan(-1);
+    }
+    expect(healing).toBeLessThan(stepResults);      // healing_events -> step_results
+    expect(stepResults).toBeLessThan(steps);        // step_results  -> test_steps
+    expect(stepResults).toBeLessThan(runs);         // step_results  -> runs
+    expect(caseSteps).toBeLessThan(steps);          // test_case_steps -> test_steps
+    expect(steps).toBeLessThan(theCase);            // test_steps    -> test_cases
+    expect(runs).toBeLessThan(theCase);             // runs          -> test_cases
+
+    // A run can be another case's validation run; that pointer must be released
+    // before the runs go, or the delete trips validation_run_id's FK.
+    const releaseValidation = at(/UPDATE test_cases SET validation_run_id = NULL/);
+    expect(releaseValidation).toBeGreaterThan(-1);
+    expect(releaseValidation).toBeLessThan(runs);
+  });
 });

@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
-import type { RunDetail, StepResult } from '@/types/api';
+import type { HealingEvent, RunDetail, StepResult } from '@/types/api';
 import { TERMINAL_RUN_STATUSES } from '@/types/api';
 
 const LIVE_POLL_INTERVAL_MS = 2000;
@@ -65,6 +65,18 @@ export function useRunDetail(runId: string | null | undefined) {
             userVerdict: sr.user_verdict || null,
             capturedName: sr.captured_name || null,
             capturedValue: sr.captured_value || null,
+            // The API attaches these per step; without mapping them the run screen has
+            // no way to show what broke or what selector replaced it.
+            healingEvents: (sr.healingEvents || []).map((h: any): HealingEvent => ({
+              id: h.id,
+              failureClass: h.failure_class,
+              strategyUsed: h.strategy_used,
+              attempts: h.attempts ?? 0,
+              succeeded: !!h.succeeded,
+              oldSelector: h.old_selector || null,
+              newSelector: h.new_selector || null,
+              durationMs: h.duration_ms ?? null,
+            })),
           })),
         };
 

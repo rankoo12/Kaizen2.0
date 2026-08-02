@@ -1,13 +1,12 @@
 import { Suspense } from 'react';
-import { AuthShell } from '@/components/organisms/auth-shell';
-import { LoginForm } from '@/components/organisms/login-form';
+import { AuthScreen } from '@/components/design/screen-auth';
 
+/* The design owns its own auth layout (centred card on the window ground), so the old
+ * AuthShell wrapper is gone along with the pre-redesign form components. */
 export default function LoginPage() {
   return (
-    <AuthShell>
-      <Suspense fallback={null}>
-        <LoginForm />
-      </Suspense>
-    </AuthShell>
+    <Suspense fallback={null}>
+      <AuthScreen mode="login" />
+    </Suspense>
   );
 }

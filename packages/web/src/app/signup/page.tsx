@@ -1,10 +1,10 @@
-import { AuthShell } from '@/components/organisms/auth-shell';
-import { SignupForm } from '@/components/organisms/signup-form';
+import { Suspense } from 'react';
+import { AuthScreen } from '@/components/design/screen-auth';
 
 export default function SignupPage() {
   return (
-    <AuthShell>
-      <SignupForm />
-    </AuthShell>
+    <Suspense fallback={null}>
+      <AuthScreen mode="signup" />
+    </Suspense>
   );
 }

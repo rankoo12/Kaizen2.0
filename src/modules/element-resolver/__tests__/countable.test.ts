@@ -1,6 +1,7 @@
 import {
   countNounStems,
   matchRole,
+  parseCountTarget,
   pickCountable,
   resolveCountSelector,
   type CountCandidate,
@@ -75,6 +76,49 @@ describe('pickCountable', () => {
   });
 });
 
+describe('parseCountTarget', () => {
+  it('splits the head noun from an "in the <container>" qualifier', () => {
+    expect(parseCountTarget('items in the cart')).toEqual({ headStems: ['item'], containerStem: 'cart' });
+    expect(parseCountTarget('1 item in the cart')).toEqual({ headStems: ['item'], containerStem: 'cart' });
+  });
+
+  it('has no container when there is no "in" phrase', () => {
+    expect(parseCountTarget('6 items')).toEqual({ headStems: ['item'], containerStem: null });
+    expect(parseCountTarget('products')).toEqual({ headStems: ['product'], containerStem: null });
+  });
+});
+
+describe('pickCountable — classgroup tier (counts exactly 1)', () => {
+  const role = (count: number, roleKwLen = 6): CountCandidate => ({ kind: 'role', token: 'r', count, haystack: '', roleKwLen });
+  const group = (haystack: string, count: number): CountCandidate => ({ kind: 'group', token: `g${count}`, count, haystack });
+  const classgroup = (count: number, token = 'cg'): CountCandidate => ({ kind: 'classgroup', token, count, haystack: 'div.cart_item' });
+
+  it('counts a single grounded classgroup member — "1 item in the cart"', () => {
+    const chosen = pickCountable([classgroup(1)], 'items in the cart');
+    expect(chosen?.kind).toBe('classgroup');
+    expect(chosen?.count).toBe(1);
+  });
+
+  it('still prefers a native ROLE sweep over a classgroup', () => {
+    const chosen = pickCountable([role(2, 8), classgroup(1)], 'checkboxes');
+    expect(chosen?.kind).toBe('role');
+  });
+
+  it('prefers a classgroup over a loose grounded group (cart_item beats inventory_item)', () => {
+    const chosen = pickCountable(
+      [group('div.inventory_item item', 6), classgroup(5, 'c')],
+      'items in the cart',
+    );
+    expect(chosen?.kind).toBe('classgroup');
+    expect(chosen?.count).toBe(5);
+  });
+
+  it('picks the largest classgroup when several survive', () => {
+    const chosen = pickCountable([classgroup(1, 'a'), classgroup(5, 'b')], 'items in the cart');
+    expect(chosen?.count).toBe(5);
+  });
+});
+
 describe('resolveCountSelector', () => {
   const pageReturning = (payload: unknown) => ({
     $eval: async <T,>(): Promise<T> => payload as T,
@@ -93,6 +137,12 @@ describe('resolveCountSelector', () => {
     const page = pageReturning({ role: { token: 'r9', count: 3 }, groups: [] });
     const out = await resolveCountSelector(page, 'rows');
     expect(out).toEqual({ selector: '[data-kzc-r9]', count: 3, method: 'role' });
+  });
+
+  it('returns a classgroup selector + count for exactly ONE grounded unit (1 item in the cart)', async () => {
+    const page = pageReturning({ role: null, groups: [], classGroups: [{ token: 'k1', count: 1, haystack: 'div.cart_item' }] });
+    const out = await resolveCountSelector(page, 'items in the cart');
+    expect(out).toEqual({ selector: '[data-kzc-k1]', count: 1, method: 'classgroup' });
   });
 
   it('returns null when nothing is confidently countable (→ assertion fails loudly)', async () => {

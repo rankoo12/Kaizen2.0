@@ -31,16 +31,31 @@ function filterByActionRole(candidates: CandidateNode[], action: string): Candid
  * Score candidates by word-overlap with the target description and return them
  * sorted descending. O(n) — no embeddings, no API calls.
  */
+// Words that name the KIND of control, not its identity — stripped when computing a
+// target's "core" so "the new link" cores to "new" (link is the role, not the label).
+const ROLE_FILLER = new Set([
+  'link', 'links', 'button', 'buttons', 'checkbox', 'checkboxes', 'radio', 'radios',
+  'field', 'fields', 'input', 'inputs', 'dropdown', 'dropdowns', 'tab', 'tabs',
+  'option', 'options', 'icon', 'menu', 'item', 'items', 'box',
+]);
+
 function scoreAndRankCandidates(candidates: CandidateNode[], target: string): CandidateNode[] {
   const words = target.toLowerCase().split(/\s+/)
     .map((w) => w.replace(/[^a-z0-9]/g, ''))   // strip quotes, punctuation
     .filter((w) => w.length > 2);
   if (words.length === 0) return candidates;
 
+  // The target's core identity with role/filler words removed ("the new link" → "new").
+  const core = words.filter((w) => !ROLE_FILLER.has(w)).join(' ');
+
   return candidates
     .map((c) => {
       const haystack = [
         c.role, c.name, c.textContent,
+        // Repeated-item context ("in: Conway Tim …" / "… J.K. Rowling") so a target that
+        // disambiguates by surrounding text ("the Edit link in the row for Conway") ranks
+        // the RIGHT candidate into the top-K instead of every identical "Edit" tying.
+        c.parentContext ?? '',
         c.attributes['placeholder'] ?? '',
         c.attributes['aria-label'] ?? '',
         c.attributes['id'] ?? '',
@@ -50,7 +65,16 @@ function scoreAndRankCandidates(candidates: CandidateNode[], target: string): Ca
         c.attributes['data-testid'] ?? '',
       ].join(' ').toLowerCase();
 
-      const score = words.reduce((n, w) => n + (haystack.includes(w) ? 1 : 0), 0);
+      let score = words.reduce((n, w) => n + (haystack.includes(w) ? 1 : 0), 0);
+
+      // Exact-name match to the target's core: a link literally named "new" beats a story
+      // whose title merely CONTAINS "new". Without this, on content-heavy pages the two tie
+      // on word-count and DOM order picks arbitrarily — and the volatile long story name
+      // then gets cached and rots when the story rotates off the page. The boost dominates
+      // word-count so an exactly-named control always wins.
+      const nameLc = (c.name ?? '').toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+      if (core && nameLc === core) score += 10;
+
       return { c, score };
     })
     .sort((a, b) => b.score - a.score)

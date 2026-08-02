@@ -201,17 +201,48 @@ export class PlaywrightDOMPruner implements IDOMPruner {
             parentContext = node.getAttribute('aria-label') || '';
             if (parentContext) break;
           }
-          // Nearest preceding sibling heading
-          let prev = node.previousElementSibling as HTMLElement | null;
-          while (prev) {
-            if (/^h[1-3]$/i.test(prev.tagName)) {
-              parentContext = (prev.textContent || '').trim().substring(0, 60);
-              break;
-            }
-            prev = prev.previousElementSibling as HTMLElement | null;
-          }
-          if (parentContext) break;
           node = node.parentElement;
+        }
+
+        // ── 8b. Repeated-item context (row / card / list-item) ────────────────
+        // The walk above only finds form/fieldset/section/heading labels. For the
+        // Class-A blind spot — "the Edit link in the row for Conway", "the about link
+        // for J.K. Rowling" — the disambiguator lives in the element's REPEATED CONTAINER
+        // (its <tr>, <li>, or repeated card), which none of those cover. Without it, the
+        // LLM sees N identical "Edit"/"(about)" candidates and picks the first. Capture
+        // the nearest item-container's text (minus the element's own short label) so the
+        // gateway can render `(in: "Conway Tim …")` and the LLM matches the right one.
+        if (!parentContext) {
+          const ownText = (el.textContent || '').replace(/\s+/g, ' ').trim().toLowerCase();
+          const SKIP_TAGS = new Set(['td', 'th', 'span', 'a', 'button', 'label', 'small', 'strong', 'em', 'b', 'i']);
+          let itemNode: HTMLElement | null = el.parentElement;
+          let hops = 0;
+          while (itemNode && itemNode !== document.body && hops < 12) {
+            hops++;
+            const itemTag = itemNode.tagName.toLowerCase();
+            const itemParent = itemNode.parentElement;
+            // A real repeated ITEM shares BOTH tag AND first class with ≥1 sibling (a grid
+            // of `.inventory_item` / `.quote` / `.product_pod`). Requiring the class skips
+            // layout wrappers like `.pricebar` (whose sibling is a differently-classed div),
+            // which would otherwise capture just "$29.99" instead of the product card.
+            const itemCls = (typeof itemNode.className === 'string' ? itemNode.className : '').trim().split(' ')[0];
+            const repeated = !!itemParent && Array.from(itemParent.children).filter((c) => {
+              const cc = (typeof (c as HTMLElement).className === 'string' ? (c as HTMLElement).className : '').trim().split(' ')[0];
+              return c.tagName === itemNode!.tagName && cc === itemCls;
+            }).length >= 2;
+            // A distinguishing item container: a table row, a list item, or a same-class
+            // repeated block (card) — never an inline element or a table cell.
+            if (itemTag === 'tr' || itemTag === 'li' || (repeated && !SKIP_TAGS.has(itemTag))) {
+              let ctx = (itemNode.textContent || '').replace(/\s+/g, ' ').trim();
+              if (ownText && ownText.length < 30) {
+                const idx = ctx.toLowerCase().indexOf(ownText);
+                if (idx >= 0) ctx = (ctx.slice(0, idx) + ' ' + ctx.slice(idx + ownText.length)).replace(/\s+/g, ' ').trim();
+              }
+              parentContext = ctx.substring(0, 120);
+              if (parentContext) break;
+            }
+            itemNode = itemNode.parentElement;
+          }
         }
 
         results.push({
@@ -264,7 +295,7 @@ export class PlaywrightDOMPruner implements IDOMPruner {
 
     // ── Build ranked selector lists in Node.js ────────────────────────────────
     // (CSS.escape is a browser API; we use a simple escape helper here instead)
-    return rawCandidates.map((raw) => {
+    const buildCandidate = (raw: any, frameUrl?: string): CandidateNode => {
       const { kaizenId, role, accessibleName, attributes, tagName } = raw;
       const id = attributes['id'];
       const name = attributes['name'];
@@ -375,10 +406,96 @@ export class PlaywrightDOMPruner implements IDOMPruner {
         centerPoint: raw.centerPoint,
         selectorCandidates: selectors,
         parentContext: raw.parentContext || undefined,
+        frameUrl,
       } satisfies CandidateNode;
-    });
+    };
+
+    const mainCandidates = rawCandidates.map((raw) => buildCandidate(raw));
+
+    // ── Child-frame candidates (cookie-consent CMPs, embedded widgets) ───────────
+    // The main-document evaluate never sees inside iframes. Gather interactive elements
+    // from each accessible child frame, tagged with the frame URL so the engine acts
+    // WITHIN that frame. Bounded (≤6 frames) to avoid ad-iframe noise; failures per
+    // frame are swallowed (cross-origin/detached frames simply contribute nothing).
+    const frameCandidates: CandidateNode[] = [];
+    try {
+      const frames: any[] = typeof pwPage.frames === 'function' ? pwPage.frames() : [];
+      const mainFrame = typeof pwPage.mainFrame === 'function' ? pwPage.mainFrame() : null;
+      let fi = 0;
+      for (const frame of frames.filter((f) => f && f !== mainFrame).slice(0, 6)) {
+        fi++;
+        try {
+          const furl: string = typeof frame.url === 'function' ? frame.url() : '';
+          if (!furl || furl === 'about:blank') continue;
+          const raws: any[] = await frame.evaluate(IFRAME_GATHER, `f${fi}-`);
+          for (const raw of raws) frameCandidates.push(buildCandidate(raw, furl));
+        } catch { /* cross-origin / detached frame — skip */ }
+      }
+    } catch { /* no frame support — skip */ }
+
+    return [...mainCandidates, ...frameCandidates];
   }
 }
+
+/**
+ * Small, self-contained interactive-element gatherer run INSIDE a child frame via
+ * `frame.evaluate(IFRAME_GATHER, prefix)`. Returns the SAME raw shape the main-document
+ * gather produces, so the same Node-side `buildCandidate` selector builder applies.
+ * Kept minimal and shim-INDEPENDENT (only inline anonymous arrows, no named inner
+ * functions) so it serializes safely into any frame, including cross-origin ones where
+ * the worker's `__name` addInitScript shim may not have run. `prefix` keeps kaizenIds
+ * unique across frames so the LLM can tell candidates from different frames apart.
+ */
+const IFRAME_GATHER = (prefix: string) => {
+  const els = Array.from(document.querySelectorAll(
+    'button, a, input, textarea, select, [role="button"], [role="link"], ' +
+    '[role="checkbox"], [role="radio"], [role="textbox"], [role="tab"], [role="menuitem"]',
+  )) as unknown as Element[];
+  const out: any[] = [];
+  let i = 1;
+  for (const el of els) {
+    const he = el as unknown as HTMLElement;
+    const st = getComputedStyle(el);
+    if (!st || st.display === 'none' || st.visibility === 'hidden' || st.opacity === '0') continue;
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue;
+    const kaizenId = `${prefix}kz-${i++}`;
+    el.setAttribute('data-kaizen-id', kaizenId);
+    const tag = el.tagName.toLowerCase();
+    let role = el.getAttribute('role') || '';
+    if (!role) {
+      if (tag === 'button') role = 'button';
+      else if (tag === 'a') role = 'link';
+      else if (tag === 'select') role = 'combobox';
+      else if (tag === 'textarea') role = 'textbox';
+      else if (tag === 'input') {
+        const t = (el.getAttribute('type') || 'text').toLowerCase();
+        role = t === 'checkbox' ? 'checkbox'
+          : t === 'radio' ? 'radio'
+          : (t === 'submit' || t === 'button' || t === 'reset') ? 'button'
+          : t === 'search' ? 'searchbox' : 'textbox';
+      }
+    }
+    let name = el.getAttribute('aria-label') || el.getAttribute('placeholder') || el.getAttribute('title') || '';
+    if (!name && tag === 'input') {
+      const t = (el.getAttribute('type') || '').toLowerCase();
+      if (t === 'submit' || t === 'button') name = el.getAttribute('value') || '';
+    }
+    if (!name) name = (he.innerText || el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 80);
+    const attributes: Record<string, string> = {};
+    for (const a of ['id', 'name', 'placeholder', 'aria-label', 'type', 'href', 'title', 'data-testid', 'data-qa', 'data-test', 'role']) {
+      const v = el.getAttribute(a);
+      if (v) attributes[a] = v;
+    }
+    out.push({
+      kaizenId, role, accessibleName: name, attributes,
+      textContent: (el.textContent || '').trim().replace(/\s+/g, ' ').slice(0, 100),
+      tagName: tag, parentContext: '',
+      centerPoint: { x: Math.round(r.x + r.width / 2), y: Math.round(r.y + r.height / 2) },
+    });
+  }
+  return out;
+};
 
 // ── Selector escaping helpers ─────────────────────────────────────────────────
 

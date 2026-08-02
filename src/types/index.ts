@@ -125,6 +125,13 @@ export type CandidateNode = {
    * Populated by PlaywrightDOMPruner; used only in LLM prompt formatting.
    */
   parentContext?: string;
+  /**
+   * URL of the IFRAME this element lives in, when it was gathered from a child frame
+   * (e.g. a third-party cookie-consent CMP). Undefined for main-document elements.
+   * The execution engine locates + acts on the element WITHIN this frame; such
+   * elements are session-only and never cached (frame URLs carry per-session tokens).
+   */
+  frameUrl?: string;
 };
 
 // ─── Element Resolution ───────────────────────────────────────────────────────
@@ -188,6 +195,12 @@ export type SelectorSet = {
    * instance that produced this match lives in the worker process).
    */
   archetypeName?: string | null;
+  /**
+   * URL of the IFRAME the resolved element lives in (from CandidateNode.frameUrl).
+   * When set, the execution engine locates + acts within that frame instead of the
+   * top document. Undefined for ordinary main-document elements.
+   */
+  frameUrl?: string;
 };
 
 export type ResolutionContext = {
