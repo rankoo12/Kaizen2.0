@@ -17,7 +17,7 @@
 import * as React from 'react';
 import { createPortal } from 'react-dom';
 import { I, STATUS, StatusBadge, StatusDot } from './icons';
-import { Toolbar, Seg, Stat, Sparkline, Menu, Disclose } from './chrome';
+import { Toolbar, Seg, Stat, Sparkline, Menu, Disclose, ConfirmSheet } from './chrome';
 import { fmt, SOURCES } from './data';
 import { LineView } from './line-view';
 import { RunCompleteHUD, type RunPayoff } from './game';
@@ -220,6 +220,11 @@ function Inspector({ sr, text, runId, onVerdict, showToast }: any) {
   const [busy, setBusy] = uSr<string | null>(null);
   const tier = resolutionTier(sr.resolutionSource);
   const verdict = sr.userVerdict as 'passed' | 'failed' | null;
+  /* Only pgvector_element and pgvector_step write similarity_score — measured across
+     13,198 live step_results rows, where every other source was null (§5 of
+     docs/specs/roadmap/spec-phase-0-plumbing.md). Gate on the source rather than on the
+     value so a stray number from another tier can't be presented as a match score. */
+  const isVectorTier = sr.resolutionSource === 'pgvector_element' || sr.resolutionSource === 'pgvector_step';
 
   async function setVerdict(v: 'passed' | 'failed') {
     setBusy(v);
@@ -326,6 +331,14 @@ function Inspector({ sr, text, runId, onVerdict, showToast }: any) {
                 {tier.cached
                   ? `Recalled from memory (${tier.code} · ${tier.label}) — no model call, no tokens.`
                   : 'No memory matched, so the model read the page and picked the element. It is learned now.'}
+                {/* Only the two vector tiers measure a similarity; every other tier matched
+                    an exact key or a pattern, where a percentage would be invented. */}
+                {isVectorTier && sr.similarityScore != null && (
+                  <> The nearest remembered element scored{' '}
+                    <span className="num" style={{ fontWeight: 600, color: 'var(--cache)' }}>
+                      {(sr.similarityScore * 100).toFixed(1)}%
+                    </span>{' '}similarity.</>
+                )}
               </div>
             : <div style={{ fontSize: 13, color: 'var(--text-3)', lineHeight: 1.5 }}>This step did not need to find an element.</div>}
           {sr.selectorUsed && <>
@@ -333,10 +346,16 @@ function Inspector({ sr, text, runId, onVerdict, showToast }: any) {
             <div className="num" style={{ fontSize: 12, background: 'var(--fill)', padding: '8px 10px', borderRadius: 7, wordBreak: 'break-all', lineHeight: 1.5 }}>{sr.selectorUsed}</div>
           </>}
           <div style={{ display: 'flex', marginTop: 11, border: '.5px solid var(--sep)', borderRadius: 8, overflow: 'hidden' }}>
-            {[['Duration', sr.durationMs != null ? fmt.ms(sr.durationMs) : '—'],
+            {([['Duration', sr.durationMs != null ? fmt.ms(sr.durationMs) : '—'],
               ['Tokens', sr.tokens ? fmt.n(sr.tokens) : '0'],
-              ['Candidates', sr.domCandidates ? String(sr.domCandidates.length) : '—']].map(([l, v], k) => (
-              <div key={l} style={{ flex: 1, padding: '8px 11px', borderRight: k < 2 ? '.5px solid var(--sep)' : 'none' }}>
+              ['Candidates', sr.domCandidates ? String(sr.domCandidates.length) : '—'],
+              // Omitted rather than shown as '—' on the ~97% of steps that have no
+              // similarity: an empty cell reads as a missing measurement, when in fact
+              // the tier never takes one.
+              ...(isVectorTier && sr.similarityScore != null
+                ? [['Match', `${(sr.similarityScore * 100).toFixed(1)}%`]] : []),
+            ] as [string, string][]).map(([l, v], k, arr) => (
+              <div key={l} style={{ flex: 1, padding: '8px 11px', borderRight: k < arr.length - 1 ? '.5px solid var(--sep)' : 'none' }}>
                 <div style={{ fontSize: 11, fontWeight: 600, color: 'var(--text-3)' }}>{l}</div>
                 <div className="num" style={{ fontSize: 13, fontWeight: 600, marginTop: 1 }}>{v}</div>
               </div>
@@ -483,6 +502,7 @@ export function RunScreen({ caseId, runId: initialRunId, initialStepId, caseName
   const [selId, setSelId] = uSr<string | null>(initialStepId ?? null);
   const [menu, setMenu] = uSr(false);
   const [rerunning, setRerunning] = uSr(false);
+  const [confirmCancel, setConfirmCancel] = uSr(false);
   const [payoff, setPayoff] = uSr<RunPayoff | null>(null);
   /* The HUD is a reward for watching a run finish, so it only fires when this screen
      saw the transition from running to terminal. Opening a historical run must not
@@ -588,13 +608,45 @@ export function RunScreen({ caseId, runId: initialRunId, initialStepId, caseName
     if (id) { setRunId(id); setSelId(null); setTab('steps'); }
   }
 
+  /* Cancel signals the worker via Redis and answers 202 — the run reaches `cancelled`
+     when the worker next checks between steps, which useRunDetail's 2s poll picks up.
+     The refetch here only removes that lag. A 409 means the run finished between render
+     and click: the user's intent is already satisfied, so say what happened instead of
+     showing an error. */
+  async function cancelRun() {
+    if (!effectiveRunId) return;
+    try {
+      // No Content-Type and no body: Fastify 400s an empty body when the header claims
+      // JSON, and this endpoint takes no payload.
+      const res = await fetch(`/api/proxy/runs/${effectiveRunId}/cancel`, { method: 'POST' });
+      if (res.status === 202) {
+        showToast('Cancelling — the run stops after the current step', 'success');
+      } else if (res.status === 200) {
+        showToast('That run was already cancelled', 'info');   // idempotent re-cancel
+      } else if (res.status === 409) {
+        showToast('That run had already finished', 'info');    // passed / failed / healed
+      } else {
+        showToast('Could not cancel that run', 'error');
+      }
+    } catch {
+      showToast('Could not cancel that run', 'error');
+    }
+    refetchRun();
+  }
+
   // The case detail is authoritative; caseName is only the label we arrived with.
   const title = detail?.name || caseName || 'Run';
+
+  /* What this run actually executed against, not what the case points at today. The two
+     diverge when a run overrides baseUrl, or when the case is edited after the fact —
+     showing the case's current URL would misattribute the evidence on screen. */
+  const runEnv = (run?.environmentUrl || detail?.baseUrl || '').replace(/^https?:\/\//, '');
+  const cancellable = !!run && !TERMINAL_RUN_STATUSES.includes(run.status);
 
   return (
     <>
       <Toolbar back={onBack} title={title}
-        sub={<span className="num">{effectiveRunId ? `#${effectiveRunId.slice(0, 8)} · ` : ''}{(detail?.baseUrl || '').replace(/^https?:\/\//, '')}{run?.triggeredBy ? ` · ${run.triggeredBy}` : ''}</span>}>
+        sub={<span className="num">{effectiveRunId ? `#${effectiveRunId.slice(0, 8)} · ` : ''}{runEnv}{run?.triggeredBy ? ` · ${run.triggeredBy}` : ''}</span>}>
         <Seg value={tab} onChange={setTab} options={[
           { value: 'steps', label: 'Steps' }, { value: 'line', label: 'Line' },
           { value: 'activity', label: 'Activity' }, { value: 'history', label: 'History' },
@@ -608,6 +660,9 @@ export function RunScreen({ caseId, runId: initialRunId, initialStepId, caseName
             { label: 'Edit steps', icon: 'settings', onClick: () => onEdit && onEdit() },
             { label: 'Refresh now', icon: 'runs', onClick: refetchRun },
             { label: 'Copy run id', icon: 'copy', onClick: () => { if (effectiveRunId) { navigator.clipboard?.writeText(effectiveRunId); showToast('Run id copied', 'success'); } } },
+            // Only offered while the run can actually be cancelled — a terminal run gets
+            // no affordance at all, rather than one that errors when pressed.
+            ...(cancellable ? [{ label: 'Cancel run', icon: 'x', onClick: () => setConfirmCancel(true) }] : []),
           ]} />}
         </div>
       </Toolbar>
@@ -722,6 +777,15 @@ export function RunScreen({ caseId, runId: initialRunId, initialStepId, caseName
       </div>
 
       {payoff && <RunCompleteHUD payoff={payoff} onClose={() => setPayoff(null)} />}
+
+      {confirmCancel && (
+        <ConfirmSheet title="Cancel this run?"
+          message="The run stops after the step it's on. Steps that already finished keep their results and screenshots; the rest never execute."
+          confirmLabel="Cancel run"
+          dismissLabel="Keep running"
+          onConfirm={cancelRun}
+          onClose={() => setConfirmCancel(false)} />
+      )}
     </>
   );
 }

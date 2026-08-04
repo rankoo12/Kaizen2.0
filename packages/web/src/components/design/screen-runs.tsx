@@ -27,6 +27,13 @@ function relWhen(iso?: string | null): string {
   return new Date(iso).toLocaleDateString();
 }
 
+/** Host of the URL this run executed against. The full URL is too long for a list row,
+ *  and the host is the part that answers "which environment was this?". */
+function hostOf(url?: string | null): string | null {
+  if (!url) return null;
+  try { return new URL(url).hostname; } catch { return null; }
+}
+
 export function RunsScreen({ onOpen }: { onOpen: (r: RunSummary) => void }) {
   const { user } = useAuth();
   const [runs, setRuns] = uSf<RunSummary[]>([]);
@@ -106,6 +113,13 @@ export function RunsScreen({ onOpen }: { onOpen: (r: RunSummary) => void }) {
           </div>
           {list.map((r) => {
             const live = r.status === 'running' || r.status === 'queued';
+            const host = hostOf(r.environmentUrl);
+            // Progress needs a denominator the run itself owns. totalSteps is stamped at
+            // enqueue; it's null only for runs that predate migration 028 and had nothing
+            // to backfill from, and those show the old text rather than a fake meter.
+            const done = r.completedSteps ?? 0;
+            const showMeter = live && r.totalSteps != null && r.totalSteps > 0;
+            const pct = showMeter ? Math.min(100, (done / (r.totalSteps as number)) * 100) : 0;
             return (
               <div className="row" key={r.id} onClick={() => onOpen(r)}>
                 <div style={{ flex: 1, minWidth: 0 }}>
@@ -118,9 +132,21 @@ export function RunsScreen({ onOpen }: { onOpen: (r: RunSummary) => void }) {
                   {live
                     ? <div style={{ display: 'flex', alignItems: 'center', gap: 8, marginTop: 4 }}>
                         <span className="spinner" style={{ width: 11, height: 11 }} />
-                        <span style={{ fontSize: 11, color: 'var(--accent-text)' }}>{r.status === 'queued' ? 'waiting for a browser' : 'running · polling'}</span>
+                        <span style={{ fontSize: 11, color: 'var(--accent-text)', whiteSpace: 'nowrap' }}>
+                          {r.status === 'queued'
+                            ? 'waiting for a browser'
+                            : showMeter ? `step ${Math.min(done + 1, r.totalSteps as number)} of ${r.totalSteps}` : 'running · polling'}
+                        </span>
+                        {showMeter && (
+                          <span className="meter" style={{ flex: '0 1 120px', minWidth: 40 }}>
+                            <i style={{ width: `${pct}%` }} />
+                          </span>
+                        )}
                       </div>
-                    : <div className="row-s">{r.suiteName ?? '—'}</div>}
+                    : <div className="row-s">
+                        {r.suiteName ?? '—'}
+                        {host && <><span style={{ margin: '0 6px', color: 'var(--text-3)' }}>·</span><span className="num">{host}</span></>}
+                      </div>}
                 </div>
                 <span style={{ width: 84 }}><StatusBadge status={r.status} size="sm" /></span>
                 <span className="num hide-lg" style={{ width: 80, textAlign: 'right', fontSize: 12, color: live ? 'var(--text-3)' : 'var(--text)' }}>

@@ -47,6 +47,11 @@ export function useRunDetail(runId: string | null | undefined) {
           completedAt: raw.completed_at,
           durationMs: raw.duration_ms || null,
           totalTokens: raw.total_tokens || null,
+          environmentUrl: raw.environment_url ?? null,
+          totalSteps: raw.total_steps ?? null,
+          // The detail response carries the step rows themselves, so the finished count
+          // is exactly how many arrived — no separate query needed.
+          completedSteps: (raw.stepResults || []).length,
           stepResults: (raw.stepResults || []).map((sr: any): StepResult => ({
             id: sr.id,
             stepId: sr.step_id,
@@ -65,6 +70,9 @@ export function useRunDetail(runId: string | null | undefined) {
             userVerdict: sr.user_verdict || null,
             capturedName: sr.captured_name || null,
             capturedValue: sr.captured_value || null,
+            // ?? not || — 0 is a real similarity, and coercing it to null would report
+            // "not measured" for a measurement that did happen.
+            similarityScore: sr.similarity_score ?? null,
             // The API attaches these per step; without mapping them the run screen has
             // no way to show what broke or what selector replaced it.
             healingEvents: (sr.healingEvents || []).map((h: any): HealingEvent => ({
