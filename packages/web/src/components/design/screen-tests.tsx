@@ -22,7 +22,12 @@ function CaseRow({ c, sel, onSelect, onOpen, onRun, onEdit, onDelete, rowRef }: 
       onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onOpen(); } }}>
       <div style={{ flex: 1, minWidth: 0 }}>
         <div className="row-t" title={c.name}>{c.name}</div>
-        <div className="row-s num">{c.baseUrl.replace(/^https?:\/\//, '')}</div>
+        <div className="row-s">
+          <span className="num">{c.baseUrl.replace(/^https?:\/\//, '')}</span>
+          {/* Omitted entirely when unknown — a pre-030 case has no author, and "Unknown"
+              would read as a person rather than an absent record. */}
+          {c.author && <><span style={{ margin: '0 6px', color: 'var(--text-3)' }}>·</span>{c.author}</>}
+        </div>
       </div>
       <div className="num" style={{ width: 74, flex: 'none', textAlign: 'right', fontSize: 12, fontWeight: 600, color: c.lastCost === 0 || c.lastCost == null ? 'var(--text-2)' : 'var(--text)' }}>
         {cost}
@@ -62,7 +67,7 @@ export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit
     if (filter === 'failing' && !(c.status === 'failed' || c.status === 'cancelled')) return false;
     if (filter === 'healed' && c.status !== 'healed') return false;
     if (filter === 'passed' && c.status !== 'passed') return false;
-    if (q && !(`${c.name} ${c.suiteName} ${c.baseUrl}`.toLowerCase().includes(q.toLowerCase()))) return false;
+    if (q && !(`${c.name} ${c.suiteName} ${c.baseUrl} ${c.author}`.toLowerCase().includes(q.toLowerCase()))) return false;
     return true;
   }), [cases, q, filter, suiteFilter]);
 
