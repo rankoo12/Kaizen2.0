@@ -85,10 +85,15 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
     // Persist run record
     const pool = getPool();
     const { rows } = await pool.query(
-      `INSERT INTO runs (tenant_id, triggered_by, status, environment_url)
-       VALUES ($1, 'api', 'queued', $2)
+      // total_steps is stamped here because this is the only moment the run's own
+      // length is known for certain. It can't be read back off the case later —
+      // test_steps are immutable and versioned, so an edit mid-run would move the
+      // denominator under a live progress meter.
+      // Spec: docs/specs/roadmap/spec-phase-0-plumbing.md §3
+      `INSERT INTO runs (tenant_id, triggered_by, status, environment_url, total_steps)
+       VALUES ($1, 'api', 'queued', $2, $3)
        RETURNING id`,
-      [tenantId, baseUrl],
+      [tenantId, baseUrl, compiledSteps.length],
     );
     const runId: string = rows[0].id;
 
@@ -135,8 +140,13 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
     const pool = getPool();
     const { rows } = await pool.query(
       `SELECT r.id, r.case_id, r.suite_id, r.status, r.triggered_by,
-              r.created_at, r.completed_at,
+              r.created_at, r.completed_at, r.environment_url, r.total_steps,
               (EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) * 1000)::int AS duration_ms,
+              -- Live progress: how many steps have finished. Pairs with total_steps
+              -- (stamped at enqueue) to give "step 6 of 10" on a running row without
+              -- reading the case, whose step set can change mid-run.
+              COALESCE((SELECT COUNT(*)::int FROM step_results sr
+                         WHERE sr.run_id = r.id), 0) AS completed_steps,
               -- Run-scoped: step_results carry run_id, billing_events do not. Summing
               -- billing rows by time window dropped any call recorded outside the run's
               -- start/complete bracket, so the feed could show "free" for a run whose
@@ -173,6 +183,11 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
         completedAt: r.completed_at,
         durationMs:  r.duration_ms,
         totalTokens: r.total_tokens,
+        environmentUrl: r.environment_url ?? null,
+        // null for runs created before 028 that had no step results to backfill from —
+        // the UI omits the meter rather than showing a meaningless denominator.
+        totalSteps:     r.total_steps ?? null,
+        completedSteps: r.completed_steps,
       })),
       total,
       page,
@@ -183,7 +198,8 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
   app.get<{ Params: { id: string } }>('/runs/:id', { preHandler: [requireTenant] }, async (request, reply) => {
     const pool = getPool();
     const { rows } = await pool.query(
-      `SELECT id, tenant_id, status, triggered_by, started_at, completed_at, environment_url, created_at
+      `SELECT id, tenant_id, status, triggered_by, started_at, completed_at, environment_url,
+              total_steps, created_at
        FROM runs
        WHERE id = $1 AND tenant_id = $2`,
       [request.params.id, request.tenantId],

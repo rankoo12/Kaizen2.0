@@ -694,10 +694,13 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
 
     // Create run record and enqueue
     const { rows } = await getPool().query<{ id: string }>(
-      `INSERT INTO runs (tenant_id, suite_id, case_id, triggered_by, status, environment_url)
-       VALUES ($1, $2, $3, 'web', 'queued', $4)
+      // total_steps: the run's length at the moment it was created. Not derivable
+      // later — the case's active steps can change mid-run now that tests are
+      // editable. Spec: docs/specs/roadmap/spec-phase-0-plumbing.md §3
+      `INSERT INTO runs (tenant_id, suite_id, case_id, triggered_by, status, environment_url, total_steps)
+       VALUES ($1, $2, $3, 'web', 'queued', $4, $5)
        RETURNING id`,
-      [tenantId, caseData.suite_id, caseId, baseUrl],
+      [tenantId, caseData.suite_id, caseId, baseUrl, compiledSteps.length],
     );
     const runId = rows[0].id;
 

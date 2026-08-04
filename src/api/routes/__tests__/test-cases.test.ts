@@ -3,6 +3,7 @@ import { testCasesRoutes } from '../test-cases';
 import { getPool } from '../../../db/pool';
 import { withTenantTransaction } from '../../../db/transaction';
 import { usageThisMonth } from '../../../modules/billing-meter/usage';
+import { LearnedCompiler } from '../../../modules/test-compiler/learned.compiler';
 
 // Mock DB interactions
 jest.mock('../../../db/pool', () => ({
@@ -60,6 +61,13 @@ describe('testCasesRoutes - Token Limit Enforcement', () => {
     (withTenantTransaction as jest.Mock).mockImplementation(
       async (_tenantId, cb) => cb({ query: mockQuery })
     );
+    // The automocked compiler returns undefined, which used to be harmless because
+    // compiledSteps only ever reached the mocked queue. It now also supplies
+    // runs.total_steps, so give it the shape the real compiler returns: one compiled
+    // step per raw step. Set per-test — clearAllMocks() in afterEach resets it.
+    (LearnedCompiler.prototype.compileMany as jest.Mock).mockImplementation(
+      async (steps: string[]) => steps.map((raw) => ({ action: 'click', rawText: raw })),
+    );
   });
 
   afterEach(() => {
@@ -88,6 +96,27 @@ describe('testCasesRoutes - Token Limit Enforcement', () => {
 
     expect(response.statusCode).toBe(202);
     expect(JSON.parse(response.payload)).toMatchObject({ status: 'queued', runId: 'run-1' });
+  });
+
+  it('stamps the run with its own step count so progress has a stable denominator', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'case-1', suite_id: 'suite-1', base_url: 'http://test' }] });
+    mockQuery.mockResolvedValueOnce({ rows: [{ raw_text: 'click btn' }, { raw_text: 'type hello' }, { raw_text: 'verify done' }] });
+    mockQuery.mockResolvedValueOnce({ rows: [{ llm_budget_tokens_monthly: '5000' }] });
+    (usageThisMonth as jest.Mock).mockResolvedValue(0);
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'run-1' }] });
+
+    const response = await app.inject({
+      method: 'POST', url: '/cases/case-1/run', payload: { baseUrl: 'http://test' },
+    });
+    expect(response.statusCode).toBe(202);
+
+    // total_steps must come from what this run compiled, not from the case — the case's
+    // active steps can change mid-run now that tests are editable.
+    // Spec: docs/specs/roadmap/spec-phase-0-plumbing.md §3
+    const insert = mockQuery.mock.calls.find(([sql]) => String(sql).includes('INSERT INTO runs'));
+    expect(insert).toBeDefined();
+    expect(String(insert![0])).toContain('total_steps');
+    expect(insert![1]).toContain(3);
   });
 
   it('returns 402 TOKEN_LIMIT_REACHED when usage equals budget', async () => {
