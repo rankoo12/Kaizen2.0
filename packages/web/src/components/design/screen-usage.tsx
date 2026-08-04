@@ -25,6 +25,10 @@ type Usage = {
   budgetTokensMonthly: number;
   cycleStart: string; cycleEnd: string;
 };
+type HistoryPoint = {
+  day: string; runs: number; tokens: number;
+  lookups: number; cacheHits: number; heals: number; failures: number;
+};
 type ApiKey = {
   id: string; keyPrefix: string; scope: 'read_only' | 'execute' | 'admin';
   description: string | null; createdAt: string; lastUsedAt: string | null; expiresAt: string | null;
@@ -79,28 +83,52 @@ function QuotaMeter({ usage }: { usage: Usage }) {
   );
 }
 
-function CostChart({ runs }: { runs: RunSummary[] }) {
-  const max = Math.max(...runs.map((r) => r.totalTokens ?? 0), 1);
+/* The 30-day series, which is what the design's headline chart always meant. The old
+   chart plotted individual recent runs, so it could not show a trend over time - a busy
+   day and a quiet day occupied the same width. This plots days, with quiet days present
+   and empty, so the shape of the curve is honest.
+   Spec: docs/specs/roadmap/spec-cost-history-and-case-stats.md §4.1 */
+function HistoryChart({ series }: { series: HistoryPoint[] }) {
+  // Tokens PER RUN, not tokens total: a day with 20 cheap runs should not tower over a
+  // day with one expensive one. Per-run cost is the number that should trend to zero.
+  const perRun = series.map((p) => (p.runs > 0 ? p.tokens / p.runs : null));
+  const max = Math.max(1, ...perRun.map((v) => v ?? 0));
+
   return (
-    <div style={{ display: 'flex', alignItems: 'flex-end', gap: 3, height: 118 }}>
-      {runs.map((r, i) => {
-        const v = r.totalTokens ?? 0;
-        return (
-          <div key={r.id} style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', height: '100%', minWidth: 2 }}
-            title={`${r.caseName ?? 'run'} · ${fmt.n(v)} tokens`}>
-            <div style={{
-              height: `${Math.max(v / max * 100, v === 0 ? 2 : 4)}%`, borderRadius: 3,
-              // A free run is the win, so it gets the memory colour rather than the neutral.
-              background: v === 0 ? 'var(--heal)' : 'var(--accent)',
-              opacity: v === 0 ? .55 : .3 + (i / Math.max(runs.length - 1, 1)) * .7,
-              transition: 'height .5s',
-            }} />
-          </div>
-        );
-      })}
+    <div>
+      <div style={{ display: 'flex', alignItems: 'flex-end', gap: 2, height: 118 }}>
+        {series.map((p, i) => {
+          const v = perRun[i];
+          const idle = v === null;
+          const pct = idle ? 0 : Math.max((v / max) * 100, v === 0 ? 2 : 4);
+          return (
+            <div key={p.day} style={{ flex: 1, display: 'flex', flexDirection: 'column', justifyContent: 'flex-end', height: '100%', minWidth: 2 }}
+              title={idle
+                ? `${p.day} · no runs`
+                : `${p.day} · ${p.runs} run${p.runs === 1 ? '' : 's'} · ${Math.round(v)} tok/run · ${p.lookups ? Math.round(p.cacheHits / p.lookups * 100) : 0}% from memory`}>
+              <div style={{
+                height: idle ? '2px' : `${pct}%`,
+                borderRadius: 3,
+                // A free day is the win, so it keeps the memory colour. An idle day is a
+                // faint rule, so absence never reads as "cost nothing".
+                background: idle ? 'var(--sep)' : v === 0 ? 'var(--cache)' : 'var(--accent)',
+                opacity: idle ? 0.7 : 1,
+              }} />
+            </div>
+          );
+        })}
+      </div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 7, fontSize: 11, color: 'var(--text-3)' }} className="num">
+        <span>{series[0]?.day.slice(5)}</span>
+        <span>{series[series.length - 1]?.day.slice(5)}</span>
+      </div>
     </div>
   );
 }
+
+/* CostChart (one bar per recent run) was replaced by HistoryChart above. It could not
+   show a trend: a busy day and a quiet day took the same width, so the curve's shape
+   depended on how often you happened to run tests rather than on what they cost. */
 
 export function UsageScreen({ appearance, setAppearance, group, setGroup, showToast }: {
   appearance: string; setAppearance: (v: string) => void;
@@ -114,6 +142,7 @@ export function UsageScreen({ appearance, setAppearance, group, setGroup, showTo
   const [usage, setUsage] = uSu<Usage | null>(null);
   const [usageErr, setUsageErr] = uSu(false);
   const [runs, setRuns] = uSu<RunSummary[]>([]);
+  const [history, setHistory] = uSu<HistoryPoint[] | null>(null);
   const [members, setMembers] = uSu<Member[] | null>(null);
   // Holds the raw key from a creation, for the one sheet that ever displays it.
   const [newKey, setNewKey] = uSu<string | null>(null);
@@ -140,15 +169,26 @@ export function UsageScreen({ appearance, setAppearance, group, setGroup, showTo
       .then((r) => (r.ok ? r.json() : Promise.reject()))
       .then((b) => setRuns(b.runs ?? []))
       .catch(() => setRuns([]));
+    fetch(`/api/proxy/tenants/${tenantId}/usage/history?days=30`, { cache: 'no-store' })
+      .then((r) => (r.ok ? r.json() : Promise.reject()))
+      .then((b) => setHistory(b.series ?? []))
+      .catch(() => setHistory([]));   // needs admin; an empty curve is honest for other roles
   }, [tenantId]);
 
   // Oldest → newest so the chart reads left to right like a timeline.
   const costed = runs.filter((r) => r.totalTokens != null).slice().reverse();
   const free = costed.filter((r) => r.totalTokens === 0).length;
-  const firstCost = costed[0]?.totalTokens ?? null;
-  const lastCost = costed[costed.length - 1]?.totalTokens ?? null;
-  const maxCost = Math.max(0, ...costed.map((r) => r.totalTokens ?? 0));
-  const cheaper = firstCost && lastCost != null && firstCost > 0 ? Math.round((1 - lastCost / firstCost) * 100) : null;
+  /* Trend over the 30-day series, measured only across days that actually had runs -
+     an idle stretch is not a cost improvement, and counting it as one would be the
+     chart flattering itself. */
+  const activeDays = (history ?? []).filter((p) => p.runs > 0);
+  const perRunOn = (p: HistoryPoint) => p.tokens / p.runs;
+  const firstActive = activeDays.length ? perRunOn(activeDays[0]) : 0;
+  const lastActive = activeDays.length ? perRunOn(activeDays[activeDays.length - 1]) : 0;
+  const histMax = Math.max(0, ...activeDays.map(perRunOn));
+  const cheaper = activeDays.length > 1 && firstActive > 0
+    ? Math.round((1 - lastActive / firstActive) * 100)
+    : null;
 
   const loadKeys = uCu(async () => {
     if (!tenantId) return;
@@ -263,36 +303,40 @@ export function UsageScreen({ appearance, setAppearance, group, setGroup, showTo
             <div className="card" style={{ padding: 17 }}>
               <div style={{ display: 'flex', alignItems: 'flex-start', justifyContent: 'space-between', gap: 12 }}>
                 <div>
-                  <div className="card-t">Tokens per run</div>
+                  <div className="card-t">Tokens per run · last 30 days</div>
                   <div style={{ fontSize: 12, color: 'var(--text-3)', marginTop: 2 }}>
                     The line that matters: a mature test should cost close to nothing.
                   </div>
                 </div>
                 {cheaper != null && cheaper > 0 && (
                   <span className="badge" style={{ background: 'var(--pass-soft)', color: 'var(--pass)', height: 22, flex: 'none' }}>
-                    <I.arrowDown size={10} />{cheaper}% SINCE THE OLDEST
+                    <I.arrowDown size={10} />{cheaper}% SINCE {activeDays[0].day.slice(5)}
                   </span>
                 )}
               </div>
-              {!costed.length ? (
+              {history === null ? (
+                <div style={{ padding: '34px 0 6px', textAlign: 'center', fontSize: 13, color: 'var(--text-3)' }}>
+                  Loading 30 days…
+                </div>
+              ) : !activeDays.length ? (
                 <div style={{ padding: '34px 0 6px', textAlign: 'center', fontSize: 13, color: 'var(--text-3)' }}>
                   Run a test and the cost curve starts here.
                 </div>
-              ) : maxCost === 0 ? (
+              ) : histMax === 0 ? (
                 /* A chart of all-zeroes reads as broken, not as the win it is. */
                 <div style={{ display: 'flex', gap: 11, alignItems: 'center', marginTop: 14, padding: '14px 15px', background: 'var(--cache-soft)', borderRadius: 9 }}>
                   <I.db size={16} style={{ color: 'var(--cache)', flex: 'none' }} />
                   <div style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.5 }}>
-                    Every one of the last {costed.length} run{costed.length === 1 ? '' : 's'} cost <span className="num" style={{ fontWeight: 600, color: 'var(--cache)' }}>0</span> tokens —
+                    Every run in the last 30 days cost <span className="num" style={{ fontWeight: 600, color: 'var(--cache)' }}>0</span> tokens —
                     every element came from memory. There&rsquo;s no curve to plot until something needs the AI again.
                   </div>
                 </div>
               ) : (
                 <>
-                  <div style={{ marginTop: 15 }}><CostChart runs={costed} /></div>
+                  <div style={{ marginTop: 15 }}><HistoryChart series={history} /></div>
                   <div style={{ display: 'flex', justifyContent: 'space-between', marginTop: 8, fontSize: 11, color: 'var(--text-3)' }} className="num">
-                    <span>oldest kept · {fmt.n(firstCost as number)} tok</span>
-                    <span>newest · {fmt.n(lastCost as number)} tok</span>
+                    <span>{fmt.n(Math.round(firstActive))} tok/run on {activeDays[0].day.slice(5)}</span>
+                    <span>{fmt.n(Math.round(lastActive))} tok/run on {activeDays[activeDays.length - 1].day.slice(5)}</span>
                   </div>
                 </>
               )}
