@@ -176,9 +176,21 @@ describe('testCasesRoutes - Token Limit Enforcement', () => {
   // Regression: DELETE used to remove test_steps while step_results still pointed at
   // them, so deleting any case that had ever run failed with a 23503 FK violation.
   // Evidence (healing_events -> step_results) has to be cleared before the steps.
+  /** Answers the catalog probe the delete runs, so the test controls which schema the
+   *  route believes it is on. Spec: spec-keys-quota-authorship.md §3 */
+  function mockSchema({ testWriterPresent }: { testWriterPresent: boolean }) {
+    mockQuery.mockImplementation(async (sql: string) => {
+      const s = String(sql).replace(/\s+/g, ' ');
+      if (/information_schema\.columns/.test(s)) {
+        return { rows: [{ has_validation_col: testWriterPresent, has_generation_jobs: testWriterPresent }] };
+      }
+      if (/SELECT id FROM test_cases WHERE id/.test(s)) return { rows: [{ id: 'case-1' }] };
+      return { rows: [] };
+    });
+  }
+
   it('deletes a case that has run history in FK-safe order', async () => {
-    mockQuery.mockResolvedValue({ rows: [] });
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'case-1' }] }); // ownership check
+    mockSchema({ testWriterPresent: true });
 
     const response = await app.inject({ method: 'DELETE', url: '/cases/case-1' });
     expect(response.statusCode).toBe(204);
@@ -212,5 +224,23 @@ describe('testCasesRoutes - Token Limit Enforcement', () => {
     const releaseValidation = at(/UPDATE test_cases SET validation_run_id = NULL/);
     expect(releaseValidation).toBeGreaterThan(-1);
     expect(releaseValidation).toBeLessThan(runs);
+  });
+
+  it('still deletes when the test-writer schema is absent', async () => {
+    // The shape production has: 028_test_writer and 029_site_model live on an unmerged
+    // branch, so validation_run_id and generation_jobs do not exist there. Referencing
+    // either aborts the transaction, which made every delete 500 in production while
+    // passing locally on machines that had the extra migrations.
+    mockSchema({ testWriterPresent: false });
+
+    const response = await app.inject({ method: 'DELETE', url: '/cases/case-1' });
+    expect(response.statusCode).toBe(204);
+
+    const sql = mockQuery.mock.calls.map((c) => String(c[0]).replace(/\s+/g, ' '));
+    expect(sql.some((s) => /UPDATE test_cases SET validation_run_id/.test(s))).toBe(false);
+    expect(sql.some((s) => /UPDATE generation_jobs/.test(s))).toBe(false);
+    // The rest of the cascade must still happen — skipping is not the same as bailing out.
+    expect(sql.some((s) => /DELETE FROM runs/.test(s))).toBe(true);
+    expect(sql.some((s) => /DELETE FROM test_cases WHERE id/.test(s))).toBe(true);
   });
 });

@@ -11,12 +11,22 @@ export type Suite = {
   updatedAt: string;
 };
 
+/** Who wrote a test. Null for cases predating migration 030 and for anything created
+ *  through an API key, which has a tenant but no user behind it. Render null as nothing
+ *  — an absent author is a fact about the record, not a person we failed to name. */
+export type CaseAuthor = {
+  id: string;
+  displayName: string | null;
+  email: string;
+};
+
 export type CaseSummary = {
   id: string;
   name: string;
   baseUrl: string;
   createdAt: string;
   updatedAt: string;
+  createdBy: CaseAuthor | null;
   lastRun: {
     id: string;
     status: RunStatus;

@@ -22,6 +22,9 @@ export type DesignCase = {
   lastRun: string; // relative time; '' = never run
   runId: string | null;
   hasRun: boolean;
+  /** Display name of whoever wrote the test; '' when unknown (pre-030 cases, or a case
+   *  created through an API key). Empty renders as nothing, never as "Unknown". */
+  author: string;
 };
 
 export type DesignSuite = { id: string; name: string; desc: string; icon: string; count: number };
@@ -74,6 +77,9 @@ function toDesignCase(c: CaseSummary, s: Suite): DesignCase {
     lastRun: inFlight ? 'now' : relTime(lr?.completedAt),
     runId: lr?.id ?? null,
     hasRun: !!lr && !inFlight,
+    // Prefer the display name; fall back to the local part of the email rather than the
+    // whole address, which is too long for a list row.
+    author: c.createdBy ? (c.createdBy.displayName || c.createdBy.email.split('@')[0]) : '',
   };
 }
 
