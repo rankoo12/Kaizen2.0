@@ -226,10 +226,13 @@ export function Sheet({ title, children, footer, onClose, width }: any) {
   );
 }
 
-export function ConfirmSheet({ title, message, confirmLabel = 'Delete', onConfirm, onClose }: any) {
+/* dismissLabel exists because "Cancel run" as the confirm action put two buttons reading
+   "Cancel" side by side — the dismiss and the destructive one. Callers whose action is
+   itself a cancellation pass something unambiguous ("Keep running"). */
+export function ConfirmSheet({ title, message, confirmLabel = 'Delete', dismissLabel = 'Cancel', onConfirm, onClose }: any) {
   return (
     <Sheet title={title} onClose={onClose} width={400} footer={<>
-      <button className="btn lg" onClick={onClose}>Cancel</button>
+      <button className="btn lg" onClick={onClose}>{dismissLabel}</button>
       <button className="btn lg" style={{ background: 'var(--fail)', color: '#fff', borderColor: 'transparent' }}
         onClick={() => { onConfirm(); onClose(); }}>{confirmLabel}</button>
     </>}>

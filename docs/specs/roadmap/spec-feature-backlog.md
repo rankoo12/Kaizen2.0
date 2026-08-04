@@ -70,21 +70,38 @@ against this workspace's real failed heal (`LOGIC_FAILURE / EscalationStrategy /
 body`). The successful `was → now` branch reads the same verified fields but hasn't been
 observed live here yet — no successful heal exists in this workspace.
 
-### A2. Cancel a running run
-`POST /runs/:id/cancel` exists and works. The design's run menu has "Cancel run"; the
-port left it out. Wire it, show it only for non-terminal runs, and confirm before firing.
+### A2. Cancel a running run — ✅ DONE 2026-08-04
+`POST /runs/:id/cancel` existed and worked; nothing called it. Now in the run screen's
+overflow menu, present only while the run is non-terminal, behind a confirm sheet whose
+dismiss reads "Keep running" (two buttons saying "Cancel" was a mis-click waiting to
+happen). The three real outcomes are distinguished: 202 accepted, 200 already cancelled,
+409 already finished. Verified against a live run — cancelled at 0/3 steps.
+Spec: [spec-phase-0-plumbing.md](./spec-phase-0-plumbing.md).
 
 ### A3. Retries per step — ✅ DONE 2026-07-30
 `healing_events.attempts` — shipped with A1 as Attempts / Strategies / Healing time in the
 inspector's heal panel.
 
-### A4. Resolution confidence per step
-`step_results.similarity_score` (and `cache_hit`) exist and are not in the `/runs/:id`
-response mapping. The design showed a confidence percentage per step.
+### A4. Resolution confidence per step — ✅ DONE 2026-08-04 (scope corrected)
+The premise was wrong in two ways, both found by measuring the live table rather than
+reading the schema.
 
-### A5. Per-run environment
-`runs.environment_url` exists; neither the list nor the detail response returns it. The
-design's run subtitle was `#1284 · app.acme.io · CI`.
+`similarity_score` is populated by **only the two vector tiers** — 455 of 13,198 rows
+(3.4%), in a 0.966–1.000 band. A "Confidence" column would be blank on 97% of steps and
+would distinguish 99.0% from 100.0% on the rest. It ships as a **Match** cell and a line
+of prose on vector-resolved steps only.
+
+`cache_hit` has **never been written** — 0 of 13,198 rows, and no INSERT in `src/workers/`
+names it. It was dropped from the contract rather than plumbed. See
+[spec-phase-0-plumbing.md §5](./spec-phase-0-plumbing.md) for the measurement, and §5's
+follow-on: write it or drop the column.
+
+### A5. Per-run environment — ✅ DONE 2026-08-04
+`GET /runs/:id` already sent `environment_url` (it returns the raw row); the web mapper
+dropped it. The list neither selected nor returned it. Both fixed, and the run subtitle
+now shows **the run's own** environment rather than the case's current `base_url` — the
+two diverge when a run overrides `baseUrl` or the case is edited afterwards, which would
+misattribute the evidence on screen.
 
 ### A8. Selector provenance in the Brain — ✅ DONE 2026-08-02
 **Shipped** `GET /brain/selectors` now answers "where did this come from" from real data,
@@ -185,14 +202,26 @@ A failed machine is now red, hazard-striped, knocked off true, captioned `failed
 "Broke down — the step failed, the line stops here" legend entry. Failure outranks every
 other tone.
 
-### A6. Live progress in the Runs feed
-The design showed a progress meter and "step 6 of 10" on running rows. Derivable now from
-step-result count vs. the case's step count — the same derivation `screen-run.tsx`
-already does. Needs a `stepCount` + `completedSteps` pair on the list response.
+### A6. Live progress in the Runs feed — ✅ DONE 2026-08-04 (needed a migration)
+"Derivable from the case's step count" stopped being true when A9 shipped test editing in
+the same release: `test_steps` rows are immutable and versioned, so a case's active step
+set can change **while a run is in flight**, and the denominator would move under a live
+meter. Migration `028_run_total_steps` stamps `runs.total_steps` at enqueue (both call
+sites already hold the compiled array) and backfills history from `step_results`.
+Verified live: `0/3 → 1/3 → 2/3 → 3/3`.
 
-### A7. Restore the audit gate in CI
-`npm run audit:contrast` exists (`scripts/audit-contrast.mjs`) and passes at zero
-unreadable. Add it to the pipeline so the white-on-white class of regression can't return.
+### A7. Restore the audit gate in CI — ◐ PARTIAL 2026-08-04
+**There was no CI at all** — no `.github/`, no GitLab or CircleCI config. This was
+"create CI", not "add a step".
+
+*Shipped (A7a):* `.github/workflows/ci.yml` — typecheck (api + web), lint, and the unit
+suite on push and PR. Blocking, which required fixing the 7 pre-existing lint errors
+first: a gate that is red on arrival teaches everyone to ignore it.
+
+*Still open (A7b):* the contrast and mock audits. They drive a real browser against a
+logged-in app across three appearances, so they need Postgres, Redis, the API, the web
+server and a seeded tenant — an integration environment, not a lint step. Own spec, own
+job.
 
 ---
 

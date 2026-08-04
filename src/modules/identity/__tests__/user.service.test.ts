@@ -9,7 +9,6 @@
  */
 
 import { UserService } from '../user.service';
-import { IdentityError } from '../interfaces';
 
 // ─── Mock DB pool ─────────────────────────────────────────────────────────────
 
@@ -30,14 +29,6 @@ const mockEmail = {
 
 function makeService() {
   return new UserService(mockEmail);
-}
-
-// ─── Helpers ──────────────────────────────────────────────────────────────────
-
-function makeClientMock(queryResponses: Array<{ rows: unknown[]; rowCount?: number }>) {
-  const q = jest.fn();
-  queryResponses.forEach((res) => q.mockResolvedValueOnce(res));
-  return { query: q, release: jest.fn() };
 }
 
 beforeEach(() => jest.clearAllMocks());

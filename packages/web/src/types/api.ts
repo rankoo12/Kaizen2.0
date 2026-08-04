@@ -59,6 +59,14 @@ export type RunSummary = {
   completedAt: string | null;
   durationMs: number | null;
   totalTokens: number | null;
+  /** The URL this run executed against (`runs.environment_url`). */
+  environmentUrl: string | null;
+  /** Steps this run was created to execute, stamped at enqueue. Null for runs that
+   *  predate migration 028 and had no step results to backfill from. Not derived from
+   *  the case — an edit mid-run would move it. */
+  totalSteps: number | null;
+  /** Steps that have finished. Pairs with totalSteps for a live progress meter. */
+  completedSteps: number;
 };
 
 export type DomCandidate = {
@@ -107,6 +115,12 @@ export type StepResult = {
   capturedValue: string | null;
   /** Healing attempts on this step, oldest first. Empty when it never needed healing. */
   healingEvents: HealingEvent[];
+  /** Cosine similarity, populated ONLY by the two vector tiers (pgvector_element,
+   *  pgvector_step) — 3.4% of steps in practice. Every other tier leaves it null: an
+   *  exact Redis hit matched a key, not a neighbourhood, and the model produces no
+   *  similarity at all. Never render this as a blanket "confidence" column.
+   *  Measured, not assumed — docs/specs/roadmap/spec-phase-0-plumbing.md §5. */
+  similarityScore: number | null;
 };
 
 export type RunDetail = RunSummary & {
