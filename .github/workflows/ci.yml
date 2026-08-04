@@ -37,11 +37,22 @@ jobs:
         with:
           node-version: 20
           cache: npm
+          # Two lockfiles, because this is not an npm workspace: the root package.json
+          # has no `workspaces` field and packages/web carries its own package-lock.json.
+          cache-dependency-path: |
+            package-lock.json
+            packages/web/package-lock.json
 
       # ci, not install: fails loudly if package-lock.json and package.json disagree,
       # which is exactly what should stop a build rather than be silently reconciled.
-      - name: Install
+      - name: Install (api)
         run: npm ci
+
+      # Separate install for the same reason. Without it the web typecheck fails on
+      # missing react / next / clsx types — which is exactly how this workflow failed on
+      # its first run, while passing locally on a machine that already had them.
+      - name: Install (web)
+        run: npm ci --prefix packages/web
 
       - name: Typecheck (api)
         run: npm run typecheck
