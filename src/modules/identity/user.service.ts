@@ -308,7 +308,10 @@ export class UserService implements IUserService {
 
   // ─── Private helpers ───────────────────────────────────────────────────────
 
-  private async uniqueSlug(client: { query: Function }, base: string): Promise<string> {
+  private async uniqueSlug(
+    client: { query: (text: string, values?: unknown[]) => Promise<{ rows: unknown[] }> },
+    base: string,
+  ): Promise<string> {
     let slug = base;
     let attempt = 1;
     for (;;) {

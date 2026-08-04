@@ -9,7 +9,6 @@
  */
 
 import { MembershipService } from '../membership.service';
-import { IdentityError } from '../interfaces';
 
 // ─── Mock DB pool ─────────────────────────────────────────────────────────────
 

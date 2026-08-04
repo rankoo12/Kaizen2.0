@@ -1,0 +1,59 @@
+# Static gates for every push and pull request.
+#
+# Scope is deliberate: these are the checks that need nothing but the source tree, so
+# they finish in a couple of minutes and can be required on a PR without making the
+# pipeline something people learn to wait out.
+#
+# The contrast and mock audits are NOT here. They drive a real browser against a
+# logged-in app across three appearances, which needs Postgres, Redis, the API, the web
+# server and a seeded tenant — an integration environment, not a lint step. That lands
+# as its own job with its own spec (A7b).
+#
+# Spec: docs/specs/roadmap/spec-phase-0-plumbing.md §7
+
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+# A new push to the same branch makes the previous run irrelevant — cancel it rather
+# than paying for both.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  static:
+    name: Typecheck, lint, unit tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+
+      # ci, not install: fails loudly if package-lock.json and package.json disagree,
+      # which is exactly what should stop a build rather than be silently reconciled.
+      - name: Install
+        run: npm ci
+
+      - name: Typecheck (api)
+        run: npm run typecheck
+
+      - name: Typecheck (web)
+        run: npm run typecheck:web
+
+      # Blocking, not advisory. The 7 pre-existing errors were fixed in the same change
+      # that added this workflow, because a gate that is red on arrival teaches everyone
+      # to ignore it.
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test

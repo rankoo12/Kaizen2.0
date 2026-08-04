@@ -18,6 +18,7 @@
     "start:persistence": "node dist/services/persistence/index.js",
     "db:migrate": "tsx scripts/migrate.ts",
     "typecheck": "tsc --noEmit",
+    "typecheck:web": "tsc --noEmit -p packages/web/tsconfig.json",
     "lint": "eslint src --ext .ts",
     "test": "jest",
     "test:watch": "jest --watch",
