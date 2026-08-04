@@ -209,10 +209,17 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
         last_run_id: string | null; last_run_status: string | null; last_run_completed_at: Date | null;
         last_run_duration_ms: number | null; last_run_total_tokens: number | null;
         author_id: string | null; author_name: string | null; author_email: string | null;
+        runs: string | null; passed: string | null; healed: string | null; failed: string | null;
+        avg_duration_ms: number | null;
+        lookups: string | null; cached: string | null;
+        first_run_tokens: string | null;
       }>(
         // LEFT JOIN, not inner: cases predating migration 030 have no created_by, and so
         // do cases created through an API key. They must still appear in the list.
         `SELECT tc.id, tc.name, tc.base_url, tc.created_at, tc.updated_at,
+                st.runs, st.passed, st.healed, st.failed, st.avg_duration_ms,
+                ch.lookups, ch.cached,
+                ft.tokens        AS first_run_tokens,
                 au.id            AS author_id,
                 au.display_name  AS author_name,
                 au.email         AS author_email,
@@ -238,6 +245,35 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
            LIMIT 1
          ) lr ON true
          LEFT JOIN users au ON au.id = tc.created_by
+         -- Per-case aggregates. Computed rather than read from a rollup table: measured
+         -- at ~1.1ms for a whole tenant, against a rollup's cost of a write seam in
+         -- worker.ts and a staleness class of bug.
+         -- Spec: docs/specs/roadmap/spec-cost-history-and-case-stats.md §2
+         LEFT JOIN LATERAL (
+           SELECT COUNT(*)                                              AS runs,
+                  COUNT(*) FILTER (WHERE ar.status = 'passed')          AS passed,
+                  COUNT(*) FILTER (WHERE ar.status = 'healed')          AS healed,
+                  COUNT(*) FILTER (WHERE ar.status = 'failed')          AS failed,
+                  AVG(EXTRACT(EPOCH FROM (ar.completed_at - ar.started_at)) * 1000)
+                    FILTER (WHERE ar.completed_at IS NOT NULL)::int     AS avg_duration_ms
+             FROM runs ar
+            WHERE ar.case_id = tc.id
+         ) st ON true
+         -- Lookups vs. lookups that avoided the model. resolution_source, not
+         -- step_results.cache_hit — that column has never been written.
+         LEFT JOIN LATERAL (
+           SELECT COUNT(*) FILTER (WHERE sr2.resolution_source IS NOT NULL) AS lookups,
+                  COUNT(*) FILTER (WHERE sr2.resolution_source IS NOT NULL
+                                     AND sr2.resolution_source <> 'llm')    AS cached
+             FROM runs ar2
+             JOIN step_results sr2 ON sr2.run_id = ar2.id
+            WHERE ar2.case_id = tc.id
+         ) ch ON true
+         -- The pair that shows the claim on one row: what learning cost, what it costs now.
+         LEFT JOIN LATERAL (
+           SELECT (SELECT COALESCE(SUM(s.tokens_used), 0) FROM step_results s WHERE s.run_id = fr.id) AS tokens
+             FROM runs fr WHERE fr.case_id = tc.id ORDER BY fr.created_at ASC LIMIT 1
+         ) ft ON true
          WHERE tc.suite_id = $1 AND tc.tenant_id = $2
          ORDER BY tc.created_at DESC`,
         [suiteId, tenantId],
@@ -796,6 +832,14 @@ function mapCaseSummary(row: {
   author_id?: string | null;
   author_name?: string | null;
   author_email?: string | null;
+  runs?: string | null;
+  passed?: string | null;
+  healed?: string | null;
+  failed?: string | null;
+  avg_duration_ms?: number | null;
+  lookups?: string | null;
+  cached?: string | null;
+  first_run_tokens?: string | null;
 }) {
   return {
     id:        row.id,
@@ -818,5 +862,22 @@ function mapCaseSummary(row: {
       durationMs:  row.last_run_duration_ms,
       totalTokens: row.last_run_total_tokens,
     } : null,
+    stats: (() => {
+      const lookups = Number(row.lookups ?? 0);
+      return {
+        runs:   Number(row.runs   ?? 0),
+        passed: Number(row.passed ?? 0),
+        healed: Number(row.healed ?? 0),
+        failed: Number(row.failed ?? 0),
+        avgDurationMs: row.avg_duration_ms ?? null,
+        // null, not 0, when nothing has ever been looked up. Zero means "every lookup
+        // needed the model", which is the opposite of "nothing measured yet", and the
+        // Tests screen must not render them the same.
+        cacheHitPct: lookups > 0 ? Math.round((Number(row.cached ?? 0) / lookups) * 100) : null,
+        // What learning cost, beside what it costs now — the product's claim on one row.
+        firstRunTokens: row.first_run_tokens != null ? Number(row.first_run_tokens) : null,
+        lastRunTokens:  row.last_run_total_tokens ?? null,
+      };
+    })(),
   };
 }
