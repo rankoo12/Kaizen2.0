@@ -129,4 +129,89 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
       } catch (err) { return handle(err, reply); }
     },
   );
+
+  /* ── API keys ───────────────────────────────────────────────────────────────
+     The /api-key route above is the legacy single-key path: it wipes every key the
+     tenant holds and always mints `admin`. These replace it with independent, scoped,
+     individually revocable keys. It stays reachable so existing callers keep working.
+     Spec: docs/specs/roadmap/spec-keys-quota-authorship.md §4 */
+
+  /** The raw key is unrecoverable after creation — only its SHA-256 hash is stored. */
+  const toKeySummary = (k: {
+    id: string; key_prefix: string; scope: string; description: string | null;
+    created_at: Date; last_used_at: Date | null; expires_at: Date | null;
+  }) => ({
+    id: k.id,
+    keyPrefix: k.key_prefix,
+    scope: k.scope,
+    description: k.description,
+    createdAt: k.created_at,
+    lastUsedAt: k.last_used_at,
+    expiresAt: k.expires_at,
+  });
+
+  const CreateKeyBody = z.object({
+    description: z.string().min(1).max(120).optional(),
+    scope: z.enum(['read_only', 'execute', 'admin']).default('execute'),
+    // Accepts a date or a datetime; stored as-is and enforced by requireApiKey.
+    expiresAt: z.string().datetime().optional(),
+  });
+
+  // ── GET /tenants/:tenantId/keys ───────────────────────────────────────────
+  app.get<{ Params: { tenantId: string } }>(
+    '/tenants/:tenantId/keys',
+    { preHandler: [requireAuth, requireRole('admin')] },
+    async (request, reply) => {
+      if (request.params.tenantId !== request.tenantId) {
+        return reply.status(403).send({ error: 'FORBIDDEN' });
+      }
+      const keys = await tenantService.listApiKeys(request.params.tenantId);
+      return reply.send({ keys: keys.map(toKeySummary) });
+    },
+  );
+
+  // ── POST /tenants/:tenantId/keys ──────────────────────────────────────────
+  app.post<{ Params: { tenantId: string } }>(
+    '/tenants/:tenantId/keys',
+    { preHandler: [requireAuth, requireRole('admin')] },
+    async (request, reply) => {
+      if (request.params.tenantId !== request.tenantId) {
+        return reply.status(403).send({ error: 'FORBIDDEN' });
+      }
+      const parsed = CreateKeyBody.safeParse(request.body ?? {});
+      if (!parsed.success) {
+        return reply.status(400).send({ error: 'INVALID_REQUEST', details: parsed.error.issues });
+      }
+      // An admin-scoped key can do everything the admin API can, including minting more
+      // keys — so it takes an owner to create one. Admins can still issue read_only and
+      // execute keys, which is what CI actually needs.
+      if (parsed.data.scope === 'admin' && request.role !== 'owner') {
+        return reply.status(403).send({
+          error: 'OWNER_REQUIRED',
+          message: 'Only the workspace owner can create an admin-scoped key.',
+        });
+      }
+      const { key, rawKey } = await tenantService.createApiKey(request.params.tenantId, {
+        description: parsed.data.description ?? null,
+        scope: parsed.data.scope,
+        expiresAt: parsed.data.expiresAt ?? null,
+      });
+      // rawKey appears in this response and nowhere else, ever.
+      return reply.status(201).send({ key: toKeySummary(key), rawKey });
+    },
+  );
+
+  // ── DELETE /tenants/:tenantId/keys/:keyId ─────────────────────────────────
+  app.delete<{ Params: { tenantId: string; keyId: string } }>(
+    '/tenants/:tenantId/keys/:keyId',
+    { preHandler: [requireAuth, requireRole('admin')] },
+    async (request, reply) => {
+      if (request.params.tenantId !== request.tenantId) {
+        return reply.status(403).send({ error: 'FORBIDDEN' });
+      }
+      const removed = await tenantService.revokeApiKey(request.params.tenantId, request.params.keyId);
+      if (!removed) return reply.status(404).send({ error: 'NOT_FOUND' });
+      return reply.status(204).send();
+    },
+  );
 }
