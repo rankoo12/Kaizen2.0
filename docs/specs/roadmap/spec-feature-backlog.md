@@ -246,10 +246,34 @@ legacy single-key path.
 **Acceptance** A key created in the UI can trigger a run via `POST /runs` with
 `X-API-Key`; revoking it makes that call 401.
 
-### B2. Test drafts
-`test_cases.status` already allows `draft | active | validating | rejected | archived`.
-The design's author screen had "Save draft"; the port dropped it. Needs the create/patch
-routes to accept status, the list to filter, and a draft affordance in the Tests list.
+### ✅ DONE 2026-08-04 — with two corrections
+**The reality above was wrong.** `rotateApiKey` does write a real `api_keys` row; it is not
+the legacy `tenants.api_key_hash` path. The actual problems were worse: it **deleted every
+key the tenant had** on each rotation (breaking every other pipeline), always minted
+`admin` scope, and offered no description, expiry or per-key revoke — all columns that
+already existed.
+
+All three routes shipped, with an owner-only gate on minting an `admin`-scoped key.
+Verified live: an execute key authenticates on `POST /runs` (202), a `read_only` key is
+refused by the scope guard (403), creating a second key does not invalidate the first, and
+a revoked key returns 401.
+
+**The header in the acceptance criterion is also wrong** — `requireApiKey` reads
+`Authorization: Bearer`, never `X-API-Key`. The Usage screen's CI snippet documented the
+wrong header, the wrong body, and a route (`POST /cases/:id/run`) that rejects API keys
+outright. Corrected, and the remaining gap — keys cannot run a *saved* test — is written up
+in [spec-keys-quota-authorship.md §4.1](./spec-keys-quota-authorship.md) as work for B11.
+
+### B2. Test drafts — ⛔ BLOCKED
+`test_cases.status` exists **on developer machines only**. It is created by
+`028_test_writer`, which lives on the unmerged `feat/test-writer/p0-specs` branch and has
+no file in `db/migrations/`. A database built from this repo — production, CI, any fresh
+clone — has no `status` column at all.
+
+Adding a competing migration now would conflict with `028_test_writer` when it lands, so
+this waits for that merge and then inherits the column. See
+[spec-keys-quota-authorship.md §2](./spec-keys-quota-authorship.md) for the full drift
+finding, including the production bug it had already caused.
 
 ### B3. Token quota + billing cycle
 **Design promised** a quota meter: "1,284,300 of 2,000,000 this cycle", % remaining,
@@ -262,6 +286,17 @@ Usage screen shows tokens spent with no denominator.
 **Work** Add `budgetTokensMonthly` and a cycle boundary to `GET /tenants/:id/usage`.
 Decide the cycle rule (calendar month vs. anniversary) — `usageThisMonth` currently
 implies calendar month, so state it. Then the meter + "resets on" copy.
+
+### ✅ DONE 2026-08-04
+`GET /tenants/:id/usage` now returns `budgetTokensMonthly`, `cycleStart` and `cycleEnd`.
+**The cycle is a calendar month**, stated rather than implied, because that is the boundary
+`usageThisMonth` enforces against — a meter resetting on a different day than enforcement
+would be worse than no meter.
+
+Budget `0` gets its own copy, not an empty bar: it means no allowance is configured
+(migration 019's default for new tenants) and rejects runs with `INSUFFICIENT_TOKENS`,
+which is a different state from exhausting an allowance. The meter warns amber at 80% and
+turns red at the limit.
 
 ### B4. Per-case aggregates
 **Design promised** per test: total runs, cache-hit %, learned-element count, first vs.
@@ -359,9 +394,15 @@ worth its own spec before any code.
 table (cron expression, suite/case target, timezone, enabled) and a scheduler process.
 BullMQ repeatable jobs make this small; the UI is a row in the author screen.
 
-### B13. Test author / owner
-The design showed an author per test. No `created_by` on `test_cases`; memberships
-already exist, so this is a nullable column plus a backfill.
+### B13. Test author / owner — ✅ DONE 2026-08-04 (no backfill)
+Migration `030_test_case_created_by` adds a nullable `created_by`, set on create and on
+duplicate (the duplicate's author is whoever duplicated it).
+
+**No backfill, contrary to the note above.** Nothing recorded who created a historical
+case — there is no audit trail to reconstruct from, and attributing them all to the
+workspace owner would be a guess rendered as fact. Pre-migration cases show no author, and
+the row renders nothing rather than "Unknown". Nullable also covers a permanent case: a
+test created through an API key has a tenant but no user behind it.
 
 ### B14. Member activity
 The design's member rows showed "last active: 20m ago". `users.last_login_at` exists;
