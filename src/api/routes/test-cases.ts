@@ -208,8 +208,14 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
         created_at: Date; updated_at: Date;
         last_run_id: string | null; last_run_status: string | null; last_run_completed_at: Date | null;
         last_run_duration_ms: number | null; last_run_total_tokens: number | null;
+        author_id: string | null; author_name: string | null; author_email: string | null;
       }>(
+        // LEFT JOIN, not inner: cases predating migration 030 have no created_by, and so
+        // do cases created through an API key. They must still appear in the list.
         `SELECT tc.id, tc.name, tc.base_url, tc.created_at, tc.updated_at,
+                au.id            AS author_id,
+                au.display_name  AS author_name,
+                au.email         AS author_email,
                 lr.id            AS last_run_id,
                 lr.status        AS last_run_status,
                 lr.completed_at  AS last_run_completed_at,
@@ -231,6 +237,7 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
            ORDER BY r.created_at DESC
            LIMIT 1
          ) lr ON true
+         LEFT JOIN users au ON au.id = tc.created_by
          WHERE tc.suite_id = $1 AND tc.tenant_id = $2
          ORDER BY tc.created_at DESC`,
         [suiteId, tenantId],
@@ -263,10 +270,13 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       const { rows: caseRows } = await client.query<{
         id: string; name: string; base_url: string; created_at: Date; updated_at: Date;
       }>(
-        `INSERT INTO test_cases (tenant_id, suite_id, name, base_url)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id, name, base_url, created_at, updated_at`,
-        [tenantId, suiteId, name, baseUrl],
+        // created_by is nullable on purpose: a case created through an API key has a
+        // tenant but no user behind it, and inventing one would be worse than none.
+        // Spec: docs/specs/roadmap/spec-keys-quota-authorship.md §6
+        `INSERT INTO test_cases (tenant_id, suite_id, name, base_url, created_by)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, name, base_url, created_at, updated_at, created_by`,
+        [tenantId, suiteId, name, baseUrl, request.userId ?? null],
       );
       const newCase = caseRows[0];
 
@@ -326,8 +336,13 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       const { rows: caseRows } = await client.query<{
         id: string; name: string; base_url: string; suite_id: string;
         created_at: Date; updated_at: Date;
+        author_id: string | null; author_name: string | null; author_email: string | null;
       }>(
-        `SELECT id, name, base_url, suite_id, created_at, updated_at FROM test_cases WHERE id = $1 AND tenant_id = $2`,
+        `SELECT tc.id, tc.name, tc.base_url, tc.suite_id, tc.created_at, tc.updated_at,
+                au.id AS author_id, au.display_name AS author_name, au.email AS author_email
+           FROM test_cases tc
+           LEFT JOIN users au ON au.id = tc.created_by
+          WHERE tc.id = $1 AND tc.tenant_id = $2`,
         [caseId, tenantId],
       );
       if (caseRows.length === 0) return null;
@@ -373,6 +388,12 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
         suiteId:    result.case.suite_id,
         createdAt:  result.case.created_at,
         updatedAt:  result.case.updated_at,
+        // Null for pre-030 cases and API-key-created ones. Rendered as nothing.
+        createdBy:  result.case.author_id ? {
+          id:          result.case.author_id,
+          displayName: result.case.author_name,
+          email:       result.case.author_email ?? '',
+        } : null,
         steps:      result.steps.map((s) => ({
           id:          s.id,
           position:    s.position,
@@ -524,15 +545,38 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
              OR step_id IN (SELECT id FROM test_steps WHERE case_id = $1)`,
         [caseId],
       );
-      // A run can be another case's validation run; release that pointer first.
-      await client.query(
-        `UPDATE test_cases SET validation_run_id = NULL
-          WHERE validation_run_id IN (SELECT id FROM runs WHERE case_id = $1)`,
-        [caseId],
+      /* test_cases.validation_run_id and the generation_jobs table belong to the
+         test-writer feature, whose migrations (028_test_writer, 029_site_model) live on
+         an unmerged branch. A database built from db/migrations/ — production, CI, any
+         fresh clone — does not have them, and referencing a missing column aborts the
+         whole transaction, so DELETE returned 500 on every case there while working
+         locally on machines that had the extra migrations applied.
+
+         Probing the catalog keeps one code path correct on both schemas. When the
+         test-writer branch merges, both flags become permanently true and this can
+         collapse back to unconditional statements.
+         Spec: docs/specs/roadmap/spec-keys-quota-authorship.md §3 */
+      const { rows: [caps] } = await client.query<{ has_validation_col: boolean; has_generation_jobs: boolean }>(
+        `SELECT
+           EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'test_cases'
+                      AND column_name = 'validation_run_id') AS has_validation_col,
+           to_regclass('public.generation_jobs') IS NOT NULL   AS has_generation_jobs`,
       );
+
+      // A run can be another case's validation run; release that pointer first.
+      if (caps?.has_validation_col) {
+        await client.query(
+          `UPDATE test_cases SET validation_run_id = NULL
+            WHERE validation_run_id IN (SELECT id FROM runs WHERE case_id = $1)`,
+          [caseId],
+        );
+      }
       // run_events cascade from runs.
       await client.query(`DELETE FROM runs WHERE case_id = $1`, [caseId]);
-      await client.query(`UPDATE generation_jobs SET login_case_id = NULL WHERE login_case_id = $1`, [caseId]);
+      if (caps?.has_generation_jobs) {
+        await client.query(`UPDATE generation_jobs SET login_case_id = NULL WHERE login_case_id = $1`, [caseId]);
+      }
       await client.query(`DELETE FROM test_case_steps WHERE case_id = $1`, [caseId]);
       await client.query(`DELETE FROM test_steps WHERE case_id = $1`,      [caseId]);
       await client.query(`DELETE FROM test_cases WHERE id = $1`,           [caseId]);
@@ -579,10 +623,12 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       const { rows: caseRows } = await client.query<{
         id: string; name: string; base_url: string; created_at: Date; updated_at: Date;
       }>(
-        `INSERT INTO test_cases (tenant_id, suite_id, name, base_url)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id, name, base_url, created_at, updated_at`,
-        [tenantId, src.suite_id, newName, src.base_url],
+        // The duplicate's author is whoever duplicated it, not the original's author —
+        // it is a new test that this person is now responsible for.
+        `INSERT INTO test_cases (tenant_id, suite_id, name, base_url, created_by)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, name, base_url, created_at, updated_at, created_by`,
+        [tenantId, src.suite_id, newName, src.base_url, request.userId ?? null],
       );
       const newCase = caseRows[0];
 
@@ -747,6 +793,9 @@ function mapCaseSummary(row: {
   last_run_completed_at: Date | null;
   last_run_duration_ms: number | null;
   last_run_total_tokens: number | null;
+  author_id?: string | null;
+  author_name?: string | null;
+  author_email?: string | null;
 }) {
   return {
     id:        row.id,
@@ -754,6 +803,14 @@ function mapCaseSummary(row: {
     baseUrl:   row.base_url,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    // null for cases written before migration 030 and for anything created through an
+    // API key. The UI shows nothing at all rather than "Unknown" — an absent author is
+    // a fact about the record, not a person we failed to name.
+    createdBy: row.author_id ? {
+      id:          row.author_id,
+      displayName: row.author_name ?? null,
+      email:       row.author_email ?? '',
+    } : null,
     lastRun: row.last_run_id ? {
       id:          row.last_run_id,
       status:      row.last_run_status,
