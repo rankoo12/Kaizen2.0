@@ -44,6 +44,14 @@ export type StepResultRow = {
   errorType: string | null;
   capturedName: string | null;
   capturedValue: string | null;
+  /**
+   * Canonical (origin + pathname) URL of the iframe this step's element was found in,
+   * or null for the main document. Lets the run timeline say where the step acted —
+   * "inside cdn.privacy-mgmt.com/index.html" — instead of leaving a consent-banner
+   * click looking like it happened on the page under test.
+   * Spec: docs/specs/reliability/spec-iframe-selector-caching.md
+   */
+  frameUrl: string | null;
 };
 
 export type RunEventLevel = 'debug' | 'info' | 'warn' | 'error';

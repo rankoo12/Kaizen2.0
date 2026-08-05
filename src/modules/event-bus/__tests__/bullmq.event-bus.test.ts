@@ -9,7 +9,7 @@ const row: StepResultRow = {
   selectorUsed: '#a', screenshotKey: 'gs://b/k', durationMs: 12,
   resolutionSource: null, similarityScore: null, domCandidates: null,
   llmPickedKaizenId: null, tokensUsed: 0, archetypeName: null, errorType: null,
-  capturedName: null, capturedValue: null,
+  capturedName: null, capturedValue: null, frameUrl: null,
 };
 
 function makeBus() {

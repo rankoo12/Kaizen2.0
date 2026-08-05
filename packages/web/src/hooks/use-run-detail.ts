@@ -73,6 +73,7 @@ export function useRunDetail(runId: string | null | undefined) {
             // ?? not || — 0 is a real similarity, and coercing it to null would report
             // "not measured" for a measurement that did happen.
             similarityScore: sr.similarity_score ?? null,
+            frameUrl: sr.frame_url || null,
             // The API attaches these per step; without mapping them the run screen has
             // no way to show what broke or what selector replaced it.
             healingEvents: (sr.healingEvents || []).map((h: any): HealingEvent => ({

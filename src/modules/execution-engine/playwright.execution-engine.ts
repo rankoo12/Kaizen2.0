@@ -1,6 +1,7 @@
 import type { IExecutionEngine } from './interfaces';
 import type { StepAST, SelectorSet, StepExecutionResult } from '../../types';
 import type { IObservability } from '../observability/interfaces';
+import { findFrameByUrl, framesOf } from '../../utils/frame-url';
 
 /**
  * Minimal surface of the Playwright Page API used by this module.
@@ -153,11 +154,27 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
       // If the resolved element lives inside a child FRAME (e.g. a cookie-consent CMP
       // iframe), act WITHIN that frame — a Playwright Frame exposes the same element API
       // (click/fill/check/$eval/…) as a Page, so it drops straight into dispatchAction.
+      //
+      // findFrameByUrl matches the live URL exactly first, so a set resolved earlier in
+      // this run behaves byte-identically to before; it falls back to origin + pathname,
+      // which is the form a set read back from selector_cache carries (a CMP iframe's
+      // query string holds per-session tokens and cannot be matched literally).
+      //
+      // A frame-scoped selector must NOT fall back to the top document: it would match
+      // nothing there and fail a step on a site where nothing is broken. Fail with a
+      // reason the classifier and the user can both act on.
       let execCtx: PlaywrightPageLike = pw;
       if (selectorSet.frameUrl) {
-        const frames = (pw as unknown as { frames?: () => Array<{ url?: () => string }> }).frames?.() ?? [];
-        const frame = frames.find((f) => (typeof f.url === 'function' ? f.url() : '') === selectorSet.frameUrl);
-        if (frame) execCtx = frame as unknown as PlaywrightPageLike;
+        const frame = findFrameByUrl(framesOf<{ url?: () => string }>(pw), selectorSet.frameUrl);
+        if (!frame) {
+          this.observability.increment('engine.step_failed', { action: step.action, reason: 'frame_absent' });
+          return this.failResult(
+            start,
+            'FrameNotFoundError',
+            `The element for "${step.targetDescription}" was resolved inside the frame ${selectorSet.frameUrl}, which is not on the page.`,
+          );
+        }
+        execCtx = frame as unknown as PlaywrightPageLike;
       }
 
       // Try each selector in confidence order (already sorted by LLMElementResolver)

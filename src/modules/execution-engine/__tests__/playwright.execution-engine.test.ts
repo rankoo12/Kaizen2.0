@@ -230,6 +230,61 @@ describe('PlaywrightExecutionEngine', () => {
       expect(result.errorType).toBe('NoSelectorsError');
       expect(mockPage.click).not.toHaveBeenCalled();
     });
+
+    // ─── frame-scoped sets ───────────────────────────────────────────────────
+    // Spec: docs/specs/reliability/spec-iframe-selector-caching.md §3, §4.5
+
+    describe('when the element lives in a child frame', () => {
+      const CONSENT_CANONICAL = 'https://cdn.privacy-mgmt.com/index.html';
+      const CONSENT_LIVE = `${CONSENT_CANONICAL}?consentUUID=8f3c&_sp=x`;
+
+      const inFrame = (frameUrl: string): SelectorSet => ({
+        selectors: [{ selector: 'button[title="Accept all"]', strategy: 'css', confidence: 0.9 }],
+        fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null,
+        frameUrl,
+      });
+
+      const frameOn = (url: string) => {
+        const frame = { url: () => url, click: jest.fn().mockResolvedValue(undefined) };
+        mockPage.frames = () => [frame];
+        return frame;
+      };
+
+      it('acts inside the frame, not on the page', async () => {
+        const frame = frameOn(CONSENT_LIVE);
+
+        const result = await engine.executeStep(clickStep, inFrame(CONSENT_LIVE), mockPage);
+
+        expect(result.status).toBe('passed');
+        expect(frame.click).toHaveBeenCalledTimes(1);
+        expect(mockPage.click).not.toHaveBeenCalled();
+      });
+
+      it('matches a cached canonical url against the live session url', async () => {
+        // What a cache entry carries (canonical) vs what the live frame reports
+        // (session tokens and all). Without the canonical fallback this misses.
+        const frame = frameOn(CONSENT_LIVE);
+
+        const result = await engine.executeStep(clickStep, inFrame(CONSENT_CANONICAL), mockPage);
+
+        expect(result.status).toBe('passed');
+        expect(frame.click).toHaveBeenCalled();
+      });
+
+      it('fails with FrameNotFoundError rather than silently running against the page', async () => {
+        // The regression this guards: a frame-scoped selector run on the top document
+        // matches nothing and fails a step on a site where nothing is broken. The
+        // failure must name the real cause instead.
+        mockPage.frames = () => [{ url: () => 'https://example.com/' }];
+
+        const result = await engine.executeStep(clickStep, inFrame(CONSENT_CANONICAL), mockPage);
+
+        expect(result.status).toBe('failed');
+        expect(result.errorType).toBe('FrameNotFoundError');
+        expect(result.errorMessage).toContain(CONSENT_CANONICAL);
+        expect(mockPage.click).not.toHaveBeenCalled();
+      });
+    });
   });
 
   // ─── type ────────────────────────────────────────────────────────────────────

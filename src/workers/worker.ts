@@ -27,6 +27,7 @@ import { Worker } from 'bullmq';
 import { type Page } from 'playwright';
 import { BrowserPool } from './browser-pool';
 import { cancelKey } from './cancel-keys';
+import { canonicalFrameUrl } from '../utils/frame-url';
 import { runStepLoop } from './step-loop';
 import { handleTabAction } from './tab-manager';
 import pino from 'pino';
@@ -338,6 +339,7 @@ async function insertStepResult(
   stepId: string | null = null,
   capturedName: string | null = null,
   capturedValue: string | null = null,
+  frameUrl: string | null = null,
 ): Promise<string | null> {
   try {
     // step_id back-references the test_steps row this result came from. Lets
@@ -351,14 +353,14 @@ async function insertStepResult(
          (tenant_id, run_id, step_id, step_index, content_hash, target_hash, status, selector_used,
           screenshot_key, duration_ms, resolution_source, similarity_score,
           dom_candidates, llm_picked_kaizen_id, tokens_used, archetype_name, error_type,
-          captured_name, captured_value)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19)
+          captured_name, captured_value, frame_url)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
        RETURNING id`,
       [tenantId, runId, stepId, stepIndex, step.contentHash, step.targetHash, status, selectorUsed,
        screenshotKey, durationMs, resolutionSource, similarityScore,
        domCandidates ? JSON.stringify(domCandidates) : null,
        llmPickedKaizenId, tokensUsed, archetypeName, errorType,
-       capturedName, capturedValue],
+       capturedName, capturedValue, frameUrl],
     );
     return rows[0]?.id ?? null;
   } catch (e: any) {
@@ -420,6 +422,7 @@ async function recordSkippedSteps(
       errorType: reason,  // carries the skip reason
       capturedName: null,
       capturedValue: null,
+      frameUrl: null,     // never resolved, so never in a frame
     }, attempt);
   }
 }
@@ -800,6 +803,9 @@ async function executeStep(
       archetypeName: selectorSet.archetypeName ?? null,
       errorType: null,
       capturedName: captureKey, capturedValue,
+      // Canonical form (origin + pathname): a CMP iframe's query carries per-session
+      // tokens that would make the timeline unreadable and differ on every run.
+      frameUrl: canonicalFrameUrl(selectorSet.frameUrl),
     }, attempt);
     await runLog?.flush();
     return { status: 'passed', healed: false, afterPng };
@@ -827,6 +833,9 @@ async function executeStep(
     selectorSet.archetypeName ?? null,
     null,    // errorType
     stepId,
+    null,    // capturedName — a failed step captured nothing
+    null,    // capturedValue
+    canonicalFrameUrl(selectorSet.frameUrl),
   );
 
   const classifiedFailure: ClassifiedFailure = {

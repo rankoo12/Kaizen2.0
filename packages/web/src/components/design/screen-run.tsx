@@ -345,6 +345,15 @@ function Inspector({ sr, text, runId, onVerdict, showToast }: any) {
             <div className="label" style={{ marginTop: 11, marginBottom: 4 }}>Selector used</div>
             <div className="num" style={{ fontSize: 12, background: 'var(--fill)', padding: '8px 10px', borderRadius: 7, wordBreak: 'break-all', lineHeight: 1.5 }}>{sr.selectorUsed}</div>
           </>}
+          {/* A selector that ran inside a third-party frame did not run on the site under
+              test. Saying so turns a confusing "why is this selector nothing like my page"
+              into an explanation — these are almost always cookie-consent banners. */}
+          {sr.frameUrl && <>
+            <div className="label" style={{ marginTop: 11, marginBottom: 4 }}>Found inside a frame</div>
+            <div className="num" style={{ fontSize: 12, background: 'var(--fill)', padding: '8px 10px', borderRadius: 7, wordBreak: 'break-all', lineHeight: 1.5, color: 'var(--text-2)' }}>
+              {sr.frameUrl.replace(/^https?:\/\//, '')}
+            </div>
+          </>}
           <div style={{ display: 'flex', marginTop: 11, border: '.5px solid var(--sep)', borderRadius: 8, overflow: 'hidden' }}>
             {([['Duration', sr.durationMs != null ? fmt.ms(sr.durationMs) : '—'],
               ['Tokens', sr.tokens ? fmt.n(sr.tokens) : '0'],

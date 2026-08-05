@@ -7,6 +7,7 @@ import { getPool } from '../../db/pool';
 import { toVectorSQL } from '../../utils/vector';
 import { invalidateRedisCache } from './redis-cache.utils';
 import { semanticGuardPasses } from './cache-semantic-guard';
+import { findFrameByUrl, framesOf } from '../../utils/frame-url';
 
 /**
  * Spec ref: Section 8 — Element Resolution & Caching (Levels 1–4)
@@ -27,21 +28,34 @@ const REDIS_TTL_SECONDS = 3_600; // 1 hour
 
 const MISS: SelectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
 
-/** Shape of the value we now write into Redis — selectors plus the stored vectors
- * so the semantic guard can evaluate on L1 hits without a Postgres roundtrip. */
-type RedisPayloadV2 = {
-  v: 2;
+/** Shape of the value we now write into Redis — selectors, the stored vectors so the
+ * semantic guard can evaluate on L1 hits without a Postgres roundtrip, and the frame the
+ * selectors resolve inside (null for the main document, which is almost every entry). */
+type RedisPayloadV3 = {
+  v: 3;
   selectors: SelectorEntry[];
   stepEmbedding: number[] | null;
   elementEmbedding: number[] | null;
+  frameUrl: string | null;
 };
+
+/** v2 — selectors + vectors, written before iframe elements were cacheable. */
+type RedisPayloadV2 = Omit<RedisPayloadV3, 'v' | 'frameUrl'> & { v: 2 };
 
 /** Legacy Redis shape written before the semantic guard — `selectors` only. */
 type RedisPayloadV1 = SelectorEntry[];
 
-function isV2(payload: unknown): payload is RedisPayloadV2 {
-  return typeof payload === 'object' && payload !== null && (payload as RedisPayloadV2).v === 2;
+function isVersioned(payload: unknown, version: 2 | 3): boolean {
+  return typeof payload === 'object' && payload !== null && (payload as { v?: number }).v === version;
 }
+
+/** What a cache tier found, before the frame guard decides whether it is usable. */
+type CacheRow = {
+  selectors: SelectorEntry[];
+  stepEmbedding: number[] | null;
+  elementEmbedding: number[] | null;
+  frameUrl: string | null;
+};
 
 export class CachedElementResolver implements IElementResolver {
   constructor(
@@ -69,10 +83,13 @@ export class CachedElementResolver implements IElementResolver {
             parsed.stepEmbedding,
             parsed.elementEmbedding,
           );
-          if (passed) {
+          if (passed && await this.frameGuardPasses(parsed, context, 'redis')) {
             this.observability.increment('resolver.cache_hit', { source: 'redis' });
-            return { selectors: parsed.selectors, fromCache: true, cacheSource: 'tenant', resolutionSource: 'redis', similarityScore: null };
+            return { selectors: parsed.selectors, fromCache: true, cacheSource: 'tenant', resolutionSource: 'redis', similarityScore: null, frameUrl: parsed.frameUrl ?? undefined };
           }
+          // The frame guard failing is not a semantic disagreement — the entry is fine,
+          // the iframe just is not on this page right now. Fall through without deleting.
+          if (passed) return MISS;
           this.observability.increment('resolver.cache_semantic_reject', { source: 'redis' });
           this.observability.log('info', 'cache_resolver.semantic_reject', {
             source: 'redis',
@@ -92,11 +109,12 @@ export class CachedElementResolver implements IElementResolver {
           directHit.stepEmbedding,
           directHit.elementEmbedding,
         );
-        if (passed) {
+        if (passed && await this.frameGuardPasses(directHit, context, 'db_exact')) {
           this.observability.increment('resolver.cache_hit', { source: 'db_target' });
-          await this.writeRedis(redisKey, directHit.selectors, directHit.stepEmbedding, directHit.elementEmbedding);
-          return { selectors: directHit.selectors, fromCache: true, cacheSource: 'tenant', resolutionSource: 'db_exact', similarityScore: null };
+          await this.writeRedis(redisKey, directHit);
+          return { selectors: directHit.selectors, fromCache: true, cacheSource: 'tenant', resolutionSource: 'db_exact', similarityScore: null, frameUrl: directHit.frameUrl ?? undefined };
         }
+        if (passed) return MISS;
         this.observability.increment('resolver.cache_semantic_reject', { source: 'db_exact' });
         this.observability.log('info', 'cache_resolver.semantic_reject', {
           source: 'db_exact',
@@ -121,11 +139,12 @@ export class CachedElementResolver implements IElementResolver {
           tenantHit.stepEmbedding,
           tenantHit.elementEmbedding,
         );
-        if (passed) {
+        if (passed && await this.frameGuardPasses(tenantHit, context, 'pgvector_tenant')) {
           this.observability.increment('resolver.cache_hit', { source: 'pgvector_tenant' });
-          await this.writeRedis(redisKey, tenantHit.selectors, tenantHit.stepEmbedding, tenantHit.elementEmbedding);
-          return { selectors: tenantHit.selectors, fromCache: true, cacheSource: 'tenant', resolutionSource: 'pgvector_step', similarityScore: tenantHit.similarity };
+          await this.writeRedis(redisKey, tenantHit);
+          return { selectors: tenantHit.selectors, fromCache: true, cacheSource: 'tenant', resolutionSource: 'pgvector_step', similarityScore: tenantHit.similarity, frameUrl: tenantHit.frameUrl ?? undefined };
         }
+        if (passed) return MISS;
         this.observability.increment('resolver.cache_semantic_reject', { source: 'pgvector_tenant' });
         this.observability.log('info', 'cache_resolver.semantic_reject', {
           source: 'pgvector_tenant',
@@ -146,11 +165,12 @@ export class CachedElementResolver implements IElementResolver {
           sharedHit.stepEmbedding,
           sharedHit.elementEmbedding,
         );
-        if (passed) {
+        if (passed && await this.frameGuardPasses(sharedHit, context, 'pgvector_shared')) {
           this.observability.increment('resolver.cache_hit', { source: 'pgvector_shared' });
-          await this.writeRedis(redisKey, sharedHit.selectors, sharedHit.stepEmbedding, sharedHit.elementEmbedding);
-          return { selectors: sharedHit.selectors, fromCache: true, cacheSource: 'shared', resolutionSource: 'pgvector_step', similarityScore: sharedHit.similarity };
+          await this.writeRedis(redisKey, sharedHit);
+          return { selectors: sharedHit.selectors, fromCache: true, cacheSource: 'shared', resolutionSource: 'pgvector_step', similarityScore: sharedHit.similarity, frameUrl: sharedHit.frameUrl ?? undefined };
         }
+        if (passed) return MISS;
         this.observability.increment('resolver.cache_semantic_reject', { source: 'pgvector_shared' });
         this.observability.log('info', 'cache_resolver.semantic_reject', {
           source: 'pgvector_shared',
@@ -189,16 +209,70 @@ export class CachedElementResolver implements IElementResolver {
     return `sel:${tenantId}:${targetHash}:${domain}`;
   }
 
-  /** Tolerates both the legacy v1 (array) and v2 (object-with-vectors) Redis payloads. */
-  private parseRedisPayload(raw: string): { selectors: SelectorEntry[]; stepEmbedding: number[] | null; elementEmbedding: number[] | null } | null {
+  /**
+   * A cached selector scoped to an iframe is only usable if that iframe is on the page
+   * NOW and the selector still resolves inside it.
+   *
+   * Without this check a frame-scoped selector read back days later would be handed to
+   * the execution engine, which falls back to the top document when it cannot find the
+   * frame — running `button[title="Yes, I'm happy"]` against the main page, matching
+   * nothing, and failing a step on a site where nothing is broken. A miss costs one LLM
+   * call; a false hit costs a red run.
+   *
+   * Entries with no frame (every row written before iframe elements became cacheable,
+   * and every main-document element since) skip the check entirely.
+   * Spec: docs/specs/reliability/spec-iframe-selector-caching.md §4.4
+   */
+  private async frameGuardPasses(
+    row: Pick<CacheRow, 'selectors' | 'frameUrl'>,
+    context: ResolutionContext,
+    source: string,
+  ): Promise<boolean> {
+    if (!row.frameUrl) return true;
+
+    const reject = (reason: string): false => {
+      this.observability.increment('resolver.frame_guard_reject', { source, reason });
+      this.observability.log('info', 'cache_resolver.frame_guard_reject', {
+        source,
+        reason,
+        frameUrl: row.frameUrl,
+      });
+      return false;
+    };
+
+    const frames = framesOf<{ url?: () => string; locator?: (s: string) => { count: () => Promise<number> } }>(context.page);
+    const frame = findFrameByUrl(frames, row.frameUrl);
+    if (!frame?.locator) return reject('frame_absent');
+
+    const selector = row.selectors[0]?.selector;
+    if (!selector) return reject('no_selector');
+
     try {
-      const value: RedisPayloadV1 | RedisPayloadV2 = JSON.parse(raw);
+      if ((await frame.locator(selector).count()) < 1) return reject('selector_absent_in_frame');
+    } catch {
+      return reject('selector_error_in_frame');
+    }
+    return true;
+  }
+
+  /** Tolerates the legacy v1 (array) and v2 (no frame) payloads alongside current v3. */
+  private parseRedisPayload(raw: string): CacheRow | null {
+    try {
+      const value: RedisPayloadV1 | RedisPayloadV2 | RedisPayloadV3 = JSON.parse(raw);
       if (Array.isArray(value)) {
         // Legacy v1 — no vectors stored; guard will be a no-op (cannot evaluate).
-        return { selectors: value, stepEmbedding: null, elementEmbedding: null };
+        return { selectors: value, stepEmbedding: null, elementEmbedding: null, frameUrl: null };
       }
-      if (isV2(value)) {
-        return { selectors: value.selectors, stepEmbedding: value.stepEmbedding, elementEmbedding: value.elementEmbedding };
+      if (isVersioned(value, 2) || isVersioned(value, 3)) {
+        const v = value as RedisPayloadV3;
+        // v2 has no frameUrl — undefined normalises to null, i.e. "main document",
+        // which is what every entry written before this change was.
+        return {
+          selectors: v.selectors,
+          stepEmbedding: v.stepEmbedding,
+          elementEmbedding: v.elementEmbedding,
+          frameUrl: v.frameUrl ?? null,
+        };
       }
       return null;
     } catch {
@@ -206,13 +280,14 @@ export class CachedElementResolver implements IElementResolver {
     }
   }
 
-  private async writeRedis(
-    key: string,
-    selectors: SelectorEntry[],
-    stepEmbedding: number[] | null,
-    elementEmbedding: number[] | null,
-  ): Promise<void> {
-    const payload: RedisPayloadV2 = { v: 2, selectors, stepEmbedding, elementEmbedding };
+  private async writeRedis(key: string, row: CacheRow): Promise<void> {
+    const payload: RedisPayloadV3 = {
+      v: 3,
+      selectors: row.selectors,
+      stepEmbedding: row.stepEmbedding,
+      elementEmbedding: row.elementEmbedding,
+      frameUrl: row.frameUrl,
+    };
     try {
       await this.redis.setex(key, REDIS_TTL_SECONDS, JSON.stringify(payload));
     } catch (e: any) {
@@ -239,18 +314,15 @@ export class CachedElementResolver implements IElementResolver {
     targetHash: string,
     domain: string,
     tenantId: string,
-  ): Promise<{
-    selectors: SelectorEntry[];
-    stepEmbedding: number[] | null;
-    elementEmbedding: number[] | null;
-  } | null> {
+  ): Promise<CacheRow | null> {
     try {
       const { rows } = await getPool().query<{
         selectors: SelectorEntry[];
         step_embedding: number[] | string | null;
         element_embedding: number[] | string | null;
+        frame_url: string | null;
       }>(
-        `SELECT selectors, step_embedding, element_embedding
+        `SELECT selectors, step_embedding, element_embedding, frame_url
          FROM selector_cache
          WHERE content_hash = $1 AND domain = $2 AND tenant_id = $3
            AND (pinned_at IS NOT NULL OR confidence_score > 0.4)
@@ -263,6 +335,7 @@ export class CachedElementResolver implements IElementResolver {
         selectors: rows[0].selectors,
         stepEmbedding: parsePgVector(rows[0].step_embedding),
         elementEmbedding: parsePgVector(rows[0].element_embedding),
+        frameUrl: rows[0].frame_url ?? null,
       };
     } catch (e: any) {
       this.observability.log('warn', 'cache_resolver.fetch_by_hash_failed', { error: e.message });
@@ -275,13 +348,7 @@ export class CachedElementResolver implements IElementResolver {
     tenantId: string | null,
     domain: string,
     shared: boolean,
-  ): Promise<{
-    selectors: SelectorEntry[];
-    similarity: number;
-    stepEmbedding: number[] | null;
-    elementEmbedding: number[] | null;
-    contentHash: string | null;
-  } | null> {
+  ): Promise<(CacheRow & { similarity: number; contentHash: string | null }) | null> {
     try {
       const { rows } = await getPool().query<{
         selectors: SelectorEntry[];
@@ -289,11 +356,13 @@ export class CachedElementResolver implements IElementResolver {
         step_embedding: number[] | string | null;
         element_embedding: number[] | string | null;
         content_hash: string | null;
+        frame_url: string | null;
       }>(
         `SELECT selectors,
                 content_hash,
                 step_embedding,
                 element_embedding,
+                frame_url,
                 1 - (step_embedding <=> $1::vector) AS similarity
          FROM selector_cache
          WHERE step_embedding IS NOT NULL
@@ -314,6 +383,7 @@ export class CachedElementResolver implements IElementResolver {
         stepEmbedding: parsePgVector(rows[0].step_embedding),
         elementEmbedding: parsePgVector(rows[0].element_embedding),
         contentHash: rows[0].content_hash,
+        frameUrl: rows[0].frame_url ?? null,
       };
     } catch (e: any) {
       this.observability.log('warn', 'cache_resolver.vector_search_failed', { error: e.message });
