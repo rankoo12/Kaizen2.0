@@ -11,12 +11,38 @@ export type Suite = {
   updatedAt: string;
 };
 
+/** Who wrote a test. Null for cases predating migration 030 and for anything created
+ *  through an API key, which has a tenant but no user behind it. Render null as nothing
+ *  — an absent author is a fact about the record, not a person we failed to name. */
+export type CaseAuthor = {
+  id: string;
+  displayName: string | null;
+  email: string;
+};
+
 export type CaseSummary = {
   id: string;
   name: string;
   baseUrl: string;
   createdAt: string;
   updatedAt: string;
+  createdBy: CaseAuthor | null;
+  /** Aggregates over this case's whole run history. Computed per request rather than
+   *  read from a rollup — measured at ~1.1ms for a tenant, and a cached copy would be
+   *  one more place for numbers to disagree with their source. */
+  stats: {
+    runs: number;
+    passed: number;
+    healed: number;
+    failed: number;
+    avgDurationMs: number | null;
+    /** Null, not 0, when this case has never resolved an element. Zero means every
+     *  lookup needed the model, which is the opposite of "nothing measured yet". */
+    cacheHitPct: number | null;
+    /** What learning cost, beside what it costs now. */
+    firstRunTokens: number | null;
+    lastRunTokens: number | null;
+  };
   lastRun: {
     id: string;
     status: RunStatus;
@@ -59,6 +85,14 @@ export type RunSummary = {
   completedAt: string | null;
   durationMs: number | null;
   totalTokens: number | null;
+  /** The URL this run executed against (`runs.environment_url`). */
+  environmentUrl: string | null;
+  /** Steps this run was created to execute, stamped at enqueue. Null for runs that
+   *  predate migration 028 and had no step results to backfill from. Not derived from
+   *  the case — an edit mid-run would move it. */
+  totalSteps: number | null;
+  /** Steps that have finished. Pairs with totalSteps for a live progress meter. */
+  completedSteps: number;
 };
 
 export type DomCandidate = {
@@ -67,6 +101,20 @@ export type DomCandidate = {
   name: string;
   selector: string;
   parentContext?: string;
+};
+
+/** A healing attempt against one step: what broke, what was tried, what it became. */
+export type HealingEvent = {
+  id: string;
+  failureClass: string;
+  strategyUsed: string;
+  attempts: number;
+  succeeded: boolean;
+  /** The selector that stopped working. Null when the failure wasn't selector-related. */
+  oldSelector: string | null;
+  /** The selector that replaced it. Null when healing didn't succeed. */
+  newSelector: string | null;
+  durationMs: number | null;
 };
 
 export type StepResult = {
@@ -91,6 +139,14 @@ export type StepResult = {
   capturedName: string | null;
   /** The value captured into capturedName. */
   capturedValue: string | null;
+  /** Healing attempts on this step, oldest first. Empty when it never needed healing. */
+  healingEvents: HealingEvent[];
+  /** Cosine similarity, populated ONLY by the two vector tiers (pgvector_element,
+   *  pgvector_step) — 3.4% of steps in practice. Every other tier leaves it null: an
+   *  exact Redis hit matched a key, not a neighbourhood, and the model produces no
+   *  similarity at all. Never render this as a blanket "confidence" column.
+   *  Measured, not assumed — docs/specs/roadmap/spec-phase-0-plumbing.md §5. */
+  similarityScore: number | null;
 };
 
 export type RunDetail = RunSummary & {

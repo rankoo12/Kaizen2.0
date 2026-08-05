@@ -71,8 +71,33 @@ export type Invite = {
 
 export type TenantUsage = {
   runsThisMonth: number;
+  /** Tokens BILLED this cycle (billing_events), not tokens reported by step results.
+   *  A quota has to be enforced against what was actually charged. */
   llmTokensThisMonth: number;
   memberCount: number;
+  /** The allowance llmTokensThisMonth is measured against. 0 means no allowance is
+   *  configured at all — a distinct state from having exhausted one, and the two
+   *  produce different 402 codes at run-enqueue. */
+  budgetTokensMonthly: number;
+  /** Calendar-month boundaries, matching what usageThisMonth enforces against.
+   *  cycleEnd is when the allowance resets. ISO 8601. */
+  cycleStart: string;
+  cycleEnd: string;
+};
+
+/** One day of the cost/cache-hit history. Quiet days are present with zeros rather than
+ *  omitted — dropping them would compress time and flatter a downward cost trend. */
+export type UsageHistoryPoint = {
+  day: string;          // ISO date
+  runs: number;
+  tokens: number;
+  /** Step results that resolved an element. The denominator for cacheHits. */
+  lookups: number;
+  /** Lookups answered by anything other than the model. Derived from resolution_source,
+   *  not step_results.cache_hit, which has never been written. */
+  cacheHits: number;
+  heals: number;
+  failures: number;
 };
 
 // ─── Auth types ───────────────────────────────────────────────────────────────

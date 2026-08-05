@@ -20,6 +20,7 @@
     "start:testwriter": "node dist/services/test-writer/index.js",
     "db:migrate": "tsx scripts/migrate.ts",
     "typecheck": "tsc --noEmit",
+    "typecheck:web": "tsc --noEmit -p packages/web/tsconfig.json",
     "lint": "eslint src --ext .ts",
     "test": "jest",
     "test:watch": "jest --watch",
@@ -28,7 +29,11 @@
     "brain:seed": "tsx scripts/seed-global-brain.ts",
     "archetypes:seed": "tsx scripts/seed-archetypes.ts",
     "seed:archetype-tests": "tsx scripts/seed-archetype-test-cases.ts",
-    "sync:ai": "bash scripts/sync-ai.sh"
+    "sync:ai": "bash scripts/sync-ai.sh",
+    "bench": "tsx benchmarks/run.ts",
+    "bench:baseline": "tsx benchmarks/run.ts --write-baseline",
+    "audit:contrast": "node scripts/audit-contrast.mjs",
+    "audit:mock": "node scripts/audit-mock.mjs"
   },
   "dependencies": {
     "@anthropic-ai/sdk": "^0.39.0",

@@ -28,6 +28,7 @@ import { type Page } from 'playwright';
 import { BrowserPool } from './browser-pool';
 import { cancelKey } from './cancel-keys';
 import { runStepLoop } from './step-loop';
+import { handleTabAction } from './tab-manager';
 import pino from 'pino';
 import { PinoObservability } from '../modules/observability/pino.observability';
 import { PostgresBillingMeter } from '../modules/billing-meter/postgres.billing-meter';
@@ -42,7 +43,9 @@ import { DBArchetypeResolver } from '../modules/element-resolver/db.archetype-re
 import { ArchetypeElementResolver } from '../modules/element-resolver/archetype.element-resolver';
 import { pickRandomCandidate, resolveCardTitle, seededIndex } from '../modules/element-resolver/random-element.selector';
 import { findRepeatedTargets } from '../modules/element-resolver/random-target';
+import { resolveCountSelector } from '../modules/element-resolver/countable';
 import { interpolateStep } from './run-context';
+import { shouldResolveFresh } from './assertion-cache-policy';
 import { RunLogger } from './run-logger';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
 import { PageChallengeDetector } from '../modules/execution-engine/challenge-detector';
@@ -63,7 +66,7 @@ import { startPersistenceConsumer } from './consumers/persistence.consumer';
 import { getPool, closePool } from '../db/pool';
 import { createRedisConnection, RUNS_QUEUE_NAME, SCREENSHOTS_QUEUE_NAME, PERSIST_QUEUE_NAME } from '../queue';
 import type { RunJobPayload } from '../queue';
-import type { StepAST, ClassifiedFailure, SelectorSet, RunContext } from '../types';
+import type { StepAST, ClassifiedFailure, SelectorSet, SelectorEntry, RunContext } from '../types';
 
 // ─── Module Setup ─────────────────────────────────────────────────────────────
 
@@ -105,9 +108,19 @@ const resolver = new CompositeElementResolver(resolvers, obs, llm);
 // "verify ..." step always re-resolves against the live page and can never read
 // a stale selector that embedded run-specific data (e.g. a header link named
 // "<a previous run's email>"). Assertions also never write to the cache.
+//
+// The assertion LLM resolver is a DEDICATED instance that READS the shared brain (so a
+// verify reuses the interaction's correct resolution — e.g. "the second checkbox") but
+// never WRITES to it (a verify must not persist run-specific selectors). A confident-but-
+// wrong element-embedding hit (a checkbox for "College radio button") is caught by the
+// resolver's role guard, which drops a role-mismatched hit through to the LLM.
+const assertionLlmResolver = new LLMElementResolver(domPruner, llm, obs, sharedPool, cacheRedis, {
+  cacheReads: true,
+  cacheWrites: false,
+});
 const assertionResolvers: IElementResolver[] = [archetypeElementResolver];
 if (process.env.DISABLE_LLM !== '1') {
-  assertionResolvers.push(llmResolver);
+  assertionResolvers.push(assertionLlmResolver);
 }
 const assertionResolver = new CompositeElementResolver(assertionResolvers, obs, llm);
 
@@ -228,16 +241,27 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
     g.__name = g.__name || ((fn) => fn);
   });
 
-  const page = await context.newPage();
+  // Auto-accept native JS dialogs (alert/confirm/prompt) on EVERY page in the
+  // context — including tabs opened later by a click (target=_blank/window.open).
+  // Without a handler Playwright DISMISSES dialogs, so a "click OK" flow gets
+  // Cancel and a confirm can stall. Accepting matches the common QA intent.
+  const attachDialogHandler = (p: Page): void => {
+    p.on('dialog', (dialog) => {
+      obs.log('info', 'worker.dialog_accepted', { runId, type: dialog.type(), message: dialog.message() });
+      void dialog.accept().catch(() => { /* already handled/closed */ });
+    });
+  };
+  // Newly opened tabs/windows join the same context; attach the dialog handler to
+  // each so it's active no matter which tab a step later switches to.
+  context.on('page', attachDialogHandler);
 
-  // Auto-accept native JS dialogs (alert/confirm/prompt). Without a handler,
-  // Playwright DISMISSES dialogs — so a "click OK" flow gets Cancel and a click
-  // that pops a confirm can stall. Accepting matches the common QA intent; the
-  // message is logged for the run timeline. (A future action can opt into dismiss.)
-  page.on('dialog', (dialog) => {
-    obs.log('info', 'worker.dialog_accepted', { runId, type: dialog.type(), message: dialog.message() });
-    void dialog.accept().catch(() => { /* already handled/closed */ });
-  });
+  const page = await context.newPage();
+  attachDialogHandler(page);
+
+  // The "current tab" the step loop operates on. A switch_tab step repoints
+  // `tabs.current`; because the executeStep closure reads it fresh each call,
+  // every subsequent step runs against the newly-focused tab.
+  const tabs = { current: page };
 
   await page.goto(baseUrl, { waitUntil: 'domcontentloaded' });
 
@@ -248,7 +272,7 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
     loopResult = await runStepLoop(runId, compiledSteps, {
       isCancelled,
       executeStep: (step, stepIndex, previousAfterPng, runContext) =>
-        executeStep(step, page, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext, runLog, attempt),
+        executeStep(step, tabs.current, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext, runLog, attempt, (p) => { tabs.current = p; }),
       recordSkippedSteps: (steps, startIndex, reason) =>
         recordSkippedSteps(tenantId, runId, steps, startIndex, reason, stepIds, attempt),
       onStepFailed: (stepIndex, step) => {
@@ -432,6 +456,7 @@ async function executeStep(
   runContext: RunContext = { variables: {} },
   runLog?: RunLogger,
   attempt: number = 0,
+  setCurrentPage?: (p: Page) => void,
 ): Promise<{ status: 'passed' | 'failed'; healed: boolean; afterPng: Buffer | null }> {
   // Resolve {{variable}} tokens captured by earlier steps before doing anything
   // else, so resolution, execution, and persistence all see the concrete values.
@@ -484,6 +509,27 @@ async function executeStep(
     return { status: 'failed', healed: false, afterPng };
   }
 
+  // ── Tab / window management ────────────────────────────────────────────────
+  // switch_tab / close_tab operate on the browser CONTEXT (the set of open tabs),
+  // not a DOM element, and must repoint the step loop's current page. Handled here
+  // in the worker (the engine only ever knows one page) via the setCurrentPage
+  // callback the step loop provides. No resolver/engine involvement.
+  if (step.action === 'switch_tab' || step.action === 'close_tab') {
+    const outcome = await handleTabAction(step, page, setCurrentPage);
+    const focusPage = outcome.page ?? page;
+    const afterPng = await focusPage.screenshot({ type: 'png' }).catch(() => null);
+    const afterKey = afterPng ? screenshots.keyFor(tenantId, runId, stepIndex, 'after') : null;
+    if (afterPng) void bus.publish({ kind: 'screenshot.upload', tenantId, runId, stepIndex, timing: 'after', png: afterPng, attempt });
+    void insertStepResult(
+      tenantId, runId, step, stepIndex, outcome.ok ? 'passed' : 'failed',
+      null, afterKey, Date.now() - stepStart, null, null, null, null, 0, null,
+      outcome.ok ? null : 'TabActionError', stepId,
+    );
+    runLog?.log('execute', `${step.action} ${outcome.ok ? '✓' : '✗'} ${outcome.detail}`, { stepIndex, level: outcome.ok ? 'info' : 'error', data: { detail: outcome.detail } });
+    await runLog?.flush();
+    return { status: outcome.ok ? 'passed' : 'failed', healed: false, afterPng };
+  }
+
   // ── Resolve selectors ─────────────────────────────────────────────────────
   // navigate and press_key act on the page/keyboard, not a specific DOM element.
   let selectorSet: SelectorSet;
@@ -500,6 +546,10 @@ async function executeStep(
       const idx = seededIndex(`${runId}:${stepIndex}`, matches.length);
       const chosen = matches[idx];
       randomPickName = chosen.title;
+      // findRepeatedTargets' title extraction is e-commerce-hardcoded; fall back to the
+      // general card-title resolver at PICK time (element still stable, pre-click — some
+      // apps re-render the control on click and destroy any post-click reference).
+      if (!randomPickName) randomPickName = await resolveCardTitle(page, chosen.selector).catch(() => null);
       obs.increment('worker.click_random_picked', { poolSize: String(matches.length), source: 'direct' });
       selectorSet = {
         selectors: [{ selector: chosen.selector, strategy: 'css' as const, confidence: 0.9 }],
@@ -545,15 +595,54 @@ async function executeStep(
       selectors: [{ selector: 'body', strategy: 'css', confidence: 1 }],
       fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null,
     };
+  } else if (step.action === 'assert_count') {
+    // assert_count counts a REPEATED GROUP, not a single element — the single-element
+    // resolver would return one #id and always count 1. Resolve a group selector
+    // directly off the live page (a grounded repeated-sibling group, else a semantic
+    // role sweep). Returns empty selectors when nothing is confidently countable, so
+    // the engine fails LOUDLY rather than silently passing a wrong count.
+    const target = step.targetDescription ?? '';
+    const found = await resolveCountSelector(page, target).catch(() => null);
+    selectorSet = found
+      ? {
+          selectors: [{ selector: found.selector, strategy: 'css' as const, confidence: 0.9 }],
+          fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null,
+        }
+      : { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+  } else if (step.action === 'drag_and_drop') {
+    // Two-target step: SOURCE = targetDescription, DESTINATION = value.
+    // Resolve the source through the normal (cached) resolver so it warms like any
+    // interaction. Resolve the destination through the NO-CACHE resolver: it shares
+    // this step's targetHash, so writing it to selector_cache under that key would
+    // collide with the source's cached selector — assertionResolver reads/writes
+    // nothing, avoiding the collision. Both selectors ride to the engine together.
+    try {
+      const sourceSet = await resolver.resolve(step, resolutionContext);
+      let destinationSelectors: SelectorEntry[] = [];
+      if (step.value) {
+        const destStep: StepAST = { ...step, action: 'click', targetDescription: step.value, value: null };
+        const destSet = await assertionResolver.resolve(destStep, resolutionContext);
+        destinationSelectors = destSet.selectors;
+      }
+      selectorSet = { ...sourceSet, destinationSelectors };
+    } catch (e: any) {
+      obs.log('warn', 'worker.resolution_failed', { runId, action: step.action, error: e.message });
+      selectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+    }
   } else {
     // Actions that operate on the page / keyboard / URL / title need no element.
     const NO_ELEMENT_ACTIONS = new Set(['navigate', 'press_key', 'wait', 'go_back', 'go_forward', 'reload', 'assert_url', 'assert_title']);
-    // State / negative assertions verify CURRENT page state — they must never read
-    // a cached selector (it can embed run-specific data, e.g. a header link named
-    // with a previous run's email). Use the no-cache resolver.
-    const NO_CACHE_ASSERTIONS = new Set(['assert_visible', 'assert_not_visible', 'assert_enabled', 'assert_disabled', 'assert_checked', 'assert_attribute']);
+    // State / negative assertions verify CURRENT page state. The hazard is a target
+    // that embeds run-specific data — "verify the header shows {{email}}" — because
+    // targetHash is computed by the COMPILER from the raw text and interpolateStep
+    // never recomputes it. Such a step therefore has a STABLE cache key pointing at
+    // CHANGING content: run 2 would read back run 1's selector and assert against an
+    // email that no longer exists.
     const needsElement = !NO_ELEMENT_ACTIONS.has(step.action);
-    const useNoCache = NO_CACHE_ASSERTIONS.has(step.action);
+    // interpolateStep returns the SAME object when no {{token}} was present, so this
+    // comparison is exact and free.
+    const targetIsRunVarying = step.targetDescription !== rawStep.targetDescription;
+    const useNoCache = shouldResolveFresh(step.action, targetIsRunVarying);
     try {
       selectorSet = needsElement
         ? await (useNoCache ? assertionResolver : resolver).resolve(step, resolutionContext)
@@ -587,11 +676,42 @@ async function executeStep(
   let stepError: Error | null = null;
   let result: Awaited<ReturnType<typeof engine.executeStep>>;
 
+  // URL before the action, so we can tell whether this step navigated.
+  const urlBefore = (() => { try { return (page as { url?: () => string }).url?.() ?? ''; } catch { return ''; } })();
+
   try {
     result = await engine.executeStep(step, selectorSet, page);
   } catch (e: any) {
     result = { status: 'failed', selectorUsed: null, durationMs: 0, errorType: null, errorMessage: e.message ?? null, screenshotKey: null, domSnapshotKey: null };
     stepError = e;
+  }
+
+  // If this step navigated (login, category nav, an <a> click), let the destination SETTLE
+  // before the next step resolves — the first interaction after a nav (e.g. add-to-cart
+  // right after login) must not race a half-rendered page, which yields a transient
+  // selector that never caches AND a click that silently no-ops. All waits are bounded so
+  // a chatty page (long-poll / websocket) or a never-quiet DOM can never hang the run.
+  if (result.status !== 'failed') {
+    try {
+      const p = page as {
+        url?: () => string;
+        waitForLoadState?: (s: string, o?: { timeout?: number }) => Promise<void>;
+        evaluate?: (fn: () => unknown) => Promise<unknown>;
+      };
+      if (p.url && p.url() !== urlBefore) {
+        // Network settle (server-rendered navs). Instant when there is no network I/O.
+        await p.waitForLoadState?.('networkidle', { timeout: 2500 }).catch(() => {});
+        // DOM-quiescence settle: a CLIENT-SIDE route change (e.g. saucedemo login) does no
+        // network I/O, so `networkidle` returns immediately — we must instead wait for the
+        // DOM to stop mutating (the page finished rendering/hydrating). Bounded to 2s.
+        await p.evaluate?.(() => new Promise((resolve) => {
+          let timer = setTimeout(() => resolve(null), 400);
+          const mo = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(() => resolve(null), 400); });
+          mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+          setTimeout(() => { mo.disconnect(); resolve(null); }, 2000);
+        })).catch(() => {});
+      }
+    } catch { /* settling is best-effort — never fail a step on it */ }
   }
 
   runLog?.log(isAssertion ? 'assert' : 'execute',
@@ -624,7 +744,15 @@ async function executeStep(
     let capturedValue: string | null = null;
     if (captureKey) {
       capturedValue = randomPickName;
-      if (capturedValue == null && result.selectorUsed) {
+      // A generic action label ("Add to cart" / "Remove") is not the item name. For
+      // click_random capture, resolve the item title from the picked element's card —
+      // general, so it works on any product grid, not just the seeded e-commerce demos.
+      const genericName = capturedValue == null || /^(add to cart|remove|buy|add|select|choose)$/i.test(capturedValue.trim());
+      if (genericName && result.selectorUsed) {
+        const title = await resolveCardTitle(page, result.selectorUsed).catch(() => null);
+        if (title) capturedValue = title;
+      }
+      if ((capturedValue == null || capturedValue === '') && result.selectorUsed) {
         capturedValue = await page
           .$eval(result.selectorUsed, (el) => (el.textContent ?? '').trim())
           .catch(() => null);

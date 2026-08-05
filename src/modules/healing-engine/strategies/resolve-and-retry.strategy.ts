@@ -36,9 +36,20 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
   ) {}
 
   canHandle(failure: ClassifiedFailure): boolean {
+    // ELEMENT_REMOVED / ELEMENT_MUTATED are the obvious re-resolve cases.
+    // TIMING and ELEMENT_OBSCURED are included because a STALE CACHED selector
+    // (the site renamed/moved an element) makes page.click wait and time out —
+    // and the classifier can only prove SelectorGone when the selector encodes a
+    // name (aria-label=/text=). Role/CSS-id selectors (most of Kaizen's cache)
+    // can't be name-matched, so a genuinely-dead selector falls through to TIMING.
+    // Re-resolution is rate-limited (2/tenant/hr) and runs AFTER AdaptiveWait, so a
+    // real slow-load is still handled by waiting first; this only fires as a last
+    // resort — exactly when a fresh LLM resolve is the right move.
     return (
       failure.failureClass === 'ELEMENT_REMOVED' ||
-      failure.failureClass === 'ELEMENT_MUTATED'
+      failure.failureClass === 'ELEMENT_MUTATED' ||
+      failure.failureClass === 'TIMING' ||
+      failure.failureClass === 'ELEMENT_OBSCURED'
     );
   }
 
@@ -74,8 +85,14 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
           const handle = await page.$(sel.selector);
           if (handle === null) continue;
 
-          // Update both embeddings in selector_cache
-          void this.updateEmbeddings(step.contentHash, context, sel.selector, candidates, step.rawText);
+          // Persist the corrected selector (+ embeddings) into selector_cache so the
+          // NEXT run serves the healed selector, not the stale one that just failed.
+          // Without this the row keeps its dead selector, every run re-fails and
+          // re-heals, and the 2/hr rate limit soon leaves the step permanently broken.
+          // NB: selector_cache.content_hash stores the step's TARGET hash (see the
+          // LLM resolver's write-back INSERT) — key on targetHash, not contentHash,
+          // or the UPDATE matches zero rows and the fix never persists.
+          void this.persistHealedSelector(step.targetHash, context, sel, candidates, step.rawText);
 
           this.observability.increment('healing.resolve_retry_success', {
             tenantId: context.tenantId,
@@ -92,10 +109,10 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
     return { succeeded: false, newSelector: null, durationMs: Date.now() - start };
   }
 
-  private async updateEmbeddings(
-    contentHash: string,
+  private async persistHealedSelector(
+    targetHash: string,
     context: HealingContext,
-    newSelector: string,
+    healed: { selector: string; strategy: string; confidence?: number },
     candidates: Array<{ role: string; name: string; cssSelector: string; xpath: string; attributes: Record<string, string>; textContent: string }>,
     rawText: string,
   ): Promise<void> {
@@ -103,19 +120,31 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
       const stepEmbedding = await this.llmGateway.generateEmbedding(rawText);
 
       const winner = candidates.find(
-        (c) => c.cssSelector === newSelector || c.xpath === newSelector,
+        (c) => c.cssSelector === healed.selector || c.xpath === healed.selector,
       ) ?? candidates[0];
       const elementText = `${winner.role}: ${winner.textContent || winner.name}`.trim();
       const elementEmbedding = await this.llmGateway.generateEmbedding(elementText);
 
-
+      // Overwrite the stale selector with the healed one and restore confidence —
+      // it was just validated against the live DOM (page.$ !== null), so the next
+      // run should trust and serve it instead of the dead selector. GREATEST keeps
+      // an already-higher confidence; the reset outcome window prevents the prior
+      // failures from immediately demoting the corrected selector below the 0.4
+      // serve threshold.
+      const selectorsJson = JSON.stringify([
+        { selector: healed.selector, strategy: healed.strategy, confidence: healed.confidence ?? 0.9 },
+      ]);
       await getPool().query(
         `UPDATE selector_cache
-         SET step_embedding    = $1::vector,
-             element_embedding = $2::vector,
+         SET selectors         = $1::jsonb,
+             step_embedding    = $2::vector,
+             element_embedding = $3::vector,
+             confidence_score  = GREATEST(confidence_score, 0.9),
+             outcome_window    = '[true]'::jsonb,
+             last_verified_at  = now(),
              updated_at        = now()
-         WHERE content_hash = $3 AND tenant_id = $4`,
-        [toVectorSQL(stepEmbedding), toVectorSQL(elementEmbedding), contentHash, context.tenantId],
+         WHERE content_hash = $4 AND tenant_id = $5`,
+        [selectorsJson, toVectorSQL(stepEmbedding), toVectorSQL(elementEmbedding), targetHash, context.tenantId],
       );
     } catch (e: any) {
       this.observability.log('warn', 'healing.embedding_update_failed', { error: e.message });

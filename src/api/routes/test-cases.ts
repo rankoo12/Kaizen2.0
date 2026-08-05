@@ -208,8 +208,21 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
         created_at: Date; updated_at: Date;
         last_run_id: string | null; last_run_status: string | null; last_run_completed_at: Date | null;
         last_run_duration_ms: number | null; last_run_total_tokens: number | null;
+        author_id: string | null; author_name: string | null; author_email: string | null;
+        runs: string | null; passed: string | null; healed: string | null; failed: string | null;
+        avg_duration_ms: number | null;
+        lookups: string | null; cached: string | null;
+        first_run_tokens: string | null;
       }>(
+        // LEFT JOIN, not inner: cases predating migration 030 have no created_by, and so
+        // do cases created through an API key. They must still appear in the list.
         `SELECT tc.id, tc.name, tc.base_url, tc.created_at, tc.updated_at,
+                st.runs, st.passed, st.healed, st.failed, st.avg_duration_ms,
+                ch.lookups, ch.cached,
+                ft.tokens        AS first_run_tokens,
+                au.id            AS author_id,
+                au.display_name  AS author_name,
+                au.email         AS author_email,
                 lr.id            AS last_run_id,
                 lr.status        AS last_run_status,
                 lr.completed_at  AS last_run_completed_at,
@@ -219,17 +232,48 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
          LEFT JOIN LATERAL (
            SELECT r.id, r.status, r.completed_at,
                   (EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) * 1000)::int AS duration_ms,
-                  (SELECT SUM(quantity)::int FROM billing_events 
-                   WHERE tenant_id = tc.tenant_id 
-                     AND event_type = 'LLM_CALL' 
-                     AND created_at >= r.started_at 
-                     AND created_at <= COALESCE(r.completed_at, now())
-                  ) AS total_tokens
+                  -- Tokens come from the run's own step results, which carry a run_id.
+                  -- This used to sum billing_events falling inside the run's time window;
+                  -- billing_events has no run_id, so a row written a moment after
+                  -- completed_at was dropped and the run reported "free" while its steps
+                  -- plainly showed an AI resolution. Two sources, two answers.
+                  COALESCE((SELECT SUM(sr.tokens_used)::int FROM step_results sr
+                             WHERE sr.run_id = r.id), 0) AS total_tokens
            FROM runs r
            WHERE r.case_id = tc.id
            ORDER BY r.created_at DESC
            LIMIT 1
          ) lr ON true
+         LEFT JOIN users au ON au.id = tc.created_by
+         -- Per-case aggregates. Computed rather than read from a rollup table: measured
+         -- at ~1.1ms for a whole tenant, against a rollup's cost of a write seam in
+         -- worker.ts and a staleness class of bug.
+         -- Spec: docs/specs/roadmap/spec-cost-history-and-case-stats.md §2
+         LEFT JOIN LATERAL (
+           SELECT COUNT(*)                                              AS runs,
+                  COUNT(*) FILTER (WHERE ar.status = 'passed')          AS passed,
+                  COUNT(*) FILTER (WHERE ar.status = 'healed')          AS healed,
+                  COUNT(*) FILTER (WHERE ar.status = 'failed')          AS failed,
+                  AVG(EXTRACT(EPOCH FROM (ar.completed_at - ar.started_at)) * 1000)
+                    FILTER (WHERE ar.completed_at IS NOT NULL)::int     AS avg_duration_ms
+             FROM runs ar
+            WHERE ar.case_id = tc.id
+         ) st ON true
+         -- Lookups vs. lookups that avoided the model. resolution_source, not
+         -- step_results.cache_hit — that column has never been written.
+         LEFT JOIN LATERAL (
+           SELECT COUNT(*) FILTER (WHERE sr2.resolution_source IS NOT NULL) AS lookups,
+                  COUNT(*) FILTER (WHERE sr2.resolution_source IS NOT NULL
+                                     AND sr2.resolution_source <> 'llm')    AS cached
+             FROM runs ar2
+             JOIN step_results sr2 ON sr2.run_id = ar2.id
+            WHERE ar2.case_id = tc.id
+         ) ch ON true
+         -- The pair that shows the claim on one row: what learning cost, what it costs now.
+         LEFT JOIN LATERAL (
+           SELECT (SELECT COALESCE(SUM(s.tokens_used), 0) FROM step_results s WHERE s.run_id = fr.id) AS tokens
+             FROM runs fr WHERE fr.case_id = tc.id ORDER BY fr.created_at ASC LIMIT 1
+         ) ft ON true
          WHERE tc.suite_id = $1 AND tc.tenant_id = $2
          ORDER BY tc.created_at DESC`,
         [suiteId, tenantId],
@@ -262,10 +306,13 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       const { rows: caseRows } = await client.query<{
         id: string; name: string; base_url: string; created_at: Date; updated_at: Date;
       }>(
-        `INSERT INTO test_cases (tenant_id, suite_id, name, base_url)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id, name, base_url, created_at, updated_at`,
-        [tenantId, suiteId, name, baseUrl],
+        // created_by is nullable on purpose: a case created through an API key has a
+        // tenant but no user behind it, and inventing one would be worse than none.
+        // Spec: docs/specs/roadmap/spec-keys-quota-authorship.md §6
+        `INSERT INTO test_cases (tenant_id, suite_id, name, base_url, created_by)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, name, base_url, created_at, updated_at, created_by`,
+        [tenantId, suiteId, name, baseUrl, request.userId ?? null],
       );
       const newCase = caseRows[0];
 
@@ -325,8 +372,13 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       const { rows: caseRows } = await client.query<{
         id: string; name: string; base_url: string; suite_id: string;
         created_at: Date; updated_at: Date;
+        author_id: string | null; author_name: string | null; author_email: string | null;
       }>(
-        `SELECT id, name, base_url, suite_id, created_at, updated_at FROM test_cases WHERE id = $1 AND tenant_id = $2`,
+        `SELECT tc.id, tc.name, tc.base_url, tc.suite_id, tc.created_at, tc.updated_at,
+                au.id AS author_id, au.display_name AS author_name, au.email AS author_email
+           FROM test_cases tc
+           LEFT JOIN users au ON au.id = tc.created_by
+          WHERE tc.id = $1 AND tc.tenant_id = $2`,
         [caseId, tenantId],
       );
       if (caseRows.length === 0) return null;
@@ -349,12 +401,9 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       }>(
         `SELECT r.id, r.status, r.triggered_by, r.created_at, r.completed_at,
                 (EXTRACT(EPOCH FROM (r.completed_at - r.started_at)) * 1000)::int AS duration_ms,
-                (SELECT SUM(quantity)::int FROM billing_events 
-                 WHERE tenant_id = tc.tenant_id 
-                   AND event_type = 'LLM_CALL' 
-                   AND created_at >= r.started_at 
-                   AND created_at <= COALESCE(r.completed_at, now())
-                ) AS total_tokens
+                -- Same run-scoped sum as the case list; see the note there.
+                COALESCE((SELECT SUM(sr.tokens_used)::int FROM step_results sr
+                           WHERE sr.run_id = r.id), 0) AS total_tokens
          FROM runs r
          JOIN test_cases tc ON tc.id = r.case_id
          WHERE r.case_id = $1
@@ -375,6 +424,12 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
         suiteId:    result.case.suite_id,
         createdAt:  result.case.created_at,
         updatedAt:  result.case.updated_at,
+        // Null for pre-030 cases and API-key-created ones. Rendered as nothing.
+        createdBy:  result.case.author_id ? {
+          id:          result.case.author_id,
+          displayName: result.case.author_name,
+          email:       result.case.author_email ?? '',
+        } : null,
         steps:      result.steps.map((s) => ({
           id:          s.id,
           position:    s.position,
@@ -508,10 +563,59 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       const { rows } = await client.query(`SELECT id FROM test_cases WHERE id = $1 AND tenant_id = $2`, [caseId, tenantId]);
       if (rows.length === 0) return;
 
+      // Order matters: step_results reference test_steps (and healing_events
+      // reference step_results), so evidence has to go before the steps that
+      // produced it. Skipping this made DELETE fail with a 23503 FK violation on
+      // any case that had ever run — i.e. every case worth deleting.
+      await client.query(
+        `DELETE FROM healing_events
+          WHERE step_result_id IN (
+            SELECT sr.id FROM step_results sr
+             WHERE sr.run_id IN (SELECT id FROM runs WHERE case_id = $1)
+                OR sr.step_id IN (SELECT id FROM test_steps WHERE case_id = $1))`,
+        [caseId],
+      );
+      await client.query(
+        `DELETE FROM step_results
+          WHERE run_id IN (SELECT id FROM runs WHERE case_id = $1)
+             OR step_id IN (SELECT id FROM test_steps WHERE case_id = $1)`,
+        [caseId],
+      );
+      /* test_cases.validation_run_id and the generation_jobs table belong to the
+         test-writer feature, whose migrations (028_test_writer, 029_site_model) live on
+         an unmerged branch. A database built from db/migrations/ — production, CI, any
+         fresh clone — does not have them, and referencing a missing column aborts the
+         whole transaction, so DELETE returned 500 on every case there while working
+         locally on machines that had the extra migrations applied.
+
+         Probing the catalog keeps one code path correct on both schemas. When the
+         test-writer branch merges, both flags become permanently true and this can
+         collapse back to unconditional statements.
+         Spec: docs/specs/roadmap/spec-keys-quota-authorship.md §3 */
+      const { rows: [caps] } = await client.query<{ has_validation_col: boolean; has_generation_jobs: boolean }>(
+        `SELECT
+           EXISTS (SELECT 1 FROM information_schema.columns
+                    WHERE table_schema = 'public' AND table_name = 'test_cases'
+                      AND column_name = 'validation_run_id') AS has_validation_col,
+           to_regclass('public.generation_jobs') IS NOT NULL   AS has_generation_jobs`,
+      );
+
+      // A run can be another case's validation run; release that pointer first.
+      if (caps?.has_validation_col) {
+        await client.query(
+          `UPDATE test_cases SET validation_run_id = NULL
+            WHERE validation_run_id IN (SELECT id FROM runs WHERE case_id = $1)`,
+          [caseId],
+        );
+      }
+      // run_events cascade from runs.
+      await client.query(`DELETE FROM runs WHERE case_id = $1`, [caseId]);
+      if (caps?.has_generation_jobs) {
+        await client.query(`UPDATE generation_jobs SET login_case_id = NULL WHERE login_case_id = $1`, [caseId]);
+      }
       await client.query(`DELETE FROM test_case_steps WHERE case_id = $1`, [caseId]);
       await client.query(`DELETE FROM test_steps WHERE case_id = $1`,      [caseId]);
-      await client.query(`UPDATE runs SET case_id = NULL WHERE case_id = $1`, [caseId]);
-      await client.query(`DELETE FROM test_cases WHERE id = $1`,            [caseId]);
+      await client.query(`DELETE FROM test_cases WHERE id = $1`,           [caseId]);
     });
 
     return reply.status(204).send();
@@ -555,10 +659,12 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       const { rows: caseRows } = await client.query<{
         id: string; name: string; base_url: string; created_at: Date; updated_at: Date;
       }>(
-        `INSERT INTO test_cases (tenant_id, suite_id, name, base_url)
-         VALUES ($1, $2, $3, $4)
-         RETURNING id, name, base_url, created_at, updated_at`,
-        [tenantId, src.suite_id, newName, src.base_url],
+        // The duplicate's author is whoever duplicated it, not the original's author —
+        // it is a new test that this person is now responsible for.
+        `INSERT INTO test_cases (tenant_id, suite_id, name, base_url, created_by)
+         VALUES ($1, $2, $3, $4, $5)
+         RETURNING id, name, base_url, created_at, updated_at, created_by`,
+        [tenantId, src.suite_id, newName, src.base_url, request.userId ?? null],
       );
       const newCase = caseRows[0];
 
@@ -670,10 +776,13 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
 
     // Create run record and enqueue
     const { rows } = await getPool().query<{ id: string }>(
-      `INSERT INTO runs (tenant_id, suite_id, case_id, triggered_by, status, environment_url)
-       VALUES ($1, $2, $3, 'web', 'queued', $4)
+      // total_steps: the run's length at the moment it was created. Not derivable
+      // later — the case's active steps can change mid-run now that tests are
+      // editable. Spec: docs/specs/roadmap/spec-phase-0-plumbing.md §3
+      `INSERT INTO runs (tenant_id, suite_id, case_id, triggered_by, status, environment_url, total_steps)
+       VALUES ($1, $2, $3, 'web', 'queued', $4, $5)
        RETURNING id`,
-      [tenantId, caseData.suite_id, caseId, baseUrl],
+      [tenantId, caseData.suite_id, caseId, baseUrl, compiledSteps.length],
     );
     const runId = rows[0].id;
 
@@ -720,6 +829,17 @@ function mapCaseSummary(row: {
   last_run_completed_at: Date | null;
   last_run_duration_ms: number | null;
   last_run_total_tokens: number | null;
+  author_id?: string | null;
+  author_name?: string | null;
+  author_email?: string | null;
+  runs?: string | null;
+  passed?: string | null;
+  healed?: string | null;
+  failed?: string | null;
+  avg_duration_ms?: number | null;
+  lookups?: string | null;
+  cached?: string | null;
+  first_run_tokens?: string | null;
 }) {
   return {
     id:        row.id,
@@ -727,6 +847,14 @@ function mapCaseSummary(row: {
     baseUrl:   row.base_url,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    // null for cases written before migration 030 and for anything created through an
+    // API key. The UI shows nothing at all rather than "Unknown" — an absent author is
+    // a fact about the record, not a person we failed to name.
+    createdBy: row.author_id ? {
+      id:          row.author_id,
+      displayName: row.author_name ?? null,
+      email:       row.author_email ?? '',
+    } : null,
     lastRun: row.last_run_id ? {
       id:          row.last_run_id,
       status:      row.last_run_status,
@@ -734,5 +862,22 @@ function mapCaseSummary(row: {
       durationMs:  row.last_run_duration_ms,
       totalTokens: row.last_run_total_tokens,
     } : null,
+    stats: (() => {
+      const lookups = Number(row.lookups ?? 0);
+      return {
+        runs:   Number(row.runs   ?? 0),
+        passed: Number(row.passed ?? 0),
+        healed: Number(row.healed ?? 0),
+        failed: Number(row.failed ?? 0),
+        avgDurationMs: row.avg_duration_ms ?? null,
+        // null, not 0, when nothing has ever been looked up. Zero means "every lookup
+        // needed the model", which is the opposite of "nothing measured yet", and the
+        // Tests screen must not render them the same.
+        cacheHitPct: lookups > 0 ? Math.round((Number(row.cached ?? 0) / lookups) * 100) : null,
+        // What learning cost, beside what it costs now — the product's claim on one row.
+        firstRunTokens: row.first_run_tokens != null ? Number(row.first_run_tokens) : null,
+        lastRunTokens:  row.last_run_total_tokens ?? null,
+      };
+    })(),
   };
 }

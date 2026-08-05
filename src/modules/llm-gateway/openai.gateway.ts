@@ -31,16 +31,31 @@ function filterByActionRole(candidates: CandidateNode[], action: string): Candid
  * Score candidates by word-overlap with the target description and return them
  * sorted descending. O(n) — no embeddings, no API calls.
  */
+// Words that name the KIND of control, not its identity — stripped when computing a
+// target's "core" so "the new link" cores to "new" (link is the role, not the label).
+const ROLE_FILLER = new Set([
+  'link', 'links', 'button', 'buttons', 'checkbox', 'checkboxes', 'radio', 'radios',
+  'field', 'fields', 'input', 'inputs', 'dropdown', 'dropdowns', 'tab', 'tabs',
+  'option', 'options', 'icon', 'menu', 'item', 'items', 'box',
+]);
+
 function scoreAndRankCandidates(candidates: CandidateNode[], target: string): CandidateNode[] {
   const words = target.toLowerCase().split(/\s+/)
     .map((w) => w.replace(/[^a-z0-9]/g, ''))   // strip quotes, punctuation
     .filter((w) => w.length > 2);
   if (words.length === 0) return candidates;
 
+  // The target's core identity with role/filler words removed ("the new link" → "new").
+  const core = words.filter((w) => !ROLE_FILLER.has(w)).join(' ');
+
   return candidates
     .map((c) => {
       const haystack = [
         c.role, c.name, c.textContent,
+        // Repeated-item context ("in: Conway Tim …" / "… J.K. Rowling") so a target that
+        // disambiguates by surrounding text ("the Edit link in the row for Conway") ranks
+        // the RIGHT candidate into the top-K instead of every identical "Edit" tying.
+        c.parentContext ?? '',
         c.attributes['placeholder'] ?? '',
         c.attributes['aria-label'] ?? '',
         c.attributes['id'] ?? '',
@@ -50,7 +65,16 @@ function scoreAndRankCandidates(candidates: CandidateNode[], target: string): Ca
         c.attributes['data-testid'] ?? '',
       ].join(' ').toLowerCase();
 
-      const score = words.reduce((n, w) => n + (haystack.includes(w) ? 1 : 0), 0);
+      let score = words.reduce((n, w) => n + (haystack.includes(w) ? 1 : 0), 0);
+
+      // Exact-name match to the target's core: a link literally named "new" beats a story
+      // whose title merely CONTAINS "new". Without this, on content-heavy pages the two tie
+      // on word-count and DOM order picks arbitrarily — and the volatile long story name
+      // then gets cached and rots when the story rotates off the page. The boost dominates
+      // word-count so an exactly-named control always wins.
+      const nameLc = (c.name ?? '').toLowerCase().replace(/[^a-z0-9 ]/g, '').replace(/\s+/g, ' ').trim();
+      if (core && nameLc === core) score += 10;
+
       return { c, score };
     })
     .sort((a, b) => b.score - a.score)
@@ -114,7 +138,7 @@ export class OpenAIGateway implements ILLMGateway {
             role: 'system',
             content: `You are a UI test compiler. Extract the user's intent into a JSON object matching this schema exactly:
 {
-  "action": "navigate" | "go_back" | "go_forward" | "reload" | "click" | "click_random" | "double_click" | "right_click" | "hover" | "type" | "clear" | "select" | "check" | "uncheck" | "upload" | "assert_visible" | "assert_not_visible" | "assert_text" | "assert_not_text" | "assert_url" | "assert_title" | "assert_enabled" | "assert_disabled" | "assert_checked" | "assert_attribute" | "wait" | "press_key" | "scroll",
+  "action": "navigate" | "go_back" | "go_forward" | "reload" | "switch_tab" | "close_tab" | "click" | "click_random" | "double_click" | "right_click" | "hover" | "drag_and_drop" | "type" | "clear" | "select" | "check" | "uncheck" | "upload" | "assert_visible" | "assert_not_visible" | "assert_text" | "assert_not_text" | "assert_url" | "assert_title" | "assert_enabled" | "assert_disabled" | "assert_checked" | "assert_count" | "assert_attribute" | "wait" | "press_key" | "scroll",
   "targetDescription": "string | null",
   "value": "string | null",
   "url": "string | null"
@@ -133,10 +157,13 @@ Action rules:
 - "double_click": double-clicking an element ("double click the row").
 - "right_click": right-click / open the context menu on an element.
 - "hover": hovering over an element to reveal a menu or tooltip ("hover over the avatar").
+- "drag_and_drop": dragging one element onto another ("drag the card to the Done column", "drag Item A onto Box B", "reorder X above Y"). Put the element BEING DRAGGED (the source) in targetDescription, and the DROP TARGET (the destination) in value. Example: "drag the Sauce Labs Backpack card to the cart" → targetDescription: "the Sauce Labs Backpack card", value: "the cart". Both must be concrete element descriptions.
 - "clear": emptying an existing input or textarea ("clear the search box"). Use "type" to enter text; "clear" to empty it.
 - "check" / "uncheck": explicitly setting a checkbox to checked / unchecked ("check the terms box", "uncheck the newsletter option"). Use "click" for a plain tap/toggle.
 - "upload": choosing a file for a file input ("upload resume.pdf"). Put the file name/path in value.
 - "go_back" / "go_forward" / "reload": browser back, forward, or refresh. targetDescription is null.
+- "switch_tab": switch focus to another browser tab/window ("switch to the new tab", "go to the newly opened window", "switch back to the original tab", "switch to the second tab"). Put the tab hint in value: "new" (newly opened — the default), "first" (original), an ordinal/number ("second"), or a page-title fragment. targetDescription null.
+- "close_tab": close the current tab and return to the previous one ("close the tab", "close this window"). targetDescription and value null.
 - "assert_url": verifying the current page URL contains a value. Put the expected URL or fragment in value; targetDescription null. ("verify the URL contains /checkout")
 - "assert_title": verifying the page title. Put the expected title text in value; targetDescription null.
 - "assert_not_visible": verifying an element is NOT present or NOT visible ("verify the error is gone", "the spinner should disappear"). Element in targetDescription.
@@ -144,6 +171,7 @@ Action rules:
 - "assert_enabled" / "assert_disabled": verifying an element is enabled / disabled ("verify Submit is disabled"). Element in targetDescription.
 - "assert_checked": verifying a checkbox or radio is checked ("verify the Remember me box is checked"). Element in targetDescription.
 - "assert_attribute": verifying an element's HTML attribute. Element in targetDescription, and value is "attribute=expectedValue". Examples: "verify the Login link points to /login" → targetDescription: "the Login link", value: "href=/login"; "verify the Subscribe button has class active" → targetDescription: "the Subscribe button", value: "class=active".
+- "assert_count": verifying HOW MANY repeated elements/items are on the page ("verify there are 5 products", "there should be at least 3 results", "the table has 10 rows"). Put the plural THING being counted in targetDescription (keep its distinguishing noun: "products", "search results", "rows", "cart items"), and the expected number in value. Encode inexact phrasing as a comparison prefix on the number: "at least N" / "N or more" / "minimum N" → ">=N"; "more than N" / "over N" → ">N"; "at most N" / "no more than N" / "up to N" → "<=N"; "fewer than N" / "less than N" / "under N" → "<N"; exact ("exactly N", "N items", "there are N") → "N". Examples: "verify there are 5 products" → targetDescription: "products", value: "5"; "there should be at least 3 search results" → targetDescription: "search results", value: ">=3"; "confirm no more than 4 rows are shown" → targetDescription: "rows", value: "<=4".
 
 CRITICAL — assertion polarity (present vs. absent):
 - Decide positive ("assert_text") vs. negative ("assert_not_text") — and likewise "assert_visible" vs. "assert_not_visible" — SOLELY from the sentence's verb/phrasing, NEVER from words that happen to appear inside the expected/quoted text.

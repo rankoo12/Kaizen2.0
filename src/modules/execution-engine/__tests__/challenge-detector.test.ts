@@ -15,7 +15,7 @@ function makePage(domState: {
   return {
     url: () => 'https://example.com',
     screenshot: jest.fn().mockResolvedValue(Buffer.from('')),
-    evaluate: jest.fn().mockImplementation(async (fn: Function) => {
+    evaluate: jest.fn().mockImplementation(async (fn: () => unknown) => {
       // Simulate browser document
       const fakeDoc = {
         title: domState.title ?? '',

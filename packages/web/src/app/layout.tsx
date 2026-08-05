@@ -2,8 +2,11 @@ import type { Metadata } from 'next';
 import { Inter, Space_Grotesk, Manrope } from 'next/font/google';
 import { Providers } from '@/components/providers';
 import { ThemeScript } from '@/components/atoms/theme-script';
-import { MusicPlayer } from '@/components/molecules/music-player';
 import './globals.css';
+/* Must load AFTER globals.css. `[data-appearance=aperture]` and `:root` have identical
+ * specificity (0-1-0), so the later stylesheet wins — importing aperture first (via an
+ * @import at the top of globals.css) let the base light tokens override the whole skin. */
+import './aperture.css';
 
 const inter = Inter({
   subsets: ['latin'],
@@ -35,11 +38,11 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <head>
         <ThemeScript />
       </head>
-      <body className="bg-app-bg text-white font-sans min-h-screen">
-        <Providers>
-          {children}
-          <MusicPlayer />
-        </Providers>
+      {/* No colour utilities here on purpose. `text-white` used to live on <body>, so
+          anything that didn't set its own colour inherited white — invisible once the
+          ground went light. globals.css owns body colour/background via the tokens. */}
+      <body className="min-h-screen">
+        <Providers>{children}</Providers>
       </body>
     </html>
   );

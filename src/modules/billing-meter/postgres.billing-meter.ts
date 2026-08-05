@@ -1,5 +1,5 @@
 import type { IBillingMeter } from './interfaces';
-import type { BillingEventInput, TenantUsage, BillingEventType, Span } from '../../types';
+import type { BillingEventInput, TenantUsage, BillingEventType } from '../../types';
 
 // We import IObservability interface depending on where it's defined
 import type { IObservability } from '../observability/interfaces';

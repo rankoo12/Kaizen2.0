@@ -12,6 +12,7 @@ import { membersRoutes } from './routes/members';
 import { platformRoutes } from './routes/platform';
 import { testCasesRoutes } from './routes/test-cases';
 import { testWriterRoutes } from './routes/test-writer';
+import { brainRoutes } from './routes/brain';
 import { closePool } from '../db/pool';
 
 dotenv.config();
@@ -86,6 +87,7 @@ void app.register(platformRoutes);
 void app.register(runsRoutes);
 void app.register(testCasesRoutes);
 void app.register(testWriterRoutes);
+void app.register(brainRoutes);
 
 const shutdown = async (signal: string): Promise<void> => {
   app.log.info({ event: 'shutdown', signal });

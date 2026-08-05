@@ -17,12 +17,16 @@ export type StepAction =
   | 'go_back'
   | 'go_forward'
   | 'reload'
+  // ── Tab / window management ──
+  | 'switch_tab'
+  | 'close_tab'
   // ── Pointer interactions ──
   | 'click'
   | 'click_random'
   | 'double_click'
   | 'right_click'
   | 'hover'
+  | 'drag_and_drop'
   // ── Form interactions ──
   | 'type'
   | 'clear'
@@ -121,6 +125,13 @@ export type CandidateNode = {
    * Populated by PlaywrightDOMPruner; used only in LLM prompt formatting.
    */
   parentContext?: string;
+  /**
+   * URL of the IFRAME this element lives in, when it was gathered from a child frame
+   * (e.g. a third-party cookie-consent CMP). Undefined for main-document elements.
+   * The execution engine locates + acts on the element WITHIN this frame; such
+   * elements are session-only and never cached (frame URLs carry per-session tokens).
+   */
+  frameUrl?: string;
 };
 
 // ─── Element Resolution ───────────────────────────────────────────────────────
@@ -166,6 +177,12 @@ export type SelectorSet = {
   /** The kaizenId the LLM selected from those candidates. Null on cache hits. */
   llmPickedKaizenId?: string | null;
   /**
+   * Second-target selectors for two-target actions (drag_and_drop): these locate
+   * the DROP DESTINATION. `selectors` holds the drag SOURCE; these hold the target.
+   * Populated by the worker's drag_and_drop routing; undefined for every other action.
+   */
+  destinationSelectors?: SelectorEntry[];
+  /**
    * LLM tokens consumed during element resolution for this step.
    * Non-zero only when resolveElement was called (resolutionSource === 'llm').
    * Zero on all cache hits — no LLM was invoked.
@@ -178,6 +195,12 @@ export type SelectorSet = {
    * instance that produced this match lives in the worker process).
    */
   archetypeName?: string | null;
+  /**
+   * URL of the IFRAME the resolved element lives in (from CandidateNode.frameUrl).
+   * When set, the execution engine locates + acts within that frame instead of the
+   * top document. Undefined for ordinary main-document elements.
+   */
+  frameUrl?: string;
 };
 
 export type ResolutionContext = {

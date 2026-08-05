@@ -23,6 +23,9 @@ type AuthContextValue = {
   user: AuthUser | null;
   isLoading: boolean;
   login: (email: string, password: string) => Promise<void>;
+  /** Sign in as the shared demo account. Takes no credentials on purpose — the server
+   *  route holds them, so the demo password is never in the client bundle. */
+  loginAsDemo: () => Promise<void>;
   register: (email: string, password: string, displayName?: string) => Promise<void>;
   logout: () => Promise<void>;
 };
@@ -76,6 +79,24 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     setUser({ ...u, tenantId });
   }, []);
 
+  const loginAsDemo = useCallback(async () => {
+    // No body: the server route supplies the credentials.
+    const res = await fetch('/api/auth/demo', { method: 'POST' });
+
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({}));
+      // 404 = deliberately switched off for this deployment; 401 = the account is
+      // missing or its password changed. Different causes, different fixes, so they
+      // must not collapse into one message.
+      if (res.status === 404) throw new Error('Demo access is turned off on this deployment');
+      if (res.status === 401) throw new Error('The demo account is unavailable right now');
+      throw new Error(data.message ?? 'Could not open the demo. Please try again.');
+    }
+
+    const { user: u, tenantId } = await res.json();
+    setUser({ ...u, tenantId });
+  }, []);
+
   const register = useCallback(
     async (email: string, password: string, displayName?: string) => {
       const res = await fetch('/api/auth/register', {
@@ -108,7 +129,7 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
   }, [router]);
 
   return (
-    <AuthContext.Provider value={{ user, isLoading, login, register, logout }}>
+    <AuthContext.Provider value={{ user, isLoading, login, loginAsDemo, register, logout }}>
       {children}
     </AuthContext.Provider>
   );

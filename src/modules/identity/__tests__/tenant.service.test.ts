@@ -246,12 +246,39 @@ describe('TenantService.delete', () => {
 describe('TenantService.getUsage', () => {
   it('returns usage stats with correct field mapping', async () => {
     mockQuery
-      .mockResolvedValueOnce({ rows: [{ count: '5' }] })   // runs
+      .mockResolvedValueOnce({ rows: [{ count: '5' }] })     // runs
       .mockResolvedValueOnce({ rows: [{ total: '10000' }] }) // tokens
-      .mockResolvedValueOnce({ rows: [{ count: '3' }] });   // members
+      .mockResolvedValueOnce({ rows: [{ count: '3' }] })     // members
+      .mockResolvedValueOnce({ rows: [{ llm_budget_tokens_monthly: '500000' }] }); // budget
 
     const usage = await makeService().getUsage('t1');
-    expect(usage).toEqual({ runsThisMonth: 5, llmTokensThisMonth: 10000, memberCount: 3 });
+    expect(usage).toMatchObject({
+      runsThisMonth: 5,
+      llmTokensThisMonth: 10000,
+      memberCount: 3,
+      budgetTokensMonthly: 500000,
+    });
+    // The cycle must be a calendar month, because that is the boundary usageThisMonth
+    // enforces against — a meter that resets on a different day than enforcement is
+    // worse than no meter. Spec: spec-keys-quota-authorship.md §5
+    const start = new Date(usage.cycleStart);
+    const end = new Date(usage.cycleEnd);
+    expect(start.getDate()).toBe(1);
+    expect(end.getDate()).toBe(1);
+    expect(end > start).toBe(true);
+  });
+
+  it('reports a missing tenant as no allowance rather than crashing', async () => {
+    mockQuery
+      .mockResolvedValueOnce({ rows: [{ count: '0' }] })
+      .mockResolvedValueOnce({ rows: [{ total: '0' }] })
+      .mockResolvedValueOnce({ rows: [{ count: '0' }] })
+      .mockResolvedValueOnce({ rows: [] });   // no tenant row
+
+    // 0 is a real state — it is the default for new tenants (migration 019) and rejects
+    // runs with INSUFFICIENT_TOKENS, distinct from exhausting an allowance.
+    const usage = await makeService().getUsage('t1');
+    expect(usage.budgetTokensMonthly).toBe(0);
   });
 });
 
