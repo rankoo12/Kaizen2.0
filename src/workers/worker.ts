@@ -45,6 +45,7 @@ import { pickRandomCandidate, resolveCardTitle, seededIndex } from '../modules/e
 import { findRepeatedTargets } from '../modules/element-resolver/random-target';
 import { resolveCountSelector } from '../modules/element-resolver/countable';
 import { interpolateStep } from './run-context';
+import { shouldResolveFresh } from './assertion-cache-policy';
 import { RunLogger } from './run-logger';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
 import { PageChallengeDetector } from '../modules/execution-engine/challenge-detector';
@@ -631,12 +632,17 @@ async function executeStep(
   } else {
     // Actions that operate on the page / keyboard / URL / title need no element.
     const NO_ELEMENT_ACTIONS = new Set(['navigate', 'press_key', 'wait', 'go_back', 'go_forward', 'reload', 'assert_url', 'assert_title']);
-    // State / negative assertions verify CURRENT page state — they must never read
-    // a cached selector (it can embed run-specific data, e.g. a header link named
-    // with a previous run's email). Use the no-cache resolver.
-    const NO_CACHE_ASSERTIONS = new Set(['assert_visible', 'assert_not_visible', 'assert_enabled', 'assert_disabled', 'assert_checked', 'assert_attribute']);
+    // State / negative assertions verify CURRENT page state. The hazard is a target
+    // that embeds run-specific data — "verify the header shows {{email}}" — because
+    // targetHash is computed by the COMPILER from the raw text and interpolateStep
+    // never recomputes it. Such a step therefore has a STABLE cache key pointing at
+    // CHANGING content: run 2 would read back run 1's selector and assert against an
+    // email that no longer exists.
     const needsElement = !NO_ELEMENT_ACTIONS.has(step.action);
-    const useNoCache = NO_CACHE_ASSERTIONS.has(step.action);
+    // interpolateStep returns the SAME object when no {{token}} was present, so this
+    // comparison is exact and free.
+    const targetIsRunVarying = step.targetDescription !== rawStep.targetDescription;
+    const useNoCache = shouldResolveFresh(step.action, targetIsRunVarying);
     try {
       selectorSet = needsElement
         ? await (useNoCache ? assertionResolver : resolver).resolve(step, resolutionContext)
