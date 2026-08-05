@@ -314,6 +314,21 @@ projector off `run_events`). Backfill once from history.
 **Acceptance** The Tests list renders per-case cache % and run counts with no extra
 per-row queries; numbers match a hand-written aggregate query.
 
+### ✅ DONE 2026-08-04 — without the table
+The premise was measured and did not hold. "A scan of `step_results` per case per page
+load" is in fact one grouped query per page load, at **~1.1 ms for a whole tenant**. The
+aggregates ship as lateral joins on the existing cases query — median 6 ms, p95 7 ms for
+the full response.
+
+A `case_stats` table would have cost a write seam in `markRunComplete`
+([worker.ts](../../../src/workers/worker.ts) — the repo's highest-conflict file, with
+another session active) plus a staleness class of bug, for no measured gain. Deferred with
+an explicit trigger in
+[spec-cost-history-and-case-stats.md §2.1](./spec-cost-history-and-case-stats.md).
+
+`cacheHitPct` is null, never 0, for a case that has never looked anything up — zero would
+claim every lookup needed the model.
+
 ### B5. Cost + cache-hit history (the core promise)
 **Design promised** the headline chart: 30 days of tokens-per-run trending toward zero,
 plus runs/day and cache-hit/day, and "up from 41% a month ago" on The Brain.
@@ -327,6 +342,22 @@ completion. Then the design's `CostChart` and the Brain's trend line become real
 
 **Acceptance** The 30-day curve renders from the rollup, and its totals reconcile with
 `billing_events` for the same window.
+
+### ✅ DONE 2026-08-04 — without the rollup
+`GET /tenants/:id/usage/history?days=30` returns runs, tokens, lookups, cache hits, heals
+and failures per day, with **quiet days present as zeros** — omitting them would compress
+time and make a downward trend look steeper than it is. Median 6 ms, p95 9 ms; a 90-day
+window costs no more.
+
+The reconciliation acceptance criterion above exists only because a rollup can drift.
+Computing directly makes it true by construction, so it was replaced with a stronger check:
+the per-day figures are reconciled against an independent recount from the runs feed.
+
+The chart itself changed shape. The old one plotted **one bar per recent run**, which
+cannot show a trend — a busy day and a quiet day took the same width. It now plots days,
+and plots **tokens per run** rather than tokens total, so twenty cheap runs don't tower
+over one expensive one. The "N% cheaper" badge is computed only across days that had runs;
+an idle stretch is not a cost improvement.
 
 ### B6. Element highlight on evidence screenshots
 **Design promised** the acted-on element outlined in the screenshot (`hl: {x,y,w,h}`),

@@ -115,6 +115,26 @@ export async function tenantsRoutes(app: FastifyInstance): Promise<void> {
     },
   );
 
+  // ── GET /tenants/:tenantId/usage/history ──────────────────────────────────
+  /* The 30-day "cost per run trends to zero" series — the product's central claim,
+     which the Usage screen could previously only gesture at with individual recent runs.
+     Computed directly rather than from a rollup table: measured at 21ms for every tenant
+     and every day at current volume, against a rollup's cost of a write seam in
+     worker.ts (the repo's highest-conflict file) plus a staleness class of bug.
+     Spec: docs/specs/roadmap/spec-cost-history-and-case-stats.md §2 */
+  app.get<{ Params: { tenantId: string }; Querystring: { days?: string } }>(
+    '/tenants/:tenantId/usage/history',
+    { preHandler: [requireAuth, requireRole('admin')] },
+    async (request, reply) => {
+      if (request.params.tenantId !== request.tenantId) {
+        return reply.status(403).send({ error: 'FORBIDDEN' });
+      }
+      const days = Math.min(90, Math.max(1, parseInt(request.query.days ?? '30', 10) || 30));
+      const series = await tenantService.getUsageHistory(request.params.tenantId, days);
+      return reply.send({ days, series });
+    },
+  );
+
   // ── POST /tenants/:tenantId/api-key ───────────────────────────────────────
   app.post<{ Params: { tenantId: string } }>(
     '/tenants/:tenantId/api-key',

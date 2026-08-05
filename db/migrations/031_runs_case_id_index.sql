@@ -1,0 +1,23 @@
+-- =============================================================================
+-- Kaizen — index the join the per-case aggregates rely on
+-- Migration: 031_runs_case_id_index
+-- Spec ref: docs/specs/roadmap/spec-cost-history-and-case-stats.md §3
+--
+-- Numbered 031, not 029/030: 028 is taken twice (028_run_total_steps here and
+-- 028_test_writer on an unmerged branch), and 029/030 are already used.
+--
+-- runs is indexed on (tenant_id, status, created_at DESC) but nothing covers
+-- case_id, which is what the per-case aggregate joins on. At current volume a
+-- sequential scan already answers in ~1ms, so this is not a fix for a slow
+-- query — it is what keeps that measurement true as runs grows, and therefore
+-- what keeps the decision to compute directly (instead of maintaining rollup
+-- tables) defensible over time.
+--
+-- created_at DESC is included so "the most recent run for this case" — used by
+-- the cases list for last-run status and cost — is answered from the index
+-- rather than by sorting.
+--
+-- Additive only — safe to apply while a live worker is on the shared database.
+-- =============================================================================
+
+CREATE INDEX IF NOT EXISTS runs_case_created_idx ON runs (case_id, created_at DESC);

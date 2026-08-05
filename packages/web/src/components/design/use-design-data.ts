@@ -25,6 +25,12 @@ export type DesignCase = {
   /** Display name of whoever wrote the test; '' when unknown (pre-030 cases, or a case
    *  created through an API key). Empty renders as nothing, never as "Unknown". */
   author: string;
+  /** % of this case's element lookups answered from memory. Null = never looked
+   *  anything up, which must not render as 0%. */
+  cacheHitPct: number | null;
+  /** Tokens the first run spent learning; null when it has never run. */
+  firstRunTokens: number | null;
+  runCount: number;
 };
 
 export type DesignSuite = { id: string; name: string; desc: string; icon: string; count: number };
@@ -80,6 +86,9 @@ function toDesignCase(c: CaseSummary, s: Suite): DesignCase {
     // Prefer the display name; fall back to the local part of the email rather than the
     // whole address, which is too long for a list row.
     author: c.createdBy ? (c.createdBy.displayName || c.createdBy.email.split('@')[0]) : '',
+    cacheHitPct: c.stats?.cacheHitPct ?? null,
+    firstRunTokens: c.stats?.firstRunTokens ?? null,
+    runCount: c.stats?.runs ?? 0,
   };
 }
 

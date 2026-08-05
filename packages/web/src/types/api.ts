@@ -27,6 +27,22 @@ export type CaseSummary = {
   createdAt: string;
   updatedAt: string;
   createdBy: CaseAuthor | null;
+  /** Aggregates over this case's whole run history. Computed per request rather than
+   *  read from a rollup — measured at ~1.1ms for a tenant, and a cached copy would be
+   *  one more place for numbers to disagree with their source. */
+  stats: {
+    runs: number;
+    passed: number;
+    healed: number;
+    failed: number;
+    avgDurationMs: number | null;
+    /** Null, not 0, when this case has never resolved an element. Zero means every
+     *  lookup needed the model, which is the opposite of "nothing measured yet". */
+    cacheHitPct: number | null;
+    /** What learning cost, beside what it costs now. */
+    firstRunTokens: number | null;
+    lastRunTokens: number | null;
+  };
   lastRun: {
     id: string;
     status: RunStatus;

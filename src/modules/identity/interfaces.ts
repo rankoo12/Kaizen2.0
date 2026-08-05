@@ -85,6 +85,21 @@ export type TenantUsage = {
   cycleEnd: string;
 };
 
+/** One day of the cost/cache-hit history. Quiet days are present with zeros rather than
+ *  omitted — dropping them would compress time and flatter a downward cost trend. */
+export type UsageHistoryPoint = {
+  day: string;          // ISO date
+  runs: number;
+  tokens: number;
+  /** Step results that resolved an element. The denominator for cacheHits. */
+  lookups: number;
+  /** Lookups answered by anything other than the model. Derived from resolution_source,
+   *  not step_results.cache_hit, which has never been written. */
+  cacheHits: number;
+  heals: number;
+  failures: number;
+};
+
 // ─── Auth types ───────────────────────────────────────────────────────────────
 
 export type LoginResult = {

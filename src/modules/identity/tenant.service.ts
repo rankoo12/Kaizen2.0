@@ -10,6 +10,7 @@ import type {
   UpdateTenantParams,
   Tenant,
   TenantUsage,
+  UsageHistoryPoint,
 } from './interfaces';
 import { IdentityErrors } from './interfaces';
 import type { KeyScope } from '../../types';
@@ -266,6 +267,79 @@ export class TenantService implements ITenantService {
     }
 
     return rawKey;
+  }
+
+  /**
+   * Daily runs / tokens / cache-hits over the last `days` days.
+   *
+   * generate_series supplies the calendar so quiet days come back as zeros instead of
+   * being absent. A chart that drops empty days compresses time and makes a downward
+   * cost trend look steeper than it is — which, on a screen whose whole purpose is to
+   * evidence that trend, would be flattering rather than true.
+   *
+   * Spec: docs/specs/roadmap/spec-cost-history-and-case-stats.md §4.1
+   */
+  async getUsageHistory(tenantId: string, days: number): Promise<UsageHistoryPoint[]> {
+    const { rows } = await getPool().query<{
+      day: string; runs: string; tokens: string;
+      lookups: string; cache_hits: string; heals: string; failures: string;
+    }>(
+      `WITH calendar AS (
+         SELECT generate_series(
+                  (current_date - ($2::int - 1) * INTERVAL '1 day')::date,
+                  current_date,
+                  INTERVAL '1 day'
+                )::date AS day
+       ),
+       run_days AS (
+         SELECT r.id, r.status, r.created_at::date AS day
+           FROM runs r
+          WHERE r.tenant_id = $1
+            AND r.created_at >= current_date - ($2::int - 1) * INTERVAL '1 day'
+       ),
+       -- One pass over this window's step results, keyed back to the run's day.
+       -- cache_hit is deliberately unused: it is a dead column, never written
+       -- (0 of 13,198 rows), so resolution_source is the only honest signal for
+       -- "did this need the model".
+       step_days AS (
+         SELECT rd.day,
+                COALESCE(SUM(sr.tokens_used), 0)                                   AS tokens,
+                COUNT(*) FILTER (WHERE sr.resolution_source IS NOT NULL)           AS lookups,
+                COUNT(*) FILTER (WHERE sr.resolution_source IS NOT NULL
+                                   AND sr.resolution_source <> 'llm')              AS cache_hits
+           FROM run_days rd
+           JOIN step_results sr ON sr.run_id = rd.id
+          GROUP BY rd.day
+       )
+       SELECT c.day::text                                                AS day,
+              COALESCE(rc.runs, 0)::text                                 AS runs,
+              COALESCE(sd.tokens, 0)::text                               AS tokens,
+              COALESCE(sd.lookups, 0)::text                              AS lookups,
+              COALESCE(sd.cache_hits, 0)::text                           AS cache_hits,
+              COALESCE(rc.heals, 0)::text                                AS heals,
+              COALESCE(rc.failures, 0)::text                             AS failures
+         FROM calendar c
+         LEFT JOIN (
+           SELECT day,
+                  COUNT(*)                                       AS runs,
+                  COUNT(*) FILTER (WHERE status = 'healed')      AS heals,
+                  COUNT(*) FILTER (WHERE status = 'failed')      AS failures
+             FROM run_days GROUP BY day
+         ) rc ON rc.day = c.day
+         LEFT JOIN step_days sd ON sd.day = c.day
+        ORDER BY c.day ASC`,
+      [tenantId, days],
+    );
+
+    return rows.map((r) => ({
+      day: r.day,
+      runs: Number(r.runs),
+      tokens: Number(r.tokens),
+      lookups: Number(r.lookups),
+      cacheHits: Number(r.cache_hits),
+      heals: Number(r.heals),
+      failures: Number(r.failures),
+    }));
   }
 
   /* ─── API keys ───────────────────────────────────────────────────────────────

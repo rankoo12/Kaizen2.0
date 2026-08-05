@@ -29,7 +29,17 @@ function CaseRow({ c, sel, onSelect, onOpen, onRun, onEdit, onDelete, rowRef }: 
           {c.author && <><span style={{ margin: '0 6px', color: 'var(--text-3)' }}>·</span>{c.author}</>}
         </div>
       </div>
-      <div className="num" style={{ width: 74, flex: 'none', textAlign: 'right', fontSize: 12, fontWeight: 600, color: c.lastCost === 0 || c.lastCost == null ? 'var(--text-2)' : 'var(--text)' }}>
+      {/* From memory: the share of this case's lookups that avoided the model. Blank when
+          nothing has been looked up yet — 0% would claim a measurement we don't have. */}
+      <div className="num hide-md" style={{ width: 66, flex: 'none', textAlign: 'right', fontSize: 12, fontWeight: 600,
+        color: c.cacheHitPct == null ? 'var(--text-3)' : c.cacheHitPct === 100 ? 'var(--cache)' : 'var(--text-2)' }}
+        title={c.cacheHitPct == null ? 'No element lookups yet' : `${c.cacheHitPct}% of lookups came from memory`}>
+        {c.cacheHitPct == null ? '—' : `${c.cacheHitPct}%`}
+      </div>
+      <div className="num" style={{ width: 74, flex: 'none', textAlign: 'right', fontSize: 12, fontWeight: 600, color: c.lastCost === 0 || c.lastCost == null ? 'var(--text-2)' : 'var(--text)' }}
+        title={c.firstRunTokens != null && c.runCount > 1
+          ? `First run cost ${c.firstRunTokens} tokens to learn; latest cost ${c.lastCost ?? 0}`
+          : undefined}>
         {cost}
       </div>
       <div style={{ width: 82, flex: 'none' }}><StatusBadge status={c.status} size="sm" /></div>
@@ -141,6 +151,7 @@ export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit
         {list.length > 0 && (
           <div className="list-h" style={{ background: 'transparent', borderBottom: 'none', padding: '0 14px 5px' }}>
             <span style={{ flex: 1 }}>TEST</span>
+            <span className="hide-md" style={{ width: 66, textAlign: 'right' }}>MEMORY</span>
             <span style={{ width: 74, textAlign: 'right' }}>COST · TOK</span>
             <span style={{ width: 82 }}>STATUS</span>
             <span style={{ width: 70, textAlign: 'right' }}>LAST RUN</span>
