@@ -1,8 +1,11 @@
 # Spec — Test Writer Service (Kaizen as a QA Engineer: umbrella)
 
 Created: 2026-07-29
-Branch: `feat/test-writer/p0-specs`
-Status: Draft — design agreed with product owner; implementation not started.
+Updated: 2026-08-06 — P2 refinement: structured-intent re-decision (§1), plan-approval
+checkpoint (§4/§5/§8), Init Brief (§12), security & data posture (§13). P1 (RECON) is
+implemented and live-validated.
+Branch: `feat/test-writer/generation-pipeline`
+Status: Design agreed with product owner; P1 built, P2 not started.
 
 > Umbrella spec for the Test Writer service. Companions (read in this order):
 > 1. `spec-recon-crawler.md` — Phase 1 RECON: the smart crawler + safety classifier.
@@ -33,6 +36,17 @@ The load-bearing insight: a Kaizen test is `{ name, baseUrl, steps: string[] }`
 — natural-language sentences ARE the interface. The Test Writer only emits
 English step strings; compilation, resolution, execution, healing, persistence
 and review all reuse the existing machinery unchanged.
+
+> **Product re-decision (2026-08-06, approved)**: NL remains the USER-facing
+> interface — humans review and edit English, and edited steps go through the
+> normal compiler. But internally the generator no longer emits English: it
+> emits **structured intents** referencing crawled `page_elements` rows, and a
+> deterministic renderer produces both the NL sentence and the StepAST
+> (generation-pipeline spec §3). Rationale: kills hallucinated elements
+> (schema error) and negative-polarity gambles structurally, and removes the
+> LLM re-compile of generated steps (~half the job's token cost). Constructed
+> ASTs are stored on `test_steps.compiled_ast` — never in the global
+> `compiled_ast_cache` (isolation invariant §11 holds).
 
 ## 2. Product decisions (locked)
 
@@ -110,8 +124,9 @@ export type TestWriterJobPayload = {
     maxPages: number;         // default 30, hard cap 50
     maxScenarios: number;     // default 6, hard cap 10
     includeNegative: boolean; // default true
-    safeMode: boolean;        // default true — destructive-verb blocklist on generated tests
+    safeMode: boolean;        // default true — graduated safety filter (generation spec §4.2)
     validate: boolean;        // default true — self-validation runs
+    planApproval: 'review' | 'auto'; // default 'review' on first analyze — pause after PLAN
   };
 };
 ```
@@ -130,6 +145,11 @@ retried only by explicit user action — never blindly.
 | `POST /suites/:suiteId/suggest` | JWT | Scoped generation: body `{ pageUrl, options? }`. If Site Knowledge exists for the suite, runs PLAN/WRITE/VALIDATE scoped to that page. If none exists, behaves as `analyze` (recon-first is non-negotiable). |
 | `GET /testwriter/jobs/:jobId` | JWT | Job status + `report` JSONB + `test_plan` JSONB. Polled by the web UI (same 1.5–2s pattern as `use-run-poller`). |
 | `GET /suites/:suiteId/jobs` | JWT | Job history for the suite. |
+| `POST /testwriter/jobs/:jobId/plan-approval` | JWT | Resumes a job paused at `awaiting_plan_approval`. Body `{ approvedScenarios: string[], notes?: string }` — WRITE/VALIDATE run only for approved plan entries; notes ride into the WRITE prompt (delimited as untrusted data). 409 if the job is not awaiting approval. |
+
+`POST /suites/:suiteId/analyze` additionally accepts `initBrief?: string`
+(≤ 8k chars) — the tenant's "describe your app" text (§12), secret-scrubbed on
+intake, distilled and stored before the job is enqueued.
 
 Validation rule: `scope === 'authenticated'` requires `loginCaseId` AND
 `authConsent === true`, else 400. Consent + scope are persisted on the job row
@@ -164,7 +184,11 @@ draft-writer. One implementation of the versioned-steps invariant, two callers.
 ## 8. Job lifecycle & report
 
 ```
-queued → running → completed
+queued → running → awaiting_plan_approval → running → completed
+                 │  (planApproval='review';        ↘ failed
+                 │   resumes via plan-approval     ↘ blocked
+                 │   endpoint; 7-day timeout
+                 │   → failed:plan_approval_timeout)
                  ↘ failed   (pipeline error; error column populated)
                  ↘ blocked  (challenge detected / robots disallow / login failed)
 ```
@@ -213,3 +237,54 @@ Cost visibility is a requirement, not a nicety: every phase reports tokens.
 - No API-level (non-UI) test generation.
 - No automatic promotion of drafts — a human approves every generated test.
 - No writes to the shared/global selector pool from any Test Writer code path.
+
+## 12. Init Brief — user-provided system context (added 2026-08-06)
+
+A human QA reads the docs on day one, not just the app. The crawl tells Kaizen
+what the app IS; the Init Brief tells it what the app is FOR and what matters.
+
+- Intake: `initBrief` free text on `POST /suites/:suiteId/analyze` (§5).
+  Document upload (PDF/MD) is a deferred follow-up.
+- **Secret scrubbing on intake**: credential/API-key/token patterns detected →
+  warn in the response + redact BEFORE storage or any prompt.
+- Distillation: one mini-model call → structured, tenant-scoped `tenant_brief`
+  JSONB stored on the suite (migration 032): `{ purpose, roles, criticalFlows,
+  businessRules, priorities, cautions }`. Fed into `synthesizeAppBrief` and
+  `planScenarios` as a second knowledge source.
+- **Grounding rule**: the brief steers priorities and journey selection; WRITE
+  still references only CRAWLED elements. A brief-described flow the crawl
+  didn't observe is reported as a **coverage gap** ("described but not
+  observed — behind auth? deeper crawl?") — itself a QA deliverable.
+- Brief text is untrusted input (§13.3) — delimited, instruction-ignoring.
+
+## 13. Security & data posture (added 2026-08-06; priority order set by product owner)
+
+1. **Customer data confidentiality (TOP)**: `tenant_brief`, site knowledge, and
+   App Briefs are proprietary customer data — tenant-scoped under RLS, never in
+   any shared table, never in another tenant's prompt context, excluded from
+   cross-tenant logs. LLM provider posture: API-tier no-training/DPA terms,
+   documented for security reviews; tenant-pinned endpoints are a future
+   enterprise option. Credentials (P3): encrypted at rest, never logged, never
+   in reports.
+2. **Safe action on customer systems**: consent-gated mutations (per-suite
+   `allow_synthetic_data`, generation spec §6.2), graduated safety filter,
+   stop-before-the-money-step skeletons, and a reconstructable action audit
+   trail (run_events + generation_jobs).
+3. **Prompt-injection hardening**: crawled text (titles, headings, accessible
+   names, form labels) AND brief text are attacker-influenceable and flow into
+   frontier prompts — always delimited as untrusted data with an explicit
+   ignore-embedded-instructions rule; scenario names/rationales sanitized
+   before UI display; a hostile-page + hostile-brief fixture suite ships with
+   P2 tests.
+4. **Access control**: analyze/consent/approval ride the existing JWT +
+   membership-role machinery; consent flags recorded on job rows for audit.
+
+**Data doctrine — "signals, not content"**: per-tenant data is a PRODUCT asset
+(monetizes via retention); only derived, tenant-free pattern telemetry may ever
+cross tenants (aggregate counters, ≥N-tenant threshold, opt-out flag) — the
+machinery is deferred, but provenance stamps (`test_plan.source`, future
+`scenario_archetype_id`) ship with P2 so the telemetry clock starts now.
+Artifact classification (content / derived / telemetry + retention class) for
+everything this service produces lands in the platform data-handling spec (P6);
+until then: screenshots and site-model rows live until re-crawl or tenant
+offboarding.

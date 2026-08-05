@@ -1,8 +1,11 @@
 # Spec — Draft Review UX (generated-test lifecycle in the web UI)
 
 Created: 2026-07-29
-Branch: `feat/test-writer/p0-specs`
-Status: Draft — design agreed; implementation not started.
+Updated: 2026-08-06 — P2 refinement: plan-review/approval screen (§2.2a),
+synthetic-data consent flag (§2.1), Init Brief intake (§2.1), oracle-hardening
+affordance (§2.3), unvalidated-draft badge (§2.3).
+Branch: `feat/test-writer/generation-pipeline`
+Status: Design agreed; implementation not started.
 
 > Companion to `../test-writer/spec-test-writer-service.md` and
 > `../test-writer/spec-generation-pipeline.md`. Backend lifecycle columns land
@@ -55,8 +58,14 @@ live:
 - In a suite with no Site Knowledge: opens the **Analyze app** dialog —
   target URL (prefilled from the case's base URL), scope selector (public /
   authenticated with login-case picker + explicit consent checkbox whose copy
-  states that Kaizen will log in and explore behind authentication), and a
-  recommendation to use a staging URL. Submits `POST /suites/:id/analyze`.
+  states that Kaizen will log in and explore behind authentication), an
+  **Init Brief textarea** ("Describe your app: what it does, key flows,
+  business rules, what to test hardest" — optional, ≤ 8k chars; the response
+  surfaces a warning when secrets were scrubbed), a **synthetic-data consent
+  checkbox** ("Allow tests that create throwaway data — unique per-run
+  accounts, cart items — on this site"; default off; sets the suite's
+  `allow_synthetic_data` flag), and a recommendation to use a staging URL.
+  Submits `POST /suites/:id/analyze`.
 - With existing knowledge: "Suggest tests for this page" submits
   `POST /suites/:id/suggest { pageUrl }`.
 
@@ -73,6 +82,24 @@ A job panel (suite level) polling `GET /testwriter/jobs/:jobId`
   failed validation with run link, duplicate-of, safety-filtered) + token
   usage per phase.
 
+### 2.2a Plan review & approval (the checkpoint screen)
+
+When a job reaches `awaiting_plan_approval` (default on a suite's first
+analyze — generation spec §2.1), the job panel becomes the **plan review**:
+
+- The scenario matrix as reviewable rows: name, kind (happy/negative/edge),
+  priority, rationale, target pages, source badge (`catalog` vs `ai`).
+- Each row has an include/exclude toggle (all included by default); a
+  free-text **steering notes** field ("skip newsletter tests, add more around
+  coupons") applies to the whole batch.
+- Primary action **"Write & validate N tests"** → `POST
+  /testwriter/jobs/:jobId/plan-approval { approvedScenarios, notes }`.
+  Secondary: "Cancel job".
+- Copy makes the economics visible: "Nothing has been executed yet — approved
+  scenarios will be written and validated with real runs."
+- In `planApproval='auto'` mode this screen is skipped; the plan is still
+  shown read-only while WRITE/VALIDATE proceed.
+
 ### 2.3 Draft review
 
 In the suite's case list:
@@ -83,6 +110,14 @@ In the suite's case list:
   editing creates new step versions per the immutable-steps model — a draft
   edit does NOT re-validate automatically in v1; the UI notes this),
   **Dismiss** (→ archived).
+- **Oracle hardening** (generation spec §5.1): drafts with discover-oracle
+  steps ("verify the error message is visible") show the harvested post-action
+  state from the validation run (final URL, heading, alert text) next to the
+  generic assertion, with a one-click "use observed text" that rewrites the
+  step to the specific assertion (a normal edit — new step version).
+- **Unvalidated drafts** (synthetic scenarios generated without the consent
+  flag): amber badge "not validated — requires synthetic-data consent"; the
+  approve button is replaced by "Enable consent & validate".
 - Rejected scenarios appear in the job report only (not the case list) with
   their failure evidence.
 - Tier-2 `expected-fail` drafts (see generation spec §3.1) show a warning
