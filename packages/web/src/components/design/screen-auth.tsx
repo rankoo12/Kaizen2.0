@@ -37,7 +37,7 @@ const FIELD: React.CSSProperties = {
 
 export function AuthScreen({ mode }: { mode: 'login' | 'signup' }) {
   const signup = mode === 'signup';
-  const { login, register } = useAuth();
+  const { login, loginAsDemo, register } = useAuth();
   const router = useRouter();
   const params = useSearchParams();
 
@@ -47,6 +47,23 @@ export function AuthScreen({ mode }: { mode: 'login' | 'signup' }) {
   const [confirm, setConfirm] = useState('');
   const [error, setError] = useState('');
   const [busy, setBusy] = useState(false);
+  const [demoBusy, setDemoBusy] = useState(false);
+
+  /* One click into a read-only account, for someone evaluating Kaizen who shouldn't have
+     to register first. No credentials here on purpose — /api/auth/demo holds them
+     server-side, so the demo password never reaches the browser bundle. */
+  async function openDemo() {
+    setError('');
+    setDemoBusy(true);
+    try {
+      await loginAsDemo();
+      router.push(params.get('next') ?? '/tests');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not open the demo.');
+    } finally {
+      setDemoBusy(false);
+    }
+  }
 
   async function submit(e: React.SyntheticEvent) {
     e.preventDefault();
@@ -120,6 +137,27 @@ export function AuthScreen({ mode }: { mode: 'login' | 'signup' }) {
           {busy && <span className="spinner" style={{ borderTopColor: '#fff', borderColor: 'rgba(255,255,255,.35)' }} />}
           {busy ? (signup ? 'Creating…' : 'Signing in…') : (signup ? 'Create workspace' : 'Sign in')}
         </button>
+
+        {/* Sign-in only: someone creating a workspace has already decided, and offering a
+            detour into a read-only account at that point would only confuse the flow. */}
+        {!signup && (
+          <>
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10, margin: '14px 0 12px' }}>
+              <span style={{ flex: 1, height: 1, background: 'var(--sep)' }} />
+              <span style={{ fontSize: 11, color: 'var(--text-3)' }}>or</span>
+              <span style={{ flex: 1, height: 1, background: 'var(--sep)' }} />
+            </div>
+            <button className="btn lg" type="button" onClick={openDemo} disabled={busy || demoBusy}
+              style={{ width: '100%', height: 34, justifyContent: 'center' }}>
+              {demoBusy && <span className="spinner" style={{ width: 12, height: 12 }} />}
+              {demoBusy ? 'Opening the demo…' : 'Demo user'}
+            </button>
+            <div style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 7, lineHeight: 1.5 }}>
+              Look around a real workspace without signing up. Runs are disabled on the demo
+              account, so nothing you click there spends tokens.
+            </div>
+          </>
+        )}
 
         <div style={{ display: 'flex', justifyContent: 'center', marginTop: 12, fontSize: 12 }}>
           <button type="button" onClick={() => router.push(signup ? '/login' : '/signup')}
