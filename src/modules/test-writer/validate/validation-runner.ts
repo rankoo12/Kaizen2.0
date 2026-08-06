@@ -6,6 +6,7 @@ import type { RunJobPayload } from '../../../queue';
 import type { IObservability } from '../../observability/interfaces';
 import type { OracleHarvest, ScenarioRejection } from '../../../types/test-writer';
 import type { WrittenScenario } from '../write/scenario-writer';
+import { seedSelectors } from './selector-seeder';
 
 /**
  * VALIDATE — never propose an unproven test.
@@ -108,6 +109,11 @@ export class ValidationRunner {
       }
       return;
     }
+
+    // Seed what recon already knew BEFORE the proving run, so the run resolves
+    // from cache instead of paying the model to rediscover the same elements.
+    const seeded = await seedSelectors(params.tenantId, params.baseUrl, scenario.selectorSeeds);
+    if (seeded > 0) this.obs.increment('testwriter.selectors_preseeded', { count: String(seeded) });
 
     const pool = getPool();
     const { rows } = await pool.query<{ id: string }>(

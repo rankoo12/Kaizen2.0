@@ -48,7 +48,8 @@ type PlannedScenario = {
   journey: string | null;
   kind: 'happy' | 'negative' | 'edge';
   priority: 'critical' | 'high' | 'normal';
-  rationale: string;                   // why a QA engineer would write this
+  rationale: string;                   // WHY a QA engineer would write this
+  outline: string;                     // WHAT it will do — one sentence (§2.2)
   targetPages: string[];               // urlNormalized values it will touch
   source: { kind: 'catalog'; archetypeKey: string } | { kind: 'llm' };  // provenance
 };
@@ -67,6 +68,24 @@ Rules: scenarios touching `requires_auth` pages are dropped (and reported) unles
 job has authenticated scope + consent; signup/cart archetype families are planned but
 marked validation-blocked unless `syntheticDataConsent` (§6.2). `source` provenance is
 stored per scenario in `generation_jobs.test_plan`.
+
+### 2.2 The planned approach (the "what")
+
+The rationale answers *why*; reviewers also need *what it will do* — but at the
+checkpoint the steps do not exist yet, and writing them first would defeat the
+gate. So the plan carries an **approach**, not steps:
+
+- **Catalog-sourced scenarios**: the archetype's skeleton is static, known
+  content (`catalog-v1.md`) — rendered client-side at zero cost.
+- **LLM gap-fill scenarios**: `PlannedScenario.outline`, one sentence of *how*,
+  produced by the same frontier PLAN call that already writes the rationale
+  (marginal cost ≈ nothing).
+- Always labelled: *"Planned approach — final steps are written after your
+  approval and may differ where the page demands it."* Never presented as the
+  finished test.
+
+UX: a per-row disclosure, not row content — the *why* stays the headline and the
+matrix stays scannable (`../tests-ux/spec-testwriter-ux.md` §4.4).
 
 ### 2.1 Plan-approval checkpoint (toggleable)
 
@@ -233,6 +252,35 @@ state — final URL, top heading, visible alert/toast text — into
 specific observed text in the draft-review UI (they are reviewing the draft anyway).
 The automated judge-confirm + rewrite + re-validate loop is deferred: it would double
 worst-case validation browser-minutes.
+
+### 5.2 Selector pre-seeding — don't re-derive what the crawl already knew
+
+The generator cites `page_elements` rows, and those rows carry the selector the
+crawler extracted. Rendering deliberately drops it (tests bind to meaning, not
+selectors — that is what makes them self-healing), but the SELECTOR CACHE is
+exactly the layer built to hold that knowledge. Without seeding, the proving run
+pays L5 to rediscover an element the crawl already identified.
+
+At draft-creation time, for every step whose intent cited an element:
+- upsert `selector_cache` with `content_hash = step.targetHash`, the element's
+  selector, `domain` = the target host, `tenant_id` = the owning tenant.
+- **Tenant-scoped only.** `is_shared` stays false and `tenant_id` is never NULL —
+  the shared-pool prohibition (service spec §11) is unchanged. The Test Writer's
+  module-graph isolation test is REFINED to permit exactly this write and still
+  forbid shared-pool writes; it is not deleted.
+- Skip when there is nothing to seed: probe-revealed elements (no selector
+  captured), description targets (`click_random`, discover oracles), and
+  page-level actions.
+
+Cache honesty is preserved by construction: a seeded selector is still validated
+by real execution. If the page drifted between crawl and run, the step fails,
+heals, and the cache self-corrects — exactly as for any other cached selector.
+Assertions keep using the cache-free resolver chain by design (mostly moot:
+generated oracles favour `assert_text`/`assert_url`, which resolve no element).
+
+Effect: the proving run — previously the pipeline's largest token line, since it
+resolves cold — resolves from cache at ~0 tokens, and the LLM's element-finding
+work happens once, during the crawl, instead of twice.
 
 ## 6. Cost, metering & consent
 

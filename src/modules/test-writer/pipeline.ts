@@ -83,7 +83,13 @@ export async function runTestWriterJob(
       [payload.jobId],
     );
 
-    const recon = await runRecon(payload, deps);
+    // Progress is written as it happens so the UI can show real counts instead
+    // of a fake bar. Phases before PLAN otherwise report nothing at all.
+    const progress = makeProgressWriter(payload.jobId);
+    await progress({ phase: 'recon' });
+
+    const recon = await runRecon(payload, deps, progress);
+    await progress({ phase: 'comprehend', pagesCrawled: recon.pagesCrawled });
     if (recon.pagesCrawled === 0) {
       await finishJob(payload.jobId, 'blocked', { recon },
         'All reachable pages were blocked (challenge/robots).');
@@ -171,8 +177,35 @@ export async function runTestWriterJob(
 
 // ─── RECON ───────────────────────────────────────────────────────────────────
 
+/**
+ * Live progress, merged into `generation_jobs.report.progress`.
+ * Honest by construction: it only ever reports counts the pipeline actually
+ * observed — the UI shows elapsed time alone rather than an invented percentage.
+ */
+export type JobProgress = {
+  phase: 'recon' | 'comprehend' | 'plan' | 'write' | 'validate';
+  pagesCrawled?: number;
+  scenariosWritten?: number;
+  scenariosTotal?: number;
+  validationRunsDone?: number;
+  validationRunsTotal?: number;
+};
+
+function makeProgressWriter(jobId: string): (p: JobProgress) => Promise<void> {
+  return async (p) => {
+    await getPool().query(
+      `UPDATE generation_jobs
+       SET report = COALESCE(report, '{}'::jsonb) || jsonb_build_object('progress', $2::jsonb)
+       WHERE id = $1`,
+      [jobId, JSON.stringify(p)],
+    ).catch(() => { /* progress is a nicety; never fail a job over it */ });
+  };
+}
+
 async function runRecon(
-  payload: TestWriterJobPayload, deps: TestWriterPipelineDeps,
+  payload: TestWriterJobPayload,
+  deps: TestWriterPipelineDeps,
+  progress: (p: JobProgress) => Promise<void>,
 ): Promise<CrawlReport & { linksInserted: number }> {
   const budgets = {
     ...DEFAULT_BUDGETS,
@@ -182,7 +215,7 @@ async function runRecon(
 
   const report = await deps.crawler.crawl(
     { tenantId: payload.tenantId, jobId: payload.jobId, targetUrl: payload.targetUrl, budgets },
-    async (capture: PageCapture) => {
+    async (capture: PageCapture, pageIndex: number) => {
       await deps.repository.upsertPage(payload.tenantId, payload.suiteId, capture);
       for (const link of capture.outgoingLinks) {
         edges.push({
@@ -191,6 +224,9 @@ async function runRecon(
           viaElementName: link.viaElementName,
         });
       }
+      // Every few pages, not every page: the crawl is rate-limited anyway and
+      // the UI polls at 2s.
+      if (pageIndex % 3 === 0) await progress({ phase: 'recon', pagesCrawled: pageIndex + 1 });
     },
   );
 
@@ -210,9 +246,11 @@ async function runGenerationPhases(
   await pool.query(`UPDATE generation_jobs SET status = 'running' WHERE id = $1`, [payload.jobId]);
 
   const planned = job.test_plan?.scenarios ?? [];
-  const approved = payload.approvedScenarios?.length
-    ? planned.filter((s) => payload.approvedScenarios!.includes(s.name))
-    : planned;
+  // An explicit empty array means "the human discarded this plan" — it must not
+  // fall through to "approve everything". Only an ABSENT list means auto mode.
+  const approved = payload.approvedScenarios === undefined
+    ? planned
+    : planned.filter((s) => payload.approvedScenarios!.includes(s.name));
 
   if (approved.length === 0) {
     await finishJob(payload.jobId, 'completed', job.report ?? null, 'No scenarios were approved.');
@@ -222,6 +260,8 @@ async function runGenerationPhases(
   const consent = await loadSuiteConsent(payload.tenantId, payload.suiteId);
   const rejected: ScenarioRejection[] = [];
   const written: WrittenScenario[] = [];
+  const progress = makeProgressWriter(payload.jobId);
+  await progress({ phase: 'write', scenariosWritten: 0, scenariosTotal: approved.length });
 
   // ── WRITE (sequential: each call is small, and ordering keeps the report readable)
   for (const plan of approved) {
@@ -250,6 +290,9 @@ async function runGenerationPhases(
 
     if (outcome.ok) written.push(outcome.scenario);
     else rejected.push({ name: plan.name, stage: outcome.failure.stage, reason: outcome.failure.reason });
+    await progress({
+      phase: 'write', scenariosWritten: written.length, scenariosTotal: approved.length,
+    });
   }
 
   // ── DEDUP (kind-aware, against each other and the suite's existing cases)
@@ -300,6 +343,9 @@ async function runGenerationPhases(
   }
 
   // ── VALIDATE
+  await progress({
+    phase: 'validate', validationRunsDone: 0, validationRunsTotal: survivors.length,
+  });
   const validation = await deps.validator.validateAll({
     tenantId: payload.tenantId,
     suiteId: payload.suiteId,

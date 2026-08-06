@@ -10,7 +10,10 @@ import type { GroundingElement, StepIntent } from '../../../types/test-writer';
  */
 
 function element(id: string, role: string, name: string): GroundingElement {
-  return { id, pageUrl: 'https://shop.test/', role, name, kind: 'button', revealedBy: null };
+  return {
+    id, pageUrl: 'https://shop.test/', role, name, kind: 'button',
+    revealedBy: null, selector: `#${id.slice(0, 4)}`,
+  };
 }
 
 const PAY = element('11111111-1111-4111-8111-111111111111', 'button', 'Pay now');

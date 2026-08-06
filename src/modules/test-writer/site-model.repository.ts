@@ -288,8 +288,9 @@ export class SiteModelRepository {
 
   /**
    * Citable elements for a set of pages — the ONLY elements a generated step
-   * may reference. Selectors are deliberately NOT returned: the LLM never sees
-   * them (resolution happens at run time through the normal resolver chain).
+   * may reference. The selector rides along but never reaches a prompt: it
+   * exists to pre-seed the tenant's selector cache so the proving run doesn't
+   * pay the model to rediscover what the crawl already found (§5.2).
    */
   async getGroundingElements(
     tenantId: string, suiteId: string, urls: string[], perPageCap = 40,
@@ -298,10 +299,11 @@ export class SiteModelRepository {
     return withTenantTransaction(tenantId, async (client) => {
       const { rows } = await client.query<{
         id: string; page_url: string; role: string; name: string;
-        kind: string; revealed_by: string | null; rn: string;
+        kind: string; revealed_by: string | null; selector: string | null; rn: string;
       }>(
-        `SELECT id, page_url, role, name, kind, revealed_by, rn FROM (
-           SELECT pe.id, sp.url_normalized AS page_url, pe.role, pe.name, pe.kind, pe.revealed_by,
+        `SELECT id, page_url, role, name, kind, revealed_by, selector, rn FROM (
+           SELECT pe.id, sp.url_normalized AS page_url, pe.role, pe.name, pe.kind,
+                  pe.revealed_by, pe.selector,
                   ROW_NUMBER() OVER (PARTITION BY pe.page_id ORDER BY pe.kind, pe.name) AS rn
            FROM page_elements pe
            JOIN site_pages sp ON sp.id = pe.page_id
@@ -319,6 +321,7 @@ export class SiteModelRepository {
         name: r.name,
         kind: r.kind,
         revealedBy: r.revealed_by,
+        selector: r.selector,
       }));
     });
   }

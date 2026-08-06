@@ -76,7 +76,7 @@ describe('testCasesRoutes - Token Limit Enforcement', () => {
 
   it('enqueues successfully when usage is below budget', async () => {
     // 1st query inside withTenantTransaction for case/step fetching
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'case-1', suite_id: 'suite-1', base_url: 'http://test' }] });
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'case-1', suite_id: 'suite-1', base_url: 'http://test', status: 'active' }] });
     mockQuery.mockResolvedValueOnce({ rows: [{ raw_text: 'click btn' }] });
 
     // 2nd query (budget check)
@@ -99,7 +99,7 @@ describe('testCasesRoutes - Token Limit Enforcement', () => {
   });
 
   it('stamps the run with its own step count so progress has a stable denominator', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'case-1', suite_id: 'suite-1', base_url: 'http://test' }] });
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'case-1', suite_id: 'suite-1', base_url: 'http://test', status: 'active' }] });
     mockQuery.mockResolvedValueOnce({ rows: [{ raw_text: 'click btn' }, { raw_text: 'type hello' }, { raw_text: 'verify done' }] });
     mockQuery.mockResolvedValueOnce({ rows: [{ llm_budget_tokens_monthly: '5000' }] });
     (usageThisMonth as jest.Mock).mockResolvedValue(0);
@@ -120,7 +120,7 @@ describe('testCasesRoutes - Token Limit Enforcement', () => {
   });
 
   it('returns 402 TOKEN_LIMIT_REACHED when usage equals budget', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'case-1', suite_id: 'suite-1', base_url: 'http://test' }] });
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'case-1', suite_id: 'suite-1', base_url: 'http://test', status: 'active' }] });
     mockQuery.mockResolvedValueOnce({ rows: [{ raw_text: 'click btn' }] });
     mockQuery.mockResolvedValueOnce({ rows: [{ llm_budget_tokens_monthly: '5000' }] });
     
@@ -139,7 +139,7 @@ describe('testCasesRoutes - Token Limit Enforcement', () => {
   });
 
   it('returns 402 TOKEN_LIMIT_REACHED when usage exceeds budget', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'case-1', suite_id: 'suite-1', base_url: 'http://test' }] });
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'case-1', suite_id: 'suite-1', base_url: 'http://test', status: 'active' }] });
     mockQuery.mockResolvedValueOnce({ rows: [{ raw_text: 'click btn' }] });
     mockQuery.mockResolvedValueOnce({ rows: [{ llm_budget_tokens_monthly: '5000' }] });
     
@@ -158,7 +158,7 @@ describe('testCasesRoutes - Token Limit Enforcement', () => {
   });
 
   it('returns 402 INSUFFICIENT_TOKENS when budget is 0', async () => {
-    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'case-1', suite_id: 'suite-1', base_url: 'http://test' }] });
+    mockQuery.mockResolvedValueOnce({ rows: [{ id: 'case-1', suite_id: 'suite-1', base_url: 'http://test', status: 'active' }] });
     mockQuery.mockResolvedValueOnce({ rows: [{ raw_text: 'click btn' }] });
     mockQuery.mockResolvedValueOnce({ rows: [{ llm_budget_tokens_monthly: '0' }] });
 
@@ -171,6 +171,69 @@ describe('testCasesRoutes - Token Limit Enforcement', () => {
     expect(JSON.parse(response.payload)).toMatchObject({
       error: 'INSUFFICIENT_TOKENS'
     });
+  });
+
+  // ── Draft lifecycle ────────────────────────────────────────────────────────
+  // A draft is a proposal, not part of the suite's contract yet: it must not be
+  // runnable, and it reaches 'active' only through an explicit acceptance.
+  // Spec: docs/specs/tests-ux/spec-testwriter-ux.md §1, §5.2
+
+  it('refuses to run a draft — it has not been accepted into the suite', async () => {
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ id: 'case-1', suite_id: 'suite-1', base_url: 'http://test', status: 'draft' }],
+    });
+    mockQuery.mockResolvedValueOnce({ rows: [{ raw_text: 'click btn' }] });
+
+    const response = await app.inject({ method: 'POST', url: '/cases/case-1/run' });
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.payload)).toMatchObject({ error: 'CASE_NOT_ACTIVE', status: 'draft' });
+  });
+
+  it('accepts a draft into the suite (draft → active)', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ status: 'draft' }] });          // current status
+    mockQuery.mockResolvedValueOnce({                                          // update
+      rows: [{
+        id: 'case-1', name: 'A test', base_url: 'http://test', suite_id: 'suite-1',
+        status: 'active', created_at: new Date(), updated_at: new Date(),
+      }],
+    });
+    mockQuery.mockResolvedValueOnce({ rows: [] });                             // steps
+
+    const response = await app.inject({
+      method: 'PATCH', url: '/cases/case-1', payload: { status: 'active' },
+    });
+
+    expect(response.statusCode).toBe(200);
+    expect(JSON.parse(response.payload).case.status).toBe('active');
+  });
+
+  it('refuses to resurrect a rejected case into the suite', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ status: 'rejected' }] });
+
+    const response = await app.inject({
+      method: 'PATCH', url: '/cases/case-1', payload: { status: 'active' },
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(JSON.parse(response.payload)).toMatchObject({ error: 'INVALID_STATUS_TRANSITION' });
+  });
+
+  it('allows restoring an archived case back to draft (the accept-undo path)', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ status: 'archived' }] });
+    mockQuery.mockResolvedValueOnce({
+      rows: [{
+        id: 'case-1', name: 'A test', base_url: 'http://test', suite_id: 'suite-1',
+        status: 'draft', created_at: new Date(), updated_at: new Date(),
+      }],
+    });
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+
+    const response = await app.inject({
+      method: 'PATCH', url: '/cases/case-1', payload: { status: 'draft' },
+    });
+
+    expect(response.statusCode).toBe(200);
   });
 
   // Regression: DELETE used to remove test_steps while step_results still pointed at

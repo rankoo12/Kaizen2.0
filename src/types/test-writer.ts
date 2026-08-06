@@ -91,7 +91,14 @@ export type PlannedScenario = {
   journey: string | null;
   kind: 'happy' | 'negative' | 'edge';
   priority: 'critical' | 'high' | 'normal';
+  /** WHY a QA engineer would write this. */
   rationale: string;
+  /**
+   * WHAT it will do — one sentence of approach, so a reviewer can approve
+   * knowingly before any steps exist. Catalog scenarios render their archetype
+   * skeleton instead; this carries the gap-fill ones (spec §2.2).
+   */
+  outline: string;
   targetPages: string[];        // urlNormalized values
   source: ScenarioSource;
   /** Set when the scenario needs synthetic-data consent to be validated. */
@@ -171,6 +178,13 @@ export type GroundingElement = {
   kind: string;
   /** Non-null when the element only appears after a safe-reveal probe. */
   revealedBy: string | null;
+  /**
+   * The selector recon observed. NEVER sent to the model — the prompt builder
+   * emits id/role/name/kind/page only, because a test must bind to meaning, not
+   * to a selector. Carried here solely to pre-seed the tenant's selector cache
+   * (spec-generation-pipeline.md §5.2). Null for probe-revealed elements.
+   */
+  selector: string | null;
 };
 
 export type WriteInput = {

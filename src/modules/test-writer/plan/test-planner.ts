@@ -103,6 +103,9 @@ export class TestPlanner {
         priority: (['critical', 'high', 'normal'] as const).includes(scenario.priority)
           ? scenario.priority : 'normal',
         rationale: String(scenario.rationale ?? '').slice(0, 500),
+        // Catalog scenarios need no outline — the UI renders the archetype's
+        // own skeleton, which is more precise than a paraphrase of it.
+        outline: archetype ? '' : String(scenario.outline ?? '').slice(0, 300),
         targetPages,
         source,
         requiresSyntheticData,

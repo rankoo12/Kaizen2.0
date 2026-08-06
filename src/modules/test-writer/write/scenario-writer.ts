@@ -19,6 +19,17 @@ import { lintScenario } from './lints';
  * what was wrong and given the valid id list again.
  */
 
+/**
+ * A selector the crawler already observed, paired with the step that will look
+ * for it. Seeding these into the tenant's cache is what stops the proving run
+ * paying the model to rediscover an element we identified during recon.
+ * Spec: spec-generation-pipeline.md §5.2
+ */
+export type SelectorSeed = {
+  targetHash: string;
+  selector: string;
+};
+
 export type WrittenScenario = {
   plan: PlannedScenario;
   name: string;
@@ -30,6 +41,7 @@ export type WrittenScenario = {
   lintFindings: string[];
   /** True when validation requires the suite's synthetic-data consent. */
   needsConsent: boolean;
+  selectorSeeds: SelectorSeed[];
 };
 
 export type WriteFailure = {
@@ -41,6 +53,33 @@ export type WriteFailure = {
 export type WriteOutcome =
   | { ok: true; scenario: WrittenScenario }
   | { ok: false; failure: WriteFailure };
+
+/**
+ * Pair each element-targeted step's targetHash with the selector recon observed
+ * for that element. Steps with no observed selector are skipped rather than
+ * guessed: probe-revealed elements store none, and description targets
+ * (click_random, discover oracles) name a class or a not-yet-existing element.
+ */
+export function collectSelectorSeeds(
+  intents: StepIntent[],
+  rendered: RenderedStep[],
+  elements: Map<string, GroundingElement>,
+): SelectorSeed[] {
+  const seeds: SelectorSeed[] = [];
+  const seen = new Set<string>();
+
+  intents.forEach((intent, index) => {
+    const target = 'target' in intent ? intent.target : undefined;
+    if (!target || target.kind !== 'element') return;
+    const element = elements.get(target.elementId);
+    const targetHash = rendered[index]?.ast.targetHash;
+    if (!element?.selector || !targetHash || seen.has(targetHash)) return;
+    seen.add(targetHash);
+    seeds.push({ targetHash, selector: element.selector });
+  });
+
+  return seeds;
+}
 
 export class ScenarioWriter {
   constructor(
@@ -137,6 +176,7 @@ export class ScenarioWriter {
           rationale: String(generated.rationale ?? plan.rationale).slice(0, 500),
           lintFindings: lintScenario(gate.steps, kind),
           needsConsent: safety.verdict === 'needs-consent',
+          selectorSeeds: collectSelectorSeeds(gate.steps, steps, elements),
         },
       };
     }

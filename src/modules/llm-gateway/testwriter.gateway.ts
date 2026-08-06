@@ -201,6 +201,8 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
       'Return only valid JSON matching exactly:',
       '{"scenarios":[{"name":"short imperative title","journey":"<journey name>|null",',
       ' "kind":"happy|negative|edge","priority":"critical|high|normal","rationale":"why a QA engineer writes this",',
+      ' "outline":"one sentence of WHAT it will do, e.g. \'open the cart with an item in it,',
+      '   apply an invalid coupon code, and check the rejection message appears\'",',
       ' "targetPages":["<url copied verbatim>"],"source":{"kind":"catalog","archetypeKey":"..."}|{"kind":"llm"},',
       ' "requiresSyntheticData":true|false}]}',
       'targetPages MUST be urls from the observed page list. Never invent one.',

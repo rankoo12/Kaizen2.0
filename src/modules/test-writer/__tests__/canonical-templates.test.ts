@@ -11,12 +11,12 @@ import type { GroundingElement, StepIntent } from '../../../types/test-writer';
 const BUTTON: GroundingElement = {
   id: '11111111-1111-4111-8111-111111111111',
   pageUrl: 'https://shop.test/login', role: 'button', name: 'Sign in',
-  kind: 'button', revealedBy: null,
+  kind: 'button', revealedBy: null, selector: 'role=button[name="Sign in"]',
 };
 const FIELD: GroundingElement = {
   id: '22222222-2222-4222-8222-222222222222',
   pageUrl: 'https://shop.test/login', role: 'textbox', name: 'Email',
-  kind: 'input', revealedBy: null,
+  kind: 'input', revealedBy: null, selector: '#email',
 };
 const elements = new Map([[BUTTON.id, BUTTON], [FIELD.id, FIELD]]);
 

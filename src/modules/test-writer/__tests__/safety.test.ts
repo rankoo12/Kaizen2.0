@@ -147,26 +147,52 @@ describe('classifyInteraction — anchors', () => {
 describe('module isolation — test-writer never touches the shared pool', () => {
   // Spec-recon-crawler.md §7: no code path from the test-writer module graph
   // may write selector_cache or import the shared-pool seeding path.
-  it('no test-writer source file references selector_cache or the seeding script', () => {
-    const root = path.join(__dirname, '..');
-    const offenders: string[] = [];
+  // The ONE file allowed to write selector_cache, and only tenant-scoped rows:
+  // pre-seeding what the crawl observed so a proving run doesn't re-pay the
+  // model for it (spec-generation-pipeline.md §5.2).
+  const SEEDER = 'selector-seeder.ts';
+
+  const sourceFiles = (): string[] => {
+    const out: string[] = [];
     const walk = (dir: string): void => {
       for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
         const full = path.join(dir, entry.name);
         if (entry.isDirectory()) {
-          if (entry.name === '__tests__') continue;
-          walk(full);
-        } else if (entry.name.endsWith('.ts')) {
-          // Strip comments first — the invariant may legitimately be DOCUMENTED
-          // in a module; what must never exist is CODE touching the shared pool.
-          const source = fs.readFileSync(full, 'utf8')
-            .replace(/\/\*[\s\S]*?\*\//g, '')
-            .replace(/\/\/.*$/gm, '');
-          if (/selector_cache|seed-global-brain|is_shared/.test(source)) offenders.push(full);
-        }
+          if (entry.name !== '__tests__') walk(full);
+        } else if (entry.name.endsWith('.ts')) out.push(full);
       }
     };
-    walk(root);
+    walk(path.join(__dirname, '..'));
+    return out;
+  };
+
+  /** Comments may DOCUMENT the invariant; only code may violate it. */
+  const codeOf = (file: string): string =>
+    fs.readFileSync(file, 'utf8').replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+
+  it('only the seeder touches selector_cache — no other test-writer file does', () => {
+    const offenders = sourceFiles()
+      .filter((f) => !f.endsWith(SEEDER))
+      .filter((f) => /selector_cache|seed-global-brain/.test(codeOf(f)));
+    expect(offenders).toEqual([]);
+  });
+
+  it('the seeder writes tenant-scoped rows only — never the shared pool', () => {
+    const seeder = sourceFiles().find((f) => f.endsWith(SEEDER));
+    expect(seeder).toBeDefined();
+    const code = codeOf(seeder!);
+
+    // Every insert carries the tenant, and shared is pinned false.
+    expect(code).toMatch(/is_shared/);
+    expect(code).toMatch(/false/);
+    // The two shapes that would put tenant data in the global pool.
+    expect(code).not.toMatch(/is_shared\s*(?:=|,)?\s*true/);
+    expect(code).not.toMatch(/tenant_id\s*(?:=|,)?\s*NULL/i);
+  });
+
+  it('no test-writer file writes shared-pool rows anywhere', () => {
+    const offenders = sourceFiles()
+      .filter((f) => /is_shared\s*(?:=|,)?\s*true|tenant_id\s*(?:=|,)?\s*NULL/i.test(codeOf(f)));
     expect(offenders).toEqual([]);
   });
 

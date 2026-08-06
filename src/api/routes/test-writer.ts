@@ -44,7 +44,8 @@ const AnalyzeBody = z.object({
 });
 
 const PlanApprovalBody = z.object({
-  approvedScenarios: z.array(z.string().min(1)).min(1),
+  /** Empty array = discard the plan: nothing is written, the job closes cleanly. */
+  approvedScenarios: z.array(z.string().min(1)),
   notes: z.string().max(2000).optional(),
 });
 
@@ -188,7 +189,8 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
 
     const plannedNames = new Set((job.test_plan?.scenarios ?? []).map((s) => s.name));
     const approved = parsed.data.approvedScenarios.filter((n) => plannedNames.has(n));
-    if (approved.length === 0) {
+    const discarding = parsed.data.approvedScenarios.length === 0;
+    if (approved.length === 0 && !discarding) {
       return reply.status(400).send({
         error: 'NO_VALID_SCENARIOS',
         message: 'None of the approved names match this job\'s test plan.',
@@ -233,6 +235,48 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
     if (!job) return reply.status(404).send({ error: 'JOB_NOT_FOUND' });
 
     return reply.send({ job: mapJob(job) });
+  });
+
+  // ── GET /suites/:suiteId/app-brief ─────────────────────────────────────────
+  // What Kaizen understands about this app: a durable, versioned artifact, not
+  // a job byproduct. Journeys here were verified against the observed link graph.
+  app.get('/suites/:suiteId/app-brief', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { suiteId } = request.params as { suiteId: string };
+    const { version } = request.query as { version?: string };
+    const { tenantId } = request;
+
+    const brief = await withTenantTransaction(tenantId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT version, app_type, summary, core_entities, journeys, generation_job_id, created_at
+         FROM app_briefs
+         WHERE tenant_id = $1 AND suite_id = $2
+           AND ($3::int IS NULL OR version = $3::int)
+         ORDER BY version DESC LIMIT 1`,
+        [tenantId, suiteId, version ? Number(version) : null],
+      );
+      if (rows.length === 0) return null;
+      const { rows: versions } = await client.query<{ version: number; created_at: Date }>(
+        `SELECT version, created_at FROM app_briefs
+         WHERE tenant_id = $1 AND suite_id = $2 ORDER BY version DESC`,
+        [tenantId, suiteId],
+      );
+      return { row: rows[0], versions };
+    });
+
+    if (!brief) return reply.status(404).send({ error: 'APP_BRIEF_NOT_FOUND' });
+
+    return reply.send({
+      appBrief: {
+        version: brief.row.version,
+        appType: brief.row.app_type,
+        summary: brief.row.summary,
+        coreEntities: brief.row.core_entities ?? [],
+        journeys: brief.row.journeys ?? [],
+        generationJobId: brief.row.generation_job_id,
+        createdAt: brief.row.created_at,
+        history: brief.versions.map((v) => ({ version: v.version, createdAt: v.created_at })),
+      },
+    });
   });
 
   // ── GET /suites/:suiteId/jobs ──────────────────────────────────────────────
