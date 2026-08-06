@@ -12,6 +12,8 @@ import { RunScreen } from './screen-run';
 import { RunsScreen } from './screen-runs';
 import { BrainScreen } from './screen-brain';
 import { UsageScreen } from './screen-usage';
+import { WriterScreen } from './screen-writer';
+import { AnalyzeSheet } from './writer-analyze-sheet';
 import { useDesignData, type DesignCase } from './use-design-data';
 import { useAuth } from '@/context/auth-context';
 
@@ -43,6 +45,9 @@ export default function KaizenApp() {
   const [sidebar, setSidebar] = useState(true);
   /** Test being edited on the author screen; null means 'creating a new one'. */
   const [editing, setEditing] = useState<string | null>(null);
+  /** Which Test Writer job the writer screen is showing. */
+  const [writerFocus, setWriterFocus] = useState<{ suiteId: string; jobId: string } | null>(null);
+  const [analyzeOpen, setAnalyzeOpen] = useState(false);
 
   // Appearance + grouping are per-device preferences, so they live in localStorage
   // rather than on the tenant (the API has nowhere to put them).
@@ -182,6 +187,8 @@ export default function KaizenApp() {
     { label: 'File', items: [
       { label: 'New Test', key: '⌘N', onClick: () => { setEditing(null); go('author'); } },
       { label: 'New Suite', onClick: () => go('author') },
+      '-',
+      { label: 'Analyze an app…', onClick: () => setAnalyzeOpen(true) },
     ] },
     { label: 'View', items: [
       { label: 'Tests', key: '⌘1', onClick: () => go('tests') },
@@ -208,7 +215,8 @@ export default function KaizenApp() {
       <TestsScreen cases={cases} suites={suites} stats={stats}
         onOpen={openCase} onNew={() => { setEditing(null); go('author'); }} onRun={runNow}
         onEdit={(c) => editCase(c.id)} onDelete={deleteCase}
-        suiteFilter={suite} onClearSuite={() => setSuite(null)} group={group} showToast={showToast} />
+        suiteFilter={suite} onClearSuite={() => setSuite(null)} group={group} showToast={showToast}
+        onAnalyze={() => setAnalyzeOpen(true)} />
     ) : screen === 'author' ? (
       <AuthorScreen suites={suites} defaultSuiteId={suite} editCaseId={editing}
         onBack={() => { setEditing(null); go('tests', suite); }}
@@ -240,6 +248,19 @@ export default function KaizenApp() {
           setFocus({ caseId, runId, name: caseName, stepResultId });
           setScreen('run');
         }} />
+      )
+      : screen === 'writer' && writerFocus ? (
+        <WriterScreen suiteId={writerFocus.suiteId} jobId={writerFocus.jobId}
+          suiteName={suites.find((s) => s.id === writerFocus.suiteId)?.name ?? 'this suite'}
+          onBack={() => go('tests', writerFocus.suiteId)}
+          onOpenRun={(caseId, runId) => {
+            const known = cases.find((c) => c.id === caseId)?.name;
+            setFocus({ caseId, runId, name: known ?? 'Proving run' });
+            setScreen('run');
+          }}
+          onAnalyzeAgain={() => setAnalyzeOpen(true)}
+          onCasesChanged={refetch}
+          showToast={showToast} />
       )
       : screen === 'usage' ? (
         <UsageScreen appearance={appearance} setAppearance={setAppearance}
@@ -282,6 +303,19 @@ export default function KaizenApp() {
           <Toast toast={toast} />
         </div>
       </div>
+      {analyzeOpen && (
+        <AnalyzeSheet suites={suites} defaultSuiteId={suite}
+          defaultUrl={cases.find((c) => !suite || c.suiteId === suite)?.baseUrl}
+          onClose={() => setAnalyzeOpen(false)}
+          showToast={showToast}
+          onStarted={(suiteId, jobId) => {
+            setAnalyzeOpen(false);
+            setWriterFocus({ suiteId, jobId });
+            setSuite(suiteId);
+            setScreen('writer');
+            showToast('Exploring your app — this keeps running if you leave', 'info');
+          }} />
+      )}
     </div>
   );
 }

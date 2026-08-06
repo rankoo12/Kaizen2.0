@@ -60,11 +60,13 @@ function CaseRow({ c, sel, onSelect, onOpen, onRun, onEdit, onDelete, rowRef }: 
   );
 }
 
-export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit, onDelete, suiteFilter, onClearSuite, group = true, showToast }: {
+export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit, onDelete, suiteFilter, onClearSuite, group = true, showToast, onAnalyze }: {
   cases: DesignCase[]; suites: DesignSuite[]; stats: any;
   onOpen: (c: DesignCase) => void; onNew: () => void; onRun: (c: DesignCase) => void;
   onEdit: (c: DesignCase) => void; onDelete?: (c: DesignCase) => void;
   suiteFilter: string | null; onClearSuite: () => void; group?: boolean; showToast?: any;
+  /** Opens the analyze dialog — absent in contexts where generation isn't offered. */
+  onAnalyze?: () => void;
 }) {
   const [q, setQ] = uSt('');
   const [filter, setFilter] = uSt('all');
@@ -123,6 +125,11 @@ export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit
           { value: 'all', label: 'All' }, { value: 'failing', label: 'Failing' },
           { value: 'healed', label: 'Healed' }, { value: 'passed', label: 'Passed' },
         ]} />
+        {onAnalyze && (
+          <button className="btn" onClick={onAnalyze} title="Have Kaizen explore your app and propose tests">
+            <I.sparkle size={13} />Analyze
+          </button>
+        )}
         <button className="btn pri" onClick={onNew}><I.plus size={13} />New Test</button>
       </Toolbar>
 
@@ -181,7 +188,31 @@ export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit
           </div>
         ))}
 
-        {!list.length && (
+        {/* A brand-new workspace leads with the capability, not the chore: this is
+            the onboarding moment where Kaizen shows what it is. A filtered-empty
+            list keeps the plain message — nothing to sell there. */}
+        {!list.length && !cases.length && onAnalyze ? (
+          <div className="card" style={{ padding: '48px 20px', textAlign: 'center' }}>
+            <I.sparkle size={26} style={{ color: 'var(--accent)' }} />
+            <div style={{ fontSize: 16, fontWeight: 600, marginTop: 10 }}>
+              Your suite is empty. Kaizen isn&apos;t.
+            </div>
+            <div style={{ fontSize: 13, color: 'var(--text-2)', marginTop: 8, marginBottom: 18,
+              lineHeight: 1.6, maxWidth: 470, marginLeft: 'auto', marginRight: 'auto' }}>
+              Point Kaizen at your app. It explores it like a QA engineer on day one, writes a
+              test plan for your approval, and proves every test with a real run — before you
+              accept a single one.
+            </div>
+            <div style={{ display: 'flex', gap: 8, justifyContent: 'center' }}>
+              <button className="btn pri lg" onClick={onAnalyze}><I.sparkle size={13} />Analyze my app</button>
+              <button className="btn lg" onClick={onNew}>Write a test yourself</button>
+            </div>
+            <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginTop: 16, lineHeight: 1.5 }}>
+              Takes a few minutes · read-only exploration · you approve the plan before
+              anything is executed
+            </div>
+          </div>
+        ) : !list.length && (
           <div className="card" style={{ padding: '54px 20px', textAlign: 'center' }}>
             <I.tests size={26} style={{ color: 'var(--text-3)' }} />
             <div style={{ fontSize: 15, fontWeight: 600, marginTop: 10 }}>{cases.length ? 'No tests match' : 'No tests yet'}</div>
