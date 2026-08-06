@@ -349,14 +349,30 @@ Return only valid JSON.`,
     }
   }
 
-  async generateEmbedding(text: string): Promise<number[]> {
+  async generateEmbedding(text: string, tenantId?: string): Promise<number[]> {
     const span = this.observability.startSpan('llm.generateEmbedding');
     try {
       const response = await this.openai.embeddings.create({
         model: 'text-embedding-3-small',
         input: text.trim(),
       });
+
+      // Embedding spend was previously invisible (a recon+generation job can
+      // burn tens of thousands of embedding tokens). Meter it whenever the
+      // caller knows which tenant to bill.
+      const tokens = response.usage?.total_tokens ?? 0;
+      if (tenantId) {
+        await this.billingMeter.emit({
+          tenantId,
+          eventType: 'LLM_CALL',
+          quantity: tokens,
+          unit: 'tokens',
+          metadata: { model: 'text-embedding-3-small', purpose: 'generateEmbedding' },
+        });
+      }
+
       this.observability.increment('llm.embeddings_generated');
+      this.observability.histogram('llm.embedding_tokens', tokens);
       return response.data[0].embedding;
     } catch (error: any) {
       this.observability.log('error', 'llm.generateEmbedding_failed', { error: error.message });
