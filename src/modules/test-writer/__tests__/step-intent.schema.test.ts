@@ -72,6 +72,55 @@ describe('runSchemaGate — description-variant exemptions', () => {
   });
 });
 
+describe('runSchemaGate — role compatibility', () => {
+  // Found by the P2 calibration run: on a site whose signup fields live in a
+  // modal, the generator cited a real element id — a LINK — and "typed" into it.
+  // Existing is not the same as usable.
+  const roles = new Map([[ELEMENT_A, 'link'], [ELEMENT_B, 'textbox']]);
+
+  it('rejects typing into a link even though the id is real', () => {
+    const result = runSchemaGate([
+      { action: 'type', target: { kind: 'element', elementId: ELEMENT_A }, value: '{{email}}' },
+      { action: 'assert_url', value: '/x' },
+    ], valid, 10, roles);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.join(' ')).toContain('cannot type a "link" element');
+  });
+
+  it('accepts typing into a textbox', () => {
+    const result = runSchemaGate([
+      { action: 'type', target: { kind: 'element', elementId: ELEMENT_B }, value: '{{email}}' },
+      { action: 'assert_url', value: '/x' },
+    ], valid, 10, roles);
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects typing into a form element (strict at generation time)', () => {
+    const formRoles = new Map([[ELEMENT_A, 'form']]);
+    const result = runSchemaGate([
+      { action: 'type', target: { kind: 'element', elementId: ELEMENT_A }, value: '{{email}}' },
+      { action: 'assert_url', value: '/x' },
+    ], valid, 10, formRoles);
+    expect(result.ok).toBe(false);
+  });
+
+  it('rejects checking a non-toggle element', () => {
+    const result = runSchemaGate([
+      { action: 'check', target: { kind: 'element', elementId: ELEMENT_A } },
+      { action: 'assert_url', value: '/x' },
+    ], valid, 10, roles);
+    expect(result.ok).toBe(false);
+  });
+
+  it('allows clicking anything — pointer actions are role-agnostic', () => {
+    const result = runSchemaGate([
+      { action: 'click', target: { kind: 'element', elementId: ELEMENT_A } },
+      { action: 'assert_url', value: '/x' },
+    ], valid, 10, roles);
+    expect(result.ok).toBe(true);
+  });
+});
+
 describe('runSchemaGate — value and shape rules', () => {
   it('rejects a literal email where a seed token belongs', () => {
     const result = runSchemaGate([
@@ -89,6 +138,39 @@ describe('runSchemaGate — value and shape rules', () => {
       { action: 'assert_visible', target: { kind: 'description', description: 'the validation error' } },
     ], valid, 10);
     expect(result.ok).toBe(true);
+  });
+
+  it('rejects an unbound catalog placeholder that leaked into a value', () => {
+    // Found by calibration: the model copied {{known_entity}} out of the
+    // archetype skeleton instead of binding a real title, so the test would
+    // have searched for the literal placeholder.
+    const roles = new Map([[ELEMENT_A, 'searchbox']]);
+    const result = runSchemaGate([
+      { action: 'type', target: { kind: 'element', elementId: ELEMENT_A }, value: '{{known_entity}}' },
+      { action: 'assert_text', value: 'results' },
+    ], valid, 10, roles, ['email', 'password']);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.join(' ')).toContain('not a run variable');
+  });
+
+  it('accepts a token the run actually provides, and a click_random capture', () => {
+    const roles = new Map([[ELEMENT_A, 'searchbox']]);
+    const result = runSchemaGate([
+      { action: 'type', target: { kind: 'element', elementId: ELEMENT_A }, value: '{{email}}' },
+      { action: 'click_random', description: 'a product link', captureAs: 'selectedItem' },
+      { action: 'assert_text', value: '{{selectedItem}}' },
+    ], valid, 10, roles, ['email', 'password']);
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects an unbound skeleton slot', () => {
+    const roles = new Map([[ELEMENT_A, 'searchbox']]);
+    const result = runSchemaGate([
+      { action: 'type', target: { kind: 'element', elementId: ELEMENT_A }, value: '{search_term}' },
+      { action: 'assert_text', value: 'results' },
+    ], valid, 10, roles, ['email']);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.join(' ')).toContain('unbound placeholder');
   });
 
   it('rejects a scenario that does not end on an assertion', () => {

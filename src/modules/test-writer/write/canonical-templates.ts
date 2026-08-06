@@ -157,7 +157,10 @@ export function renderIntent(
     }
 
     case 'click_random': {
-      const text = `click a random ${intent.description}`;
+      // The description names a class of elements and usually carries its own
+      // article ("an add to cart button") — keep the sentence readable.
+      const noun = intent.description.replace(/^(?:a|an|the)\s+/i, '');
+      const text = `click a random ${noun}`;
       return {
         text,
         ast: buildAst({

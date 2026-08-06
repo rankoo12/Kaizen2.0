@@ -103,6 +103,26 @@ describe('classifyInteraction — anchors', () => {
     expect(classifyInteraction(node, ctx)).toBe('navigation');
   });
 
+  it('classifies a fragment-only anchor as safe-reveal (the modal-opener pattern)', () => {
+    // Calibration finding: modal openers are <a href="#">. Classifying them as
+    // navigation made the BFS re-enqueue the current page and the modal never
+    // opened, so its fields never entered the site model.
+    const node = makeNode({ role: 'link', name: 'Log in', attributes: { href: '#' } });
+    expect(classifyInteraction(node, ctx)).toBe('safe-reveal');
+    const hashed = makeNode({ role: 'link', name: 'Sign up', attributes: { href: '#signupModal' } });
+    expect(classifyInteraction(hashed, ctx)).toBe('safe-reveal');
+  });
+
+  it('refuses to follow a destructive anchor even though it is a GET link', () => {
+    const node = makeNode({ role: 'link', name: 'Delete account', attributes: { href: '/account/delete' } });
+    expect(classifyInteraction(node, ctx)).toBe('mutating');
+  });
+
+  it('still follows a signup link — visiting a page is not the same as submitting it', () => {
+    const node = makeNode({ role: 'link', name: 'Sign up', attributes: { href: '/register' } });
+    expect(classifyInteraction(node, ctx)).toBe('navigation');
+  });
+
   it('classifies a cross-origin anchor as external', () => {
     const node = makeNode({ role: 'link', name: 'Docs', attributes: { href: 'https://docs.other.com/x' } });
     expect(classifyInteraction(node, ctx)).toBe('external');

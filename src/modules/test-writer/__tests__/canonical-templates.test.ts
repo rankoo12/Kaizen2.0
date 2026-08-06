@@ -54,7 +54,8 @@ describe('renderIntent', () => {
       { action: 'click_random', description: 'an add to cart button', captureAs: 'selectedItem' },
       elements,
     );
-    expect(text).toBe('click a random an add to cart button');
+    // The description carries its own article; the sentence must not double it.
+    expect(text).toBe('click a random add to cart button');
     expect(ast).toMatchObject({
       action: 'click_random', targetDescription: 'an add to cart button', captureAs: 'selectedItem',
     });

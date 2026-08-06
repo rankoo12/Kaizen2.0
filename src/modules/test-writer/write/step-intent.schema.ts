@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import type { StepIntent } from '../../../types/test-writer';
+import { isRoleCompatible } from '../../element-resolver/action-role-filter';
 
 /**
  * Schema/reference gate — the cheapest gate, and the one that makes
@@ -98,6 +99,10 @@ export function runSchemaGate(
   rawSteps: unknown,
   validElementIds: Set<string>,
   maxSteps: number,
+  /** page_elements.id → ARIA role, for action/role compatibility. */
+  rolesById: Map<string, string> = new Map(),
+  /** Seed tokens the run will actually provide ({{email}}, {{password}}, …). */
+  seedTokens: string[] = [],
 ): SchemaGateResult {
   const errors: string[] = [];
 
@@ -130,6 +135,17 @@ export function runSchemaGate(
             `step ${index + 1}: elementId ${target.elementId} was never observed on the target pages — ` +
             'cite an id from the supplied element list',
           );
+          continue;
+        }
+        // Existing ≠ usable. A generator handed a page whose real input sits
+        // behind a modal will otherwise "type" into the nearest link, which
+        // silently no-ops at run time and fails the next assertion instead.
+        const role = rolesById.get(target.elementId);
+        if (role && !isRoleCompatible(step.action, role)) {
+          errors.push(
+            `step ${index + 1}: cannot ${step.action} a "${role}" element — ` +
+            'cite an element whose role supports this action, or drop the step',
+          );
         }
         continue;
       }
@@ -155,6 +171,33 @@ export function runSchemaGate(
           `step ${index + 1}: literal credential "${step.value}" — use a seed token such as {{email}}`,
         );
       }
+    }
+  });
+
+  // Unbound placeholders. A catalog skeleton speaks in {slots} and {{tokens}};
+  // if one survives into a step verbatim, the test types the placeholder itself
+  // and quietly asserts nothing real. Only run-provided seeds and this
+  // scenario's own captures are legitimate.
+  const captured = new Set(
+    steps.filter((s): s is Extract<StepIntent, { action: 'click_random' }> => s.action === 'click_random')
+      .map((s) => s.captureAs),
+  );
+  const known = new Set([...seedTokens, ...captured]);
+  steps.forEach((step, index) => {
+    const value = 'value' in step ? step.value : undefined;
+    if (typeof value !== 'string') return;
+    for (const match of value.matchAll(/\{\{(\w+)\}\}/g)) {
+      if (known.size > 0 && !known.has(match[1])) {
+        errors.push(
+          `step ${index + 1}: "{{${match[1]}}}" is not a run variable — bind it to a real value ` +
+          `or use one of: ${[...known].join(', ')}`,
+        );
+      }
+    }
+    // Unbound skeleton slots ({like_this}) never belong in a finished step.
+    const slot = value.match(/\{([a-z_]+)\}/);
+    if (slot && !value.includes(`{{${slot[1]}}}`)) {
+      errors.push(`step ${index + 1}: unbound placeholder "${slot[0]}" — bind it to a real value`);
     }
   });
 

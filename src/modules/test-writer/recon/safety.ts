@@ -21,6 +21,16 @@ export const DESTRUCTIVE_VERBS = [
   'install', 'add to cart', 'add to bag',
 ] as const;
 
+/**
+ * The subset that must never be activated even via a plain GET link — these
+ * are irreversible, unlike "sign up" or "subscribe" which merely name a PAGE
+ * recon should absolutely visit.
+ */
+const HARD_DESTRUCTIVE = [
+  'delete', 'remove', 'pay', 'purchase', 'buy', 'transfer', 'withdraw',
+  'deactivate', 'publish', 'unpublish',
+] as const;
+
 const SESSION_ENDING = [
   'logout', 'log out', 'sign out', 'signout', 'log off', 'logoff', 'end session',
 ] as const;
@@ -59,6 +69,18 @@ export function classifyInteraction(node: CandidateNode, ctx: SafetyContext): In
   if (href !== undefined) {
     const lowerHref = href.toLowerCase();
     if (lowerHref.startsWith('mailto:') || lowerHref.startsWith('tel:')) return 'external';
+
+    // An anchor whose name is a hard-destructive verb is not treated as
+    // navigation: some apps still expose destructive endpoints over GET, and
+    // "follow every link" would then delete something.
+    if (matchesAny(name, HARD_DESTRUCTIVE)) return 'mutating';
+
+    // Fragment-only anchors (href="#", "#login") navigate nowhere — they are
+    // the classic modal/dropdown opener. Treating them as navigation meant the
+    // BFS enqueued the page it was already on and the modal was never opened,
+    // so everything inside it stayed invisible to the site model.
+    // Found by the P2 calibration run against a modal-driven storefront.
+    if (lowerHref === '#' || lowerHref.startsWith('#')) return 'safe-reveal';
     // javascript: hrefs execute arbitrary page script on click — unknowable
     // side effects, never "just navigation".
     if (lowerHref.startsWith('javascript:')) return 'mutating';

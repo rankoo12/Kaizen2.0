@@ -63,6 +63,7 @@ export class ScenarioWriter {
     const archetype = plan.source.kind === 'catalog' ? getArchetype(plan.source.archetypeKey) : null;
     const elements = new Map(params.grounding.map((g) => [g.id, g]));
     const validIds = new Set(params.grounding.map((g) => g.id));
+    const rolesById = new Map(params.grounding.map((g) => [g.id, g.role]));
 
     let repairErrors: string[] | undefined;
 
@@ -80,7 +81,9 @@ export class ScenarioWriter {
         repairErrors,
       }, params.tenantId);
 
-      const gate = runSchemaGate(generated.steps, validIds, params.maxSteps);
+      const gate = runSchemaGate(
+        generated.steps, validIds, params.maxSteps, rolesById, params.seedTokens,
+      );
       if (!gate.ok) {
         repairErrors = gate.errors;
         this.obs.increment('testwriter.write_schema_reject', { attempt: String(attempt) });
