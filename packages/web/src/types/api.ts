@@ -165,7 +165,9 @@ export type RunSummary = {
   suiteId: string | null;
   suiteName: string | null;
   status: RunStatus;
-  triggeredBy: 'web' | 'api' | 'cli' | 'schedule';
+  /** 'testwriter' marks a proving run — Kaizen's own evidence for a draft it
+   *  wants to propose. Excluded from the runs feed, reachable from the draft. */
+  triggeredBy: 'web' | 'api' | 'cli' | 'schedule' | 'testwriter';
   createdAt: string;
   completedAt: string | null;
   durationMs: number | null;

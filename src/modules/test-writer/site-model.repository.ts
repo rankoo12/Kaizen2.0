@@ -310,6 +310,12 @@ export class SiteModelRepository {
            WHERE pe.tenant_id = $1 AND sp.suite_id = $2
              AND sp.url_normalized = ANY($3::text[])
              AND pe.name <> ''
+             -- Form rows are CONTEXT, not targets: they are stored so the model
+             -- can see a page's form shapes (passed separately as summaries),
+             -- but a <form> is not something you can type into. Leaving them
+             -- citable had the writer typing into forms whenever the real field
+             -- was hidden behind a modal.
+             AND pe.kind <> 'form'
          ) ranked
          WHERE rn <= $4`,
         [tenantId, suiteId, urls, perPageCap],

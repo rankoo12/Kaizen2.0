@@ -130,6 +130,51 @@ export default function KaizenApp() {
     setScreen('run');
   }
 
+  /* One job per suite is watched — the one that most recently needed the user.
+     Nothing lives only in memory: this is re-derived from the API on mount, so a
+     reload (or a walk away and back) still finds the delivery waiting. */
+  const [pendingDelivery, setPendingDelivery] = useState<
+    { jobId: string; suiteId: string; status: string; count: number } | null>(null);
+
+  const scanJobs = useCallback(async () => {
+    if (suites.length === 0) { setPendingDelivery(null); return; }
+    try {
+      const results = await Promise.all(suites.map(async (s) => {
+        const r = await fetch(`/api/proxy/suites/${s.id}/jobs`);
+        if (!r.ok) return null;
+        const { jobs } = await r.json();
+        return (jobs ?? [])[0] ? { ...jobs[0], suiteId: s.id } : null;
+      }));
+      const jobs = results.filter(Boolean) as any[];
+      // Awaiting approval outranks a finished delivery: it is the one that
+      // blocks progress.
+      const waiting = jobs.find((j) => j.status === 'awaiting_plan_approval');
+      const delivered = jobs.find((j) => j.status === 'completed' && (j.report?.validate?.proposed ?? 0) > 0);
+      const winner = waiting ?? delivered ?? null;
+      setPendingDelivery(winner ? {
+        jobId: winner.id, suiteId: winner.suiteId, status: winner.status,
+        count: winner.report?.validate?.proposed ?? 0,
+      } : null);
+    } catch { /* the banner is a convenience; its absence must not break the list */ }
+  }, [suites]);
+
+  useEffect(() => { void scanJobs(); }, [scanJobs]);
+
+  /** Accepting a draft is reversible, so it is announced rather than confirmed. */
+  const acceptDraft = useCallback(async (c: DesignCase) => {
+    try {
+      const r = await fetch(`/api/proxy/cases/${c.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'active' }),
+      });
+      if (!r.ok) throw new Error();
+      showToast(`Added “${c.name}” to ${c.suiteName}`, 'success');
+      refetch();
+    } catch {
+      showToast('Could not accept that draft', 'error');
+    }
+  }, [refetch, showToast]);
+
   async function deleteCase(c: DesignCase) {
     try {
       const r = await fetch(`/api/proxy/cases/${c.id}`, { method: 'DELETE' });
@@ -216,7 +261,19 @@ export default function KaizenApp() {
         onOpen={openCase} onNew={() => { setEditing(null); go('author'); }} onRun={runNow}
         onEdit={(c) => editCase(c.id)} onDelete={deleteCase}
         suiteFilter={suite} onClearSuite={() => setSuite(null)} group={group} showToast={showToast}
-        onAnalyze={() => setAnalyzeOpen(true)} />
+        onAnalyze={() => setAnalyzeOpen(true)}
+        onAcceptDraft={acceptDraft}
+        onOpenProof={(c) => {
+          if (!c.validationRunId) return;
+          setFocus({ caseId: c.id, runId: c.validationRunId, name: c.name });
+          setScreen('run');
+        }}
+        pendingDelivery={pendingDelivery}
+        onOpenDelivery={() => {
+          if (!pendingDelivery) return;
+          setWriterFocus({ suiteId: pendingDelivery.suiteId, jobId: pendingDelivery.jobId });
+          setScreen('writer');
+        }} />
     ) : screen === 'author' ? (
       <AuthorScreen suites={suites} defaultSuiteId={suite} editCaseId={editing}
         onBack={() => { setEditing(null); go('tests', suite); }}

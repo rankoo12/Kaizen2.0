@@ -18,7 +18,35 @@ const descriptionTarget = z.object({
   description: z.string().min(3).max(120),
 });
 
-const anyTarget = z.discriminatedUnion('kind', [elementTarget, descriptionTarget]);
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Infer the missing discriminator rather than rejecting over it.
+ *
+ * The gate must be uncompromising about GROUNDING — an element id nobody
+ * observed is a hallucination and stays fatal. But a target that names a real
+ * id and merely omits `kind` is unambiguous, and failing it burns a repair
+ * round on a shape question instead of a substance one. Found by calibration:
+ * whole scenarios were dying to "Invalid discriminator value".
+ */
+const anyTarget = z.preprocess((raw) => {
+  if (typeof raw === 'string') {
+    return UUID_RE.test(raw)
+      ? { kind: 'element', elementId: raw }
+      : { kind: 'description', description: raw };
+  }
+  if (raw && typeof raw === 'object') {
+    const obj = raw as Record<string, unknown>;
+    // Re-infer whenever `kind` is missing OR is a value the union doesn't know
+    // (models invent "elementId", "target", "css"). The payload says which it is.
+    const known = obj.kind === 'element' || obj.kind === 'description';
+    if (!known) {
+      if (typeof obj.elementId === 'string') return { kind: 'element', elementId: obj.elementId };
+      if (typeof obj.description === 'string') return { kind: 'description', description: obj.description };
+    }
+  }
+  return raw;
+}, z.discriminatedUnion('kind', [elementTarget, descriptionTarget]));
 
 export const StepIntentSchema: z.ZodType<StepIntent> = z.discriminatedUnion('action', [
   z.object({ action: z.literal('navigate'), url: z.string().url() }),
@@ -37,7 +65,10 @@ export const StepIntentSchema: z.ZodType<StepIntent> = z.discriminatedUnion('act
   z.object({
     action: z.literal('click_random'),
     description: z.string().min(3).max(120),
-    captureAs: z.string().min(1).max(40),
+    // 'selectedItem' is the canonical capture name the compiler and the catalog
+    // both assume — defaulting it beats failing a scenario over a field whose
+    // value was never in question.
+    captureAs: z.string().min(1).max(40).default('selectedItem'),
   }),
   z.object({
     action: z.enum(['assert_visible', 'assert_not_visible', 'assert_enabled', 'assert_disabled', 'assert_checked']),

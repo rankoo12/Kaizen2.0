@@ -8,7 +8,7 @@ import { useMemo } from 'react';
 import { useSuites } from '@/hooks/use-suites';
 import { useAllCases } from '@/hooks/use-all-cases';
 import { useAuth } from '@/context/auth-context';
-import type { CaseSummary, Suite } from '@/types/api';
+import type { CaseOrigin, CaseStatus, CaseSummary, Suite } from '@/types/api';
 
 export type DesignCase = {
   id: string;
@@ -31,6 +31,12 @@ export type DesignCase = {
   /** Tokens the first run spent learning; null when it has never run. */
   firstRunTokens: number | null;
   runCount: number;
+  /** Draft lifecycle. Anything Kaizen proposed sits here until a human accepts it. */
+  caseStatus: CaseStatus;
+  origin: CaseOrigin;
+  /** The run that proved a generated draft — its evidence, and the reason to trust it. */
+  validationRunId: string | null;
+  archetypeKey: string | null;
 };
 
 export type DesignSuite = { id: string; name: string; desc: string; icon: string; count: number };
@@ -89,6 +95,12 @@ function toDesignCase(c: CaseSummary, s: Suite): DesignCase {
     cacheHitPct: c.stats?.cacheHitPct ?? null,
     firstRunTokens: c.stats?.firstRunTokens ?? null,
     runCount: c.stats?.runs ?? 0,
+    // Payloads predating the draft lifecycle omit these; a case without a status
+    // is one the user owns, which is the safe reading.
+    caseStatus: c.status ?? 'active',
+    origin: c.origin ?? 'user',
+    validationRunId: c.validationRunId ?? null,
+    archetypeKey: c.archetypeKey ?? null,
   };
 }
 

@@ -34,6 +34,42 @@ describe('runSchemaGate — grounding', () => {
     const result = runSchemaGate([{ action: 'click' }], valid, 10);
     expect(result.ok).toBe(false);
   });
+
+  // Calibration finding: whole scenarios were dying because the model omitted
+  // `kind` on an otherwise perfectly grounded target. Shape is inferable;
+  // grounding is not, and stays fatal.
+  it('infers a missing discriminator when the target names a real element', () => {
+    const result = runSchemaGate([
+      { action: 'click', target: { elementId: ELEMENT_A } },
+      { action: 'assert_url', value: '/x' },
+    ], valid, 10);
+    expect(result.ok).toBe(true);
+  });
+
+  it('infers a description target from a bare description', () => {
+    const result = runSchemaGate([
+      { action: 'click', target: { kind: 'element', elementId: ELEMENT_A } },
+      { action: 'assert_visible', target: { description: 'the error message' } },
+    ], valid, 10);
+    expect(result.ok).toBe(true);
+  });
+
+  it('accepts a bare string target, routed by whether it is an id', () => {
+    const result = runSchemaGate([
+      { action: 'click', target: ELEMENT_A },
+      { action: 'assert_visible', target: 'the confirmation banner' },
+    ], valid, 10);
+    expect(result.ok).toBe(true);
+  });
+
+  it('still rejects an inferred target whose element was never observed', () => {
+    const result = runSchemaGate([
+      { action: 'click', target: { elementId: UNKNOWN } },
+      { action: 'assert_url', value: '/x' },
+    ], valid, 10);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.join(' ')).toContain('never observed');
+  });
 });
 
 describe('runSchemaGate — description-variant exemptions', () => {

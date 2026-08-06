@@ -6,22 +6,36 @@
 import * as React from 'react';
 import { I, StatusBadge } from './icons';
 import { Toolbar, Seg, Stat, Ring, Menu, ConfirmSheet } from './chrome';
+import { AppBriefCard } from './app-brief-card';
 import { fmt } from './data';
 import type { DesignCase, DesignSuite } from './use-design-data';
 
 const { useState: uSt, useMemo: uM, useEffect: uEt, useRef: uRt } = React;
 
-function CaseRow({ c, sel, onSelect, onOpen, onRun, onEdit, onDelete, rowRef }: any) {
+function CaseRow({ c, sel, onSelect, onOpen, onRun, onEdit, onDelete, rowRef, onAccept, onProof }: any) {
   const [menu, setMenu] = uSt(false);
   const stop = (e: any) => e.stopPropagation();
   const cost = c.lastCost == null ? '—' : c.lastCost === 0 ? 'free' : fmt.k(c.lastCost);
+  const isDraft = c.caseStatus === 'draft';
+  const isProving = c.caseStatus === 'validating';
+  const generated = c.origin === 'generated';
   return (
     <div className={`row focus-row${sel ? ' sel' : ''}`} ref={rowRef} tabIndex={0}
       style={{ padding: '11px 14px' }}
       onClick={onSelect} onDoubleClick={onOpen}
       onKeyDown={(e) => { if (e.key === 'Enter') { e.preventDefault(); onOpen(); } }}>
       <div style={{ flex: 1, minWidth: 0 }}>
-        <div className="row-t" title={c.name}>{c.name}</div>
+        <div className="row-t" title={c.name} style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+          {/* Provenance never fades: a test Kaizen wrote keeps its mark after it
+              has been accepted, so "who wrote this" stays answerable. */}
+          {generated && (
+            <I.sparkle size={11} style={{ color: 'var(--accent)', flex: 'none' }}
+              aria-label="Written by Kaizen" />
+          )}
+          <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{c.name}</span>
+          {isDraft && <span className="badge" style={{ color: 'var(--accent)', fontSize: 10, flex: 'none' }}>DRAFT</span>}
+          {isProving && <span className="badge" style={{ color: 'var(--idle)', fontSize: 10, flex: 'none' }}>PROVING</span>}
+        </div>
         <div className="row-s">
           <span className="num">{c.baseUrl.replace(/^https?:\/\//, '')}</span>
           {/* Omitted entirely when unknown — a pre-030 case has no author, and "Unknown"
@@ -46,11 +60,29 @@ function CaseRow({ c, sel, onSelect, onOpen, onRun, onEdit, onDelete, rowRef }: 
       <div className="num" style={{ width: 70, flex: 'none', fontSize: 11, color: 'var(--text-2)', textAlign: 'right' }}>{c.lastRun || 'never'}</div>
 
       <div className="row-actions" style={{ display: 'flex', gap: 4, flex: 'none', position: 'relative' }} onClick={stop} onDoubleClick={stop}>
-        <button className="btn icon ghost" title="Run now (⌘R)" onClick={onRun}><I.play size={12} /></button>
+        {/* A draft is a proposal, not part of the suite yet — the backend refuses
+            to run it, so the row offers acceptance instead and teaches why. */}
+        {isDraft ? (
+          <>
+            {c.validationRunId && (
+              <button className="btn" title="See the run that proved it"
+                onClick={() => onProof?.(c)}>Proof</button>
+            )}
+            <button className="btn" onClick={() => onAccept?.(c)}>Accept</button>
+          </>
+        ) : (
+          <button className="btn icon ghost" title="Run now (⌘R)" onClick={onRun} disabled={isProving}>
+            <I.play size={12} />
+          </button>
+        )}
         <button className="btn icon ghost" onClick={() => setMenu(!menu)}><I.more size={14} /></button>
         {menu && <Menu onClose={() => setMenu(false)} style={{ top: 26, right: 0 }} items={[
-          { label: 'Open latest run', icon: 'runs', hint: '⏎', onClick: onOpen },
-          { label: 'Run now', icon: 'play', hint: '⌘R', onClick: onRun },
+          ...(isDraft ? [
+            { label: 'Accept into the suite', icon: 'check', onClick: () => onAccept?.(c) },
+          ] : [
+            { label: 'Open latest run', icon: 'runs', hint: '⏎', onClick: onOpen },
+            { label: 'Run now', icon: 'play', hint: '⌘R', onClick: onRun },
+          ]),
           { label: 'Edit steps', icon: 'settings', onClick: onEdit },
           '-',
           { label: 'Delete test', icon: 'trash', danger: true, onClick: onDelete },
@@ -60,13 +92,18 @@ function CaseRow({ c, sel, onSelect, onOpen, onRun, onEdit, onDelete, rowRef }: 
   );
 }
 
-export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit, onDelete, suiteFilter, onClearSuite, group = true, showToast, onAnalyze }: {
+export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit, onDelete, suiteFilter, onClearSuite, group = true, showToast, onAnalyze, onAcceptDraft, onOpenProof, pendingDelivery, onOpenDelivery }: {
   cases: DesignCase[]; suites: DesignSuite[]; stats: any;
   onOpen: (c: DesignCase) => void; onNew: () => void; onRun: (c: DesignCase) => void;
   onEdit: (c: DesignCase) => void; onDelete?: (c: DesignCase) => void;
   suiteFilter: string | null; onClearSuite: () => void; group?: boolean; showToast?: any;
   /** Opens the analyze dialog — absent in contexts where generation isn't offered. */
   onAnalyze?: () => void;
+  onAcceptDraft?: (c: DesignCase) => void;
+  onOpenProof?: (c: DesignCase) => void;
+  /** A finished job whose drafts nobody has reviewed yet, or one awaiting approval. */
+  pendingDelivery?: { jobId: string; suiteId: string; status: string; count: number } | null;
+  onOpenDelivery?: () => void;
 }) {
   const [q, setQ] = uSt('');
   const [filter, setFilter] = uSt('all');
@@ -79,9 +116,17 @@ export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit
     if (filter === 'failing' && !(c.status === 'failed' || c.status === 'cancelled')) return false;
     if (filter === 'healed' && c.status !== 'healed') return false;
     if (filter === 'passed' && c.status !== 'passed') return false;
+    if (filter === 'drafts' && c.caseStatus !== 'draft' && c.caseStatus !== 'validating') return false;
     if (q && !(`${c.name} ${c.suiteName} ${c.baseUrl} ${c.author}`.toLowerCase().includes(q.toLowerCase()))) return false;
     return true;
   }), [cases, q, filter, suiteFilter]);
+
+  // The Drafts filter appears only when there is something to filter to — a
+  // workspace that has never used the writer keeps its original toolbar.
+  const draftCount = uM(
+    () => cases.filter((c) => c.caseStatus === 'draft' || c.caseStatus === 'validating').length,
+    [cases],
+  );
 
   uEt(() => {
     const h = (e: KeyboardEvent) => {
@@ -124,6 +169,7 @@ export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit
         <Seg value={filter} onChange={setFilter} options={[
           { value: 'all', label: 'All' }, { value: 'failing', label: 'Failing' },
           { value: 'healed', label: 'Healed' }, { value: 'passed', label: 'Passed' },
+          ...(draftCount ? [{ value: 'drafts', label: `Drafts ${draftCount}` }] : []),
         ]} />
         {onAnalyze && (
           <button className="btn" onClick={onAnalyze} title="Have Kaizen explore your app and propose tests">
@@ -134,6 +180,28 @@ export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit
       </Toolbar>
 
       <div className="scroll" style={{ flex: 1, padding: '18px 22px 40px' }}>
+        {/* The "you were gone when it finished" catch-all: a job that needs the
+            user is surfaced where they actually are, not only in the writer. */}
+        {pendingDelivery && (
+          <button className="card rise" onClick={onOpenDelivery}
+            style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left',
+              padding: '12px 16px', marginBottom: 14, cursor: 'pointer', border: '.5px solid var(--accent-soft)' }}>
+            <I.sparkle size={14} style={{ color: 'var(--accent)', flex: 'none' }} />
+            <span style={{ flex: 1, fontSize: 12.5 }}>
+              {pendingDelivery.status === 'awaiting_plan_approval'
+                ? 'A test plan is ready for your approval.'
+                : `${pendingDelivery.count} proven ${pendingDelivery.count === 1 ? 'test is' : 'tests are'} waiting for review.`}
+            </span>
+            <span className="btn">
+              {pendingDelivery.status === 'awaiting_plan_approval' ? 'Review the plan' : 'Review delivery'}
+            </span>
+          </button>
+        )}
+
+        {/* Scoped to a single suite: the brief describes ONE app, so it would be
+            meaningless over a mixed list. */}
+        {suiteFilter && <AppBriefCard suiteId={suiteFilter} onReanalyze={onAnalyze} />}
+
         <div className="card rise" style={{ display: 'flex', alignItems: 'stretch', marginBottom: 16, overflow: 'hidden', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 18px', borderRight: '.5px solid var(--sep)', flex: '1 1 300px', minWidth: 0 }}>
             <Ring value={green} label={`${green}%`} sub="Green" size={64} />
@@ -182,6 +250,7 @@ export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit
                   onSelect={() => setSelId(c.id)}
                   onOpen={() => onOpen(c)} onRun={() => onRun(c)}
                   onEdit={() => onEdit(c)}
+                  onAccept={onAcceptDraft} onProof={onOpenProof}
                   onDelete={() => setConfirmDel(c)} />
               ))}
             </div>
