@@ -53,7 +53,16 @@ export type TestWriterJobPayload = {
     includeNegative: boolean;
     safeMode: boolean;
     validate: boolean;
+    /** 'review' pauses after PLAN for human approval; 'auto' runs straight through. */
+    planApproval: 'review' | 'auto';
   };
+  /**
+   * Set when the job is re-enqueued by the plan-approval endpoint: RECON and
+   * COMPREHEND are already done and persisted, so the pipeline resumes at WRITE
+   * with only the approved subset.
+   */
+  resumeFromPlan?: boolean;
+  approvedScenarios?: string[];
 };
 
 // Queue names are env-overridable so an isolated stack (second worktree, CI)

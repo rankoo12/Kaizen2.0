@@ -19,23 +19,39 @@ import { getPool } from '../../db/pool';
 import { createTestWriterQueue } from '../../queue';
 import { usageThisMonth } from '../../modules/billing-meter/usage';
 import { HARD_MAX_PAGES } from '../../modules/test-writer/interfaces';
+import { prepareBrief, MAX_BRIEF_CHARS } from '../../modules/test-writer/brief-intake';
+import { OpenAITestWriterGateway } from '../../modules/llm-gateway/testwriter.gateway';
+import { PostgresBillingMeter } from '../../modules/billing-meter/postgres.billing-meter';
+import { PinoObservability } from '../../modules/observability/pino.observability';
 
 const AnalyzeBody = z.object({
   targetUrl: z.string().url(),
   scope: z.enum(['public', 'authenticated']).default('public'),
   loginCaseId: z.string().uuid().optional(),
   authConsent: z.boolean().default(false),
+  /** "Describe your app" — steers priorities; never invents testable UI. */
+  initBrief: z.string().max(MAX_BRIEF_CHARS).optional(),
+  /** Per-suite opt-in for tests that create throwaway records. */
+  allowSyntheticData: z.boolean().optional(),
   options: z.object({
     maxPages: z.number().int().min(1).max(HARD_MAX_PAGES).default(30),
     maxScenarios: z.number().int().min(1).max(10).default(6),
     includeNegative: z.boolean().default(true),
     safeMode: z.boolean().default(true),
     validate: z.boolean().default(true),
+    planApproval: z.enum(['review', 'auto']).default('review'),
   }).default({}),
+});
+
+const PlanApprovalBody = z.object({
+  approvedScenarios: z.array(z.string().min(1)).min(1),
+  notes: z.string().max(2000).optional(),
 });
 
 export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
   const queue = createTestWriterQueue();
+  const obs = new PinoObservability(app.log as never);
+  const gateway = new OpenAITestWriterGateway(new PostgresBillingMeter(obs), obs);
 
   // ── POST /suites/:suiteId/analyze ──────────────────────────────────────────
   app.post('/suites/:suiteId/analyze', { preHandler: [requireAuth] }, async (request, reply) => {
@@ -89,6 +105,35 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
+    // Init Brief: scrub secrets BEFORE storage or any prompt, then distil into
+    // structure. What never enters the system cannot leak from it.
+    const briefWarnings: string[] = [];
+    const prepared = prepareBrief(body.initBrief);
+    if (prepared) {
+      if (prepared.redactions.length > 0) {
+        briefWarnings.push(
+          `Removed suspected secrets from your description (${prepared.redactions.join(', ')}). ` +
+          'Kaizen never needs credentials in the brief.',
+        );
+      }
+      try {
+        const tenantBrief = await gateway.distillBrief(prepared.text, tenantId);
+        await getPool().query(
+          `UPDATE test_suites SET tenant_brief = $3 WHERE id = $1 AND tenant_id = $2`,
+          [suiteId, tenantId, JSON.stringify(tenantBrief)],
+        );
+      } catch {
+        briefWarnings.push('Your description could not be processed and was skipped.');
+      }
+    }
+
+    if (typeof body.allowSyntheticData === 'boolean') {
+      await getPool().query(
+        `UPDATE test_suites SET allow_synthetic_data = $3 WHERE id = $1 AND tenant_id = $2`,
+        [suiteId, tenantId, body.allowSyntheticData],
+      );
+    }
+
     const { rows } = await getPool().query<{ id: string }>(
       `INSERT INTO generation_jobs (tenant_id, suite_id, target_url, scope, auth_consent, login_case_id, options)
        VALUES ($1, $2, $3, $4, $5, $6, $7)
@@ -109,7 +154,66 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
       options: body.options,
     });
 
-    return reply.status(202).send({ jobId, status: 'queued' });
+    return reply.status(202).send({ jobId, status: 'queued', warnings: briefWarnings });
+  });
+
+  // ── POST /testwriter/jobs/:jobId/plan-approval ─────────────────────────────
+  // Resumes a job paused at the checkpoint. Only approved scenarios are written
+  // and validated — everything expensive happens after this call, never before.
+  app.post('/testwriter/jobs/:jobId/plan-approval', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { jobId } = request.params as { jobId: string };
+    const parsed = PlanApprovalBody.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'INVALID_REQUEST', details: parsed.error.issues });
+    }
+    const { tenantId } = request;
+
+    const { rows } = await getPool().query<{
+      status: string; suite_id: string; target_url: string; scope: string;
+      auth_consent: boolean; login_case_id: string | null;
+      options: Record<string, unknown>; test_plan: { scenarios?: Array<{ name: string }> } | null;
+    }>(
+      `SELECT status, suite_id, target_url, scope, auth_consent, login_case_id, options, test_plan
+       FROM generation_jobs WHERE id = $1 AND tenant_id = $2`,
+      [jobId, tenantId],
+    );
+    const job = rows[0];
+    if (!job) return reply.status(404).send({ error: 'JOB_NOT_FOUND' });
+    if (job.status !== 'awaiting_plan_approval') {
+      return reply.status(409).send({
+        error: 'JOB_NOT_AWAITING_APPROVAL',
+        message: `Job is ${job.status}; only a job awaiting plan approval can be resumed.`,
+      });
+    }
+
+    const plannedNames = new Set((job.test_plan?.scenarios ?? []).map((s) => s.name));
+    const approved = parsed.data.approvedScenarios.filter((n) => plannedNames.has(n));
+    if (approved.length === 0) {
+      return reply.status(400).send({
+        error: 'NO_VALID_SCENARIOS',
+        message: 'None of the approved names match this job\'s test plan.',
+      });
+    }
+
+    await getPool().query(
+      `UPDATE generation_jobs SET plan_approved_at = now(), plan_notes = $2 WHERE id = $1`,
+      [jobId, parsed.data.notes ?? null],
+    );
+
+    await queue.add('testwriter', {
+      jobId,
+      tenantId,
+      suiteId: job.suite_id,
+      targetUrl: job.target_url,
+      scope: job.scope as 'public' | 'authenticated',
+      loginCaseId: job.login_case_id ?? undefined,
+      authConsent: job.auth_consent,
+      options: job.options as never,
+      resumeFromPlan: true,
+      approvedScenarios: approved,
+    });
+
+    return reply.status(202).send({ jobId, status: 'queued', approved: approved.length });
   });
 
   // ── GET /testwriter/jobs/:jobId ────────────────────────────────────────────

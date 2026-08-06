@@ -23,8 +23,17 @@ import { PageChallengeDetector } from '../../modules/execution-engine/challenge-
 import { ReconCrawler } from '../../modules/test-writer/recon/crawler';
 import { SiteModelRepository } from '../../modules/test-writer/site-model.repository';
 import { runTestWriterJob } from '../../modules/test-writer/pipeline';
+import { PageClassifier } from '../../modules/test-writer/comprehend/classifier';
+import { AppBriefSynthesizer } from '../../modules/test-writer/comprehend/synthesizer';
+import { TestPlanner } from '../../modules/test-writer/plan/test-planner';
+import { ScenarioWriter } from '../../modules/test-writer/write/scenario-writer';
+import { ValidationRunner } from '../../modules/test-writer/validate/validation-runner';
+import { OpenAITestWriterGateway } from '../../modules/llm-gateway/testwriter.gateway';
+import { PostgresBillingMeter } from '../../modules/billing-meter/postgres.billing-meter';
 import { BrowserPool } from '../../workers/browser-pool';
-import { createRedisConnection, TESTWRITER_QUEUE_NAME, type TestWriterJobPayload } from '../../queue';
+import {
+  createRedisConnection, createRunQueue, TESTWRITER_QUEUE_NAME, type TestWriterJobPayload,
+} from '../../queue';
 import { closePool } from '../../db/pool';
 
 const logger = pino({
@@ -45,9 +54,26 @@ const crawler = new ReconCrawler({
 });
 const repository = new SiteModelRepository();
 
+// Generation stack: one LLM seam, one run queue (validation runs ride the same
+// kaizen-runs queue as any other test — a generated test is proven by the same
+// worker that will execute it in production).
+const gateway = new OpenAITestWriterGateway(new PostgresBillingMeter(obs), obs);
+const runQueue = createRunQueue();
+const deps = {
+  crawler,
+  repository,
+  obs,
+  gateway,
+  classifier: new PageClassifier(gateway, repository, obs),
+  synthesizer: new AppBriefSynthesizer(gateway, repository, obs),
+  planner: new TestPlanner(gateway, obs),
+  writer: new ScenarioWriter(gateway, obs),
+  validator: new ValidationRunner(runQueue, obs),
+};
+
 const worker = new Worker<TestWriterJobPayload>(
   TESTWRITER_QUEUE_NAME,
-  (job) => runTestWriterJob(job.data, { crawler, repository, obs }),
+  (job) => runTestWriterJob(job.data, deps),
   {
     connection: createRedisConnection(),
     // Crawl jobs are heavyweight (one browser context each, minutes long).

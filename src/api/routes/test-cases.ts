@@ -31,6 +31,7 @@ import { PostgresBillingMeter } from '../../modules/billing-meter/postgres.billi
 import { usageThisMonth } from '../../modules/billing-meter/usage';
 import { PinoObservability } from '../../modules/observability/pino.observability';
 import { generateFormData } from '../../modules/test-data/generate';
+import type { StepAST } from '../../types';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -729,8 +730,14 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       // step_results.step_id — without it, runs.ts can't LEFT JOIN to recover
       // the step's natural-language text for the timeline display.
       // Spec: docs/specs/workers/spec-live-run-updates.md §5.1.1
-      const { rows: stepRows } = await client.query<{ id: string; raw_text: string }>(
-        `SELECT ts.id, ts.raw_text
+      // compiled_ast is populated for Test-Writer-generated steps: the canonical
+      // renderer built the AST definitionally, so re-compiling its own sentence
+      // would spend tokens rediscovering what is already known.
+      // Spec: docs/specs/test-writer/spec-generation-pipeline.md §3
+      const { rows: stepRows } = await client.query<{
+        id: string; raw_text: string; compiled_ast: StepAST | null;
+      }>(
+        `SELECT ts.id, ts.raw_text, ts.compiled_ast
          FROM test_case_steps tcs
          JOIN test_steps ts ON ts.id = tcs.step_id
          WHERE tcs.case_id = $1 AND tcs.is_active = true
@@ -742,6 +749,7 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
         ...caseRows[0],
         steps:   stepRows.map((r) => r.raw_text),
         stepIds: stepRows.map((r) => r.id),
+        storedAsts: stepRows.map((r) => r.compiled_ast),
       };
     });
 
@@ -771,8 +779,10 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
 
     const baseUrl = parsed.data.baseUrl ?? caseData.base_url;
 
-    // Compile natural-language steps → AST
-    const compiledSteps = await compiler.compileMany(caseData.steps);
+    // Compile natural-language steps → AST, reusing any stored AST as-is.
+    const compiledSteps = await Promise.all(
+      caseData.steps.map(async (rawText, i) => caseData.storedAsts[i] ?? compiler.compile(rawText)),
+    );
 
     // Create run record and enqueue
     const { rows } = await getPool().query<{ id: string }>(

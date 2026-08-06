@@ -230,7 +230,7 @@ export type OracleHarvest = {
 
 export type ScenarioRejection = {
   name: string;
-  stage: 'safety' | 'schema' | 'compile' | 'dedup' | 'judge' | 'validation' | 'consent';
+  stage: 'safety' | 'schema' | 'render' | 'compile' | 'dedup' | 'judge' | 'validation' | 'consent';
   reason: string;
   runId?: string;
 };
