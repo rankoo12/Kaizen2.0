@@ -101,8 +101,10 @@ export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit
   onAnalyze?: () => void;
   onAcceptDraft?: (c: DesignCase) => void;
   onOpenProof?: (c: DesignCase) => void;
-  /** A finished job whose drafts nobody has reviewed yet, or one awaiting approval. */
-  pendingDelivery?: { jobId: string; suiteId: string; status: string; count: number } | null;
+  /** The job that most needs the user: awaiting approval, in flight, or delivered. */
+  pendingDelivery?: {
+    jobId: string; suiteId: string; status: string; count: number; pagesCrawled?: number | null;
+  } | null;
   onOpenDelivery?: () => void;
 }) {
   const [q, setQ] = uSt('');
@@ -186,14 +188,24 @@ export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit
           <button className="card rise" onClick={onOpenDelivery}
             style={{ display: 'flex', alignItems: 'center', gap: 10, width: '100%', textAlign: 'left',
               padding: '12px 16px', marginBottom: 14, cursor: 'pointer', border: '.5px solid var(--accent-soft)' }}>
-            <I.sparkle size={14} style={{ color: 'var(--accent)', flex: 'none' }} />
+            {pendingDelivery.status === 'running' || pendingDelivery.status === 'queued'
+              ? <span className="spinner" style={{ width: 13, height: 13, flex: 'none' }} />
+              : <I.sparkle size={14} style={{ color: 'var(--accent)', flex: 'none' }} />}
             <span style={{ flex: 1, fontSize: 12.5 }}>
               {pendingDelivery.status === 'awaiting_plan_approval'
                 ? 'A test plan is ready for your approval.'
-                : `${pendingDelivery.count} proven ${pendingDelivery.count === 1 ? 'test is' : 'tests are'} waiting for review.`}
+                : pendingDelivery.status === 'queued'
+                  ? 'Kaizen is starting up an analysis.'
+                  : pendingDelivery.status === 'running'
+                    ? `Kaizen is exploring your app${pendingDelivery.pagesCrawled ? ` — ${pendingDelivery.pagesCrawled} pages so far` : ''}.`
+                    : pendingDelivery.count > 0
+                      ? `${pendingDelivery.count} proven ${pendingDelivery.count === 1 ? 'test is' : 'tests are'} waiting for review.`
+                      : 'Your last analysis proposed nothing — the reasons are in its report.'}
             </span>
             <span className="btn">
-              {pendingDelivery.status === 'awaiting_plan_approval' ? 'Review the plan' : 'Review delivery'}
+              {pendingDelivery.status === 'awaiting_plan_approval' ? 'Review the plan'
+                : pendingDelivery.status === 'running' || pendingDelivery.status === 'queued' ? 'View progress'
+                  : pendingDelivery.count > 0 ? 'Review delivery' : 'See why'}
             </span>
           </button>
         )}

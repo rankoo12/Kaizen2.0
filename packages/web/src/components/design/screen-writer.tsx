@@ -7,7 +7,7 @@
 import * as React from 'react';
 import { Toolbar, Stat, Disclose } from './chrome';
 import { I } from './icons';
-import { useGenerationJob } from './use-generation-job';
+import { useGenerationJob, useSuiteJobs } from './use-generation-job';
 import { ARCHETYPE_SKELETONS } from './writer-catalog';
 import type { GenerationJob, PlannedScenario, ScenarioRejection } from '@/types/api';
 
@@ -433,7 +433,67 @@ function HaltedFace({ job, onRetry }: { job: GenerationJob; onRetry: () => void 
 
 // ─── the screen ──────────────────────────────────────────────────────────────
 
-export function WriterScreen({ suiteId, jobId, suiteName, onBack, onOpenRun, onAnalyzeAgain, showToast, onCasesChanged }: {
+/** Cost, shown because a job that produced nothing still spent something. */
+function CostLine({ usage }: { usage?: Record<string, number> }) {
+  if (!usage?.total) return null;
+  const phases = Object.entries(usage)
+    .filter(([k, v]) => k !== 'total' && v > 0)
+    .sort((a, b) => b[1] - a[1]);
+  return (
+    <div className="card" style={{ padding: '0 16px' }}>
+      <Disclose title={`Cost — ${(usage.total / 1000).toFixed(1)}k tokens`}>
+        <div style={{ display: 'grid', gap: 5 }}>
+          {phases.map(([phase, tokens]) => (
+            <div key={phase} style={{ display: 'flex', fontSize: 11.5 }}>
+              <span style={{ flex: 1, color: 'var(--text-2)' }}>{phase}</span>
+              <span className="num" style={{ color: 'var(--accent)' }}>
+                {(tokens / 1000).toFixed(1)}k
+              </span>
+            </div>
+          ))}
+        </div>
+      </Disclose>
+    </div>
+  );
+}
+
+/** Past analyses of this suite — the audit surface, and the way back to one. */
+function HistoryStrip({ suiteId, currentJobId, onPick }: {
+  suiteId: string; currentJobId: string; onPick: (jobId: string) => void;
+}) {
+  const { jobs } = useSuiteJobs(suiteId);
+  if (jobs.length <= 1) return null;
+  return (
+    <div className="card" style={{ padding: '0 16px' }}>
+      <Disclose title={`Past analyses (${jobs.length})`}>
+        <div className="list">
+          {jobs.map((j) => (
+            <button key={j.id} className="row" onClick={() => onPick(j.id)}
+              style={{ width: '100%', textAlign: 'left', background: 'none', border: 'none',
+                cursor: 'pointer', padding: '9px 12px',
+                opacity: j.id === currentJobId ? 1 : .7 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <div className="row-t num" style={{ fontSize: 12 }}>
+                  {(() => { try { return new URL(j.targetUrl).host; } catch { return j.targetUrl; } })()}
+                </div>
+                <div className="row-s">{new Date(j.createdAt).toLocaleString()}</div>
+              </div>
+              <Chip text={j.status.replace(/_/g, ' ').toUpperCase()}
+                tone={j.status === 'completed' ? 'var(--pass)'
+                  : j.status === 'awaiting_plan_approval' ? 'var(--accent)'
+                    : j.status === 'failed' || j.status === 'blocked' ? 'var(--fail)' : 'var(--idle)'} />
+              <span className="num" style={{ width: 74, textAlign: 'right', fontSize: 11, color: 'var(--text-3)' }}>
+                {j.report?.validate?.proposed ?? 0} proposed
+              </span>
+            </button>
+          ))}
+        </div>
+      </Disclose>
+    </div>
+  );
+}
+
+export function WriterScreen({ suiteId, jobId: initialJobId, suiteName, onBack, onOpenRun, onAnalyzeAgain, showToast, onCasesChanged }: {
   suiteId: string;
   jobId: string;
   suiteName: string;
@@ -443,6 +503,11 @@ export function WriterScreen({ suiteId, jobId, suiteName, onBack, onOpenRun, onA
   showToast?: (message: string, kind?: string) => void;
   onCasesChanged?: () => void;
 }) {
+  // The screen owns which job it shows, so the history strip can switch between
+  // past analyses without the shell having to re-navigate.
+  const [jobId, setJobId] = useState(initialJobId);
+  React.useEffect(() => { setJobId(initialJobId); }, [initialJobId]);
+
   const { job, isLoading, error, refetch } = useGenerationJob(jobId);
   const [busy, setBusy] = useState(false);
   const [drafts, setDrafts] = useState<any[]>([]);
@@ -560,7 +625,13 @@ export function WriterScreen({ suiteId, jobId, suiteName, onBack, onOpenRun, onA
         sub={host}
         back={onBack}
       />
-      <div style={{ flex: 1, overflow: 'auto', padding: '14px 16px 22px' }}>{body}</div>
+      <div style={{ flex: 1, overflow: 'auto', padding: '14px 16px 22px' }}>
+        <div style={{ display: 'grid', gap: 14 }}>
+          {body}
+          {job && <CostLine usage={job.report?.tokenUsage} />}
+          <HistoryStrip suiteId={suiteId} currentJobId={jobId} onPick={setJobId} />
+        </div>
+      </div>
     </>
   );
 }

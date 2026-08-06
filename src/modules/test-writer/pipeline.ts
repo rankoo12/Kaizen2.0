@@ -374,7 +374,7 @@ async function runGenerationPhases(
     harvest: validation.harvest,
   };
 
-  await finishJob(payload.jobId, 'completed', report, null);
+  await finishJob(payload.jobId, 'completed', report, null, payload.tenantId);
   deps.obs.increment('testwriter.jobs_completed');
 }
 
@@ -423,16 +423,51 @@ async function loadExistingCaseSteps(
   ]);
 }
 
+/**
+ * What the job actually spent, per phase. Read from billing_events rather than
+ * counted in-process because that is the source of truth the tenant is billed
+ * from — a number the report invented could disagree with the invoice.
+ * Attributed by time window, which is exact for a single job and approximate
+ * only if two jobs for one tenant overlap.
+ */
+async function tokenUsage(jobId: string, tenantId: string): Promise<Record<string, number>> {
+  const { rows } = await getPool().query<{ purpose: string; tokens: string }>(
+    `SELECT COALESCE(be.metadata->>'purpose', 'other') AS purpose,
+            SUM(be.quantity)::bigint AS tokens
+     FROM billing_events be
+     JOIN generation_jobs gj ON gj.id = $1
+     WHERE be.tenant_id = $2
+       AND be.event_type = 'LLM_CALL'
+       AND be.created_at >= COALESCE(gj.started_at, gj.created_at)
+     GROUP BY 1`,
+    [jobId, tenantId],
+  ).catch(() => ({ rows: [] as Array<{ purpose: string; tokens: string }> }));
+
+  const usage: Record<string, number> = {};
+  let total = 0;
+  for (const row of rows) {
+    const phase = row.purpose.replace(/^testwriter\./, '');
+    usage[phase] = Number(row.tokens);
+    total += Number(row.tokens);
+  }
+  usage.total = total;
+  return usage;
+}
+
 async function finishJob(
   jobId: string,
   status: 'completed' | 'failed' | 'blocked',
   report: Record<string, unknown> | null,
   error: string | null,
+  tenantId?: string,
 ): Promise<void> {
+  const withUsage = report && tenantId
+    ? { ...report, tokenUsage: await tokenUsage(jobId, tenantId) }
+    : report;
   await getPool().query(
     `UPDATE generation_jobs
      SET status = $2, report = COALESCE($3, report), error = $4, finished_at = now()
      WHERE id = $1`,
-    [jobId, status, report ? JSON.stringify(report) : null, error],
+    [jobId, status, withUsage ? JSON.stringify(withUsage) : null, error],
   );
 }

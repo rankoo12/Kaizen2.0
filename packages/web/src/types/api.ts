@@ -70,6 +70,8 @@ export type GenerationReport = {
   plan?: { scenariosPlanned: number; fromCatalog: number; fromLlm: number };
   write?: { attempted: number; written: number; deduped: number; survivedJudge: number };
   validate?: { proposed: number; validated: number; unvalidated: number };
+  /** Per-phase spend, read from billing_events so it agrees with the invoice. */
+  tokenUsage?: Record<string, number>;
   rejected?: ScenarioRejection[];
   harvest?: Record<string, { finalUrl: string; heading: string | null; alertText: string | null }>;
 };

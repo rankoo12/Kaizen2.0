@@ -11,11 +11,19 @@ const EL = '11111111-1111-4111-8111-111111111111';
 const el = { kind: 'element' as const, elementId: EL };
 
 describe('lintScenario — delta assertion (the pre-state test)', () => {
-  it('flags a scenario that only navigates and then asserts', () => {
+  // Corrected after a live run rejected every navigation-driven test: arriving
+  // somewhere IS a change, so a 404 page, an auth gate and a journey hop all
+  // assert a genuine delta. Only an assertion with no action at all is vacuous.
+  it('accepts a navigation-driven test — arriving is an action', () => {
     const steps: StepIntent[] = [
-      { action: 'navigate', url: 'https://shop.test/products' },
-      { action: 'assert_visible', target: el },
+      { action: 'navigate', url: 'https://shop.test/definitely-not-a-page' },
+      { action: 'assert_visible', target: { kind: 'description', description: 'the not-found message' } },
     ];
+    expect(lintScenario(steps, 'positive')).toEqual([]);
+  });
+
+  it('flags an assertion that follows no action whatsoever', () => {
+    const steps: StepIntent[] = [{ action: 'assert_visible', target: el }];
     expect(lintScenario(steps, 'positive').join(' ')).toContain('vacuous');
   });
 

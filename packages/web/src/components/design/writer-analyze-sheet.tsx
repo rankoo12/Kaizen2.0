@@ -27,7 +27,7 @@ const DEPTHS = [
   { value: 50, label: 'Deep' },
 ];
 
-export function AnalyzeSheet({ suites, defaultSuiteId, defaultUrl, onClose, onStarted, showToast }: {
+export function AnalyzeSheet({ suites: suiteProp, defaultSuiteId, defaultUrl, onClose, onStarted, showToast }: {
   suites: DesignSuite[];
   defaultSuiteId?: string | null;
   defaultUrl?: string;
@@ -35,7 +35,7 @@ export function AnalyzeSheet({ suites, defaultSuiteId, defaultUrl, onClose, onSt
   onStarted: (suiteId: string, jobId: string) => void;
   showToast?: (message: string, kind?: string) => void;
 }) {
-  const [suiteId, setSuiteId] = useState(defaultSuiteId ?? suites[0]?.id ?? '');
+  const [suiteId, setSuiteId] = useState(defaultSuiteId ?? suiteProp[0]?.id ?? '');
   const [url, setUrl] = useState(defaultUrl ?? '');
   const [brief, setBrief] = useState('');
   const [consent, setConsent] = useState(false);
@@ -46,6 +46,32 @@ export function AnalyzeSheet({ suites, defaultSuiteId, defaultUrl, onClose, onSt
   const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [creatingSuite, setCreatingSuite] = useState(suiteProp.length === 0);
+  const [newSuiteName, setNewSuiteName] = useState('');
+  const [extraSuites, setExtraSuites] = useState<{ id: string; name: string }[]>([]);
+  /** Suites created in this dialog appear immediately, without a round trip. */
+  const suites = [...suiteProp, ...extraSuites];
+
+  /** A suite created here is selected immediately — the dialog is where the user
+   *  already is, so bouncing them to another screen to make one would be rude. */
+  async function createSuite() {
+    const name = newSuiteName.trim();
+    if (!name) return;
+    try {
+      const r = await fetch('/api/proxy/suites', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      if (!r.ok) throw new Error();
+      const { suite } = await r.json();
+      setExtraSuites((cur) => [...cur, { id: suite.id, name: suite.name }]);
+      setSuiteId(suite.id);
+      setCreatingSuite(false);
+      setNewSuiteName('');
+    } catch {
+      setError('Could not create that suite.');
+    }
+  }
 
   const canSubmit = !!suiteId && /^https?:\/\/.+/i.test(url.trim()) && !busy;
 
@@ -94,15 +120,32 @@ export function AnalyzeSheet({ suites, defaultSuiteId, defaultUrl, onClose, onSt
         Kaizen explores it read-only, shows you a test plan, and writes only what you approve.
       </div>
 
-      {suites.length > 1 && (
-        <label className="field" style={{ display: 'block', marginBottom: 10 }}>
-          <span className="label" style={{ display: 'block', marginBottom: 5 }}>Suite</span>
-          <select value={suiteId} onChange={(e) => setSuiteId(e.target.value)}
-            style={{ width: '100%', background: 'transparent', border: 'none', color: 'var(--text)', fontSize: 13 }}>
-            {suites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
-          </select>
-        </label>
-      )}
+      <div style={{ marginBottom: 12 }}>
+        <span className="label" style={{ display: 'block', marginBottom: 5 }}>Suite</span>
+        {creatingSuite ? (
+          <div style={{ display: 'flex', gap: 6 }}>
+            <input className="field" autoFocus value={newSuiteName}
+              onChange={(e) => setNewSuiteName(e.target.value)}
+              onKeyDown={(e) => { if (e.key === 'Enter') void createSuite(); if (e.key === 'Escape') setCreatingSuite(false); }}
+              placeholder="New suite name" style={{ flex: 1, fontSize: 13 }} />
+            <button className="btn" onClick={() => void createSuite()} disabled={!newSuiteName.trim()}>Create</button>
+            <button className="btn ghost" onClick={() => setCreatingSuite(false)}>Cancel</button>
+          </div>
+        ) : (
+          <div style={{ display: 'flex', gap: 6 }}>
+            {/* The field class belongs on the control, not on a wrapper — putting it
+                on the label drew the box around the caption too. */}
+            <select className="field" value={suiteId} onChange={(e) => setSuiteId(e.target.value)}
+              style={{ flex: 1, fontSize: 13, color: 'var(--text)' }}>
+              {suites.length === 0 && <option value="">No suites yet</option>}
+              {suites.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+            </select>
+            <button className="btn" onClick={() => setCreatingSuite(true)} title="Create a new suite">
+              <I.plus size={12} />New
+            </button>
+          </div>
+        )}
+      </div>
 
       <label style={{ display: 'block', marginBottom: 4 }}>
         <span className="label" style={{ display: 'block', marginBottom: 5 }}>App URL</span>

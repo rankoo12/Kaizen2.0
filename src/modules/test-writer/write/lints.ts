@@ -33,16 +33,17 @@ export function lintScenario(steps: StepIntent[], kind: 'positive' | 'negative')
   const last = steps[lastIndex];
 
   // ── delta-assertion: the final assertion must follow something that changed
-  //    state. An assertion that only follows a navigate is asserting the page
-  //    as the crawler already saw it — the pre-state test in lint form.
+  //    state. Navigation COUNTS: arriving somewhere is a change, so asserting
+  //    the destination is a genuine delta (404 pages, auth gates and journey
+  //    hops are all navigate-driven and were being condemned wholesale).
+  //    The vacuous case this still catches is an assertion about the page the
+  //    scenario was already sitting on.
   if (isAssertion(last.action)) {
-    const priorActing = steps
-      .slice(0, lastIndex)
-      .some((s) => STATE_CHANGING.has(s.action) && s.action !== 'navigate');
+    const priorActing = steps.slice(0, lastIndex).some((s) => STATE_CHANGING.has(s.action));
     if (!priorActing) {
       findings.push(
-        'final assertion is not preceded by any state-changing action — it likely asserts ' +
-        'the page as it already existed (vacuous)',
+        'final assertion is not preceded by any action — it asserts the page as it ' +
+        'already existed (vacuous)',
       );
     }
   } else {

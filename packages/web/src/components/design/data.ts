@@ -26,6 +26,9 @@ export const SOURCES: Record<string, { label: string; short: string; color: stri
 export const NAV = [
   { id: 'tests', label: 'Tests', icon: 'tests' },
   { id: 'runs', label: 'Runs', icon: 'runs' },
+  // Every analysis Kaizen has run: the audit trail, and the way back to a plan
+  // waiting for approval or a delivery nobody reviewed.
+  { id: 'analyses', label: 'Analyses', icon: 'sparkle' },
   { id: 'brain', label: 'The Brain', icon: 'brain' },
   { id: 'usage', label: 'Usage', icon: 'usage' },
 ];
