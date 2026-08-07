@@ -18,6 +18,7 @@ import { LearnedCompiler } from '../test-compiler/learned.compiler';
 import type { ILLMGateway } from '../llm-gateway/interfaces';
 import type { LoginStep } from './recon/auth-session';
 import { loadActiveSteps } from '../../db/case-writer';
+import { sensitiveTier } from './recon/safety';
 
 /**
  * Test Writer pipeline — RECON → COMPREHEND → PLAN → [approval] → WRITE → VALIDATE.
@@ -366,15 +367,30 @@ async function runGenerationPhases(
 
   // ── WRITE (sequential: each call is small, and ordering keeps the report readable)
   for (const plan of approved) {
+    // Sensitive pages are readable knowledge for COMPREHEND but are never
+    // writable targets: nothing can be generated against elements that are
+    // never handed to WRITE, which is cheaper and stronger than filtering the
+    // step that would have used them. Spec §6.5.
+    const targetPages = job.scope === 'authenticated'
+      ? plan.targetPages.filter((u) => sensitiveTier(u) === null)
+      : plan.targetPages;
+    if (targetPages.length === 0) {
+      rejected.push({
+        name: plan.name, stage: 'safety',
+        reason: 'targets only settings/billing-class pages, which Kaizen will not write tests against',
+      });
+      continue;
+    }
+
     const grounding = await deps.repository.getGroundingElements(
-      payload.tenantId, payload.suiteId, plan.targetPages,
+      payload.tenantId, payload.suiteId, targetPages,
     );
     if (grounding.length === 0) {
       rejected.push({ name: plan.name, stage: 'schema', reason: 'no observed elements on the target pages' });
       continue;
     }
     const formSummaries = await deps.repository.getFormSummaries(
-      payload.tenantId, payload.suiteId, plan.targetPages,
+      payload.tenantId, payload.suiteId, targetPages,
     );
 
     const outcome = await deps.writer.write({
@@ -382,11 +398,12 @@ async function runGenerationPhases(
       plan,
       grounding,
       formSummaries,
-      pagePath: plan.targetPages,
+      pagePath: targetPages,
       seedTokens: [...FORM_DATA_TOKENS],
       steeringNotes: job.plan_notes,
       safeMode: payload.options.safeMode,
       maxSteps: 10,
+      scope: job.scope,
     });
 
     if (outcome.ok) written.push(outcome.scenario);
@@ -455,6 +472,11 @@ async function runGenerationPhases(
     scenarios: survivors,
     syntheticDataConsent: consent,
     validate: payload.options.validate,
+    // Authenticated drafts are self-contained: the sign-in steps ride along so
+    // each proving run signs in for itself, from a cold browser (spec §6.2, §7).
+    loginPrefix: job.scope === 'authenticated' && job.login_case_id
+      ? await loadLoginSteps(payload.tenantId, job.login_case_id, deps)
+      : undefined,
   });
 
   const report = {

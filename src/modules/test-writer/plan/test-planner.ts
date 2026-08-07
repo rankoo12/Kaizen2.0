@@ -82,6 +82,19 @@ export class TestPlanner {
         continue;
       }
 
+      // …and the inverse: an authenticated job cannot plan scenarios whose
+      // premise is being SIGNED OUT. Every scenario there carries the login
+      // prefix, so "navigate to a protected page and expect the login redirect"
+      // can never pass. Dropping them here saves a write, a validation run and
+      // a confusing red rejection for the archetype class P3 most showcases.
+      if (params.scope === 'authenticated' && scenario.source?.kind === 'catalog') {
+        const entry = getArchetype(scenario.source.archetypeKey);
+        if (entry?.requiresSignedOut) {
+          dropped.push({ name, reason: 'covered by public scope (needs a signed-out visitor)' });
+          continue;
+        }
+      }
+
       // Catalog provenance must reference a real entry; unknown keys degrade to
       // 'llm' rather than sending WRITE hunting for a skeleton that doesn't exist.
       let source = scenario.source ?? { kind: 'llm' as const };

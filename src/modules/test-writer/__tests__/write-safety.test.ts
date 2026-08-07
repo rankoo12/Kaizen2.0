@@ -82,3 +82,73 @@ describe('classifyScenarioSafety', () => {
     expect(decision.verdict).toBe('needs-consent');
   });
 });
+
+/**
+ * Authenticated scope widens the block list — spec-authenticated-scope.md §6.5.
+ *
+ * The base lexicon was calibrated for anonymous/throwaway scope, where "remove"
+ * means "remove from cart" and nothing has an owner. Behind a login wall the
+ * proving run acts as a real, possibly admin, user, and the same words act on a
+ * real account.
+ */
+describe('classifyScenarioSafety — authenticated scope', () => {
+  const REVOKE = element('66666666-6666-4666-8666-666666666666', 'button', 'Revoke');
+  const REMOVE_MEMBER = element('77777777-7777-4777-8777-777777777777', 'button', 'Remove');
+  const RESET = element('88888888-8888-4888-8888-888888888888', 'button', 'Reset API key');
+  const REMOVE_FROM_CART = element('99999999-9999-4999-8999-999999999999', 'button', 'Remove from cart');
+  const SAVE = element('aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa', 'button', 'Save changes');
+
+  const authElements = new Map(
+    [...elements.values(), REVOKE, REMOVE_MEMBER, RESET, REMOVE_FROM_CART, SAVE]
+      .map((e) => [e.id, e]),
+  );
+  const authOpts = { safeMode: true, stopBeforeMoney: false, authenticated: true };
+  const publicOpts = { safeMode: true, stopBeforeMoney: false };
+
+  it.each([
+    ['Revoke', REVOKE.id],
+    ['Remove', REMOVE_MEMBER.id],
+    ['Reset API key', RESET.id],
+  ])('blocks "%s" when signed in as a real user', (_label, id) => {
+    expect(classifyScenarioSafety([click(id)], authElements, authOpts).verdict).toBe('blocked');
+  });
+
+  it('still allows "Remove from cart" in PUBLIC scope — the base lexicon is unchanged', () => {
+    expect(classifyScenarioSafety([click(REMOVE_FROM_CART.id)], authElements, publicOpts).verdict)
+      .toBe('allowed');
+  });
+
+  it('blocks the same cart step under auth, erring toward the account', () => {
+    // Over-blocking costs a test; under-blocking costs a customer's data.
+    expect(classifyScenarioSafety([click(REMOVE_FROM_CART.id)], authElements, authOpts).verdict)
+      .toBe('blocked');
+  });
+
+  it('reports a SYNTHETIC step as saving AS THE USER, not creating throwaway data', () => {
+    // allow_synthetic_data was consented to as "may create disposable records".
+    // Signed in, save/submit/apply overwrite the account's real settings, so the
+    // reason must not claim otherwise.
+    const decision = classifyScenarioSafety([click(SAVE.id)], authElements, authOpts);
+    expect(decision.verdict).toBe('needs-consent');
+    if (decision.verdict === 'needs-consent') {
+      expect(decision.reason).toMatch(/as the signed-in user/);
+    }
+  });
+
+  it('keeps the throwaway-data wording in public scope', () => {
+    const decision = classifyScenarioSafety([click(SIGNUP.id)], authElements, publicOpts);
+    expect(decision.verdict).toBe('needs-consent');
+    if (decision.verdict === 'needs-consent') {
+      expect(decision.reason).toMatch(/throwaway data/);
+    }
+  });
+
+  it('leaves ordinary reading and searching allowed behind auth', () => {
+    const decision = classifyScenarioSafety([
+      { action: 'type', target: { kind: 'element', elementId: SEARCH.id }, value: 'shoes' },
+      { action: 'press_key', value: 'Enter' },
+      { action: 'assert_text', value: 'Results' },
+    ], authElements, authOpts);
+    expect(decision.verdict).toBe('allowed');
+  });
+});

@@ -26,11 +26,27 @@ export type ScenarioArchetype = {
   requires: string;
   /** Step skeleton + oracle ladder, handed to WRITE for selected entries. */
   skeleton: string;
+  /**
+   * This archetype's premise is being SIGNED OUT, so it is unplannable in an
+   * authenticated job — every scenario there carries the login prefix, and the
+   * oracle ("url contains the login path", "the sign-up form is visible") can
+   * never hold for a signed-in user.
+   *
+   * Tagged by precondition rather than filtered by name prefix: an
+   * `auth.login.*`/`auth.signup.*` rule reads plausible but misses
+   * permissions.protected-page-requires-login (kind negative, priority
+   * critical — the catalog's own exemplar) and auth.password-reset.request,
+   * each of which would be planned, written, consume a validation run, and be
+   * rejected red.
+   * Spec: docs/specs/test-writer/spec-authenticated-scope.md §6.1
+   */
+  requiresSignedOut?: boolean;
 };
 
 export const SCENARIO_ARCHETYPES: ScenarioArchetype[] = [
   {
     key: 'auth.signup.happy',
+    requiresSignedOut: true,
     kind: 'happy', priority: 'critical', safety: 'synthetic-safe',
     intent: 'A new user registers an account successfully.',
     requires: 'signup/auth page with a form containing email or username + password + submit',
@@ -45,6 +61,7 @@ export const SCENARIO_ARCHETYPES: ScenarioArchetype[] = [
   },
   {
     key: 'auth.signup.negative.invalid-email',
+    requiresSignedOut: true,
     kind: 'negative', priority: 'high', safety: 'read-safe',
     intent: 'Signup rejects a malformed email address.',
     requires: 'signup form with an email field',
@@ -58,6 +75,7 @@ export const SCENARIO_ARCHETYPES: ScenarioArchetype[] = [
   },
   {
     key: 'auth.login.negative.wrong-password',
+    requiresSignedOut: true,
     kind: 'negative', priority: 'critical', safety: 'read-safe',
     intent: 'Login rejects a valid identifier with the wrong password.',
     requires: 'login page with identifier + password fields and a submit control',
@@ -71,6 +89,7 @@ export const SCENARIO_ARCHETYPES: ScenarioArchetype[] = [
   },
   {
     key: 'auth.login.negative.empty-password',
+    requiresSignedOut: true,
     kind: 'negative', priority: 'high', safety: 'read-safe',
     intent: 'Login blocks submission when the password is empty.',
     requires: 'login page with identifier + password fields',
@@ -83,6 +102,7 @@ export const SCENARIO_ARCHETYPES: ScenarioArchetype[] = [
   },
   {
     key: 'auth.password-reset.request',
+    requiresSignedOut: true,
     kind: 'happy', priority: 'normal', safety: 'read-safe',
     intent: 'A user requests a password-reset email.',
     requires: 'forgot-password page with an email field and submit',
@@ -95,6 +115,7 @@ export const SCENARIO_ARCHETYPES: ScenarioArchetype[] = [
   },
   {
     key: 'permissions.protected-page-requires-login',
+    requiresSignedOut: true,
     kind: 'negative', priority: 'critical', safety: 'read-safe',
     intent: 'An authenticated-only page redirects an anonymous visitor to login.',
     requires: 'a page recorded as requires_auth during recon (grounds from public crawl data alone)',
@@ -105,6 +126,7 @@ export const SCENARIO_ARCHETYPES: ScenarioArchetype[] = [
   },
   {
     key: 'permissions.negative.direct-admin-url',
+    requiresSignedOut: true,
     kind: 'negative', priority: 'high', safety: 'read-safe',
     intent: 'An admin-only path is gated for anonymous visitors.',
     requires: 'an admin-looking path observed in links or marked requires_auth',
@@ -407,6 +429,13 @@ export function getArchetype(key: string): ScenarioArchetype | null {
  */
 export function renderCatalogBlock(): string {
   return SCENARIO_ARCHETYPES
-    .map((a) => `- ${a.key} [${a.kind}/${a.priority}/${a.safety}] ${a.intent} REQUIRES: ${a.requires}`)
+    .map((a) => {
+      // Annotated, not filtered: the block is the cached static prefix, so it
+      // must render identically for every job regardless of scope. The planner
+      // enforces the rule deterministically after the model answers; this only
+      // saves the model from proposing something that will be dropped.
+      const signedOut = a.requiresSignedOut ? ' SIGNED-OUT-ONLY.' : '';
+      return `- ${a.key} [${a.kind}/${a.priority}/${a.safety}] ${a.intent} REQUIRES: ${a.requires}${signedOut}`;
+    })
     .join('\n');
 }

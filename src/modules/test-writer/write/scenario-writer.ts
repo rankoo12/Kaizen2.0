@@ -97,6 +97,8 @@ export class ScenarioWriter {
     steeringNotes: string | null;
     safeMode: boolean;
     maxSteps: number;
+    /** Widens the hard-block lexicon and re-reads synthetic consent (spec §6.5). */
+    scope?: 'public' | 'authenticated';
   }): Promise<WriteOutcome> {
     const { plan } = params;
     const archetype = plan.source.kind === 'catalog' ? getArchetype(plan.source.archetypeKey) : null;
@@ -136,6 +138,9 @@ export class ScenarioWriter {
         safeMode: params.safeMode,
         stopBeforeMoney: plan.source.kind === 'catalog'
           && getArchetype(plan.source.archetypeKey)?.safety === 'stop-before-money',
+        // Behind auth the proving run acts as a real, possibly admin, user —
+        // the lexicon widens accordingly (spec §6.5).
+        authenticated: params.scope === 'authenticated',
       });
       if (safety.verdict === 'blocked') {
         this.obs.increment('testwriter.write_safety_block');
