@@ -292,9 +292,9 @@ describe('CachedElementResolver', () => {
     expect(mockObservability.log).toHaveBeenCalledWith('warn', expect.any(String), expect.any(Object));
   });
 
-  // ─── Redis v2 write-back ───────────────────────────────────────────────────
+  // ─── Redis v3 write-back ───────────────────────────────────────────────────
 
-  it('writes v2 payload to Redis (with vectors) on L2 hit', async () => {
+  it('writes v3 payload to Redis (vectors + frame) on L2 hit', async () => {
     const selectors = [{ selector: '#btn', strategy: 'css', confidence: 0.9 }];
     mockQuery.mockResolvedValueOnce({
       rows: [{ selectors, step_embedding: aligned(1), element_embedding: aligned(1) }],
@@ -305,9 +305,11 @@ describe('CachedElementResolver', () => {
     expect(mockRedis.setex).toHaveBeenCalledTimes(1);
     const [, , payload] = mockRedis.setex.mock.calls[0];
     const parsed = JSON.parse(payload);
-    expect(parsed.v).toBe(2);
+    expect(parsed.v).toBe(3);
     expect(parsed.selectors).toEqual(selectors);
     expect(parsed.stepEmbedding).toEqual(aligned(1));
     expect(parsed.elementEmbedding).toEqual(aligned(1));
+    // Null, not absent: a main-document element states that it is one.
+    expect(parsed.frameUrl).toBeNull();
   });
 });

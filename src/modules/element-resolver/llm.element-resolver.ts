@@ -10,6 +10,7 @@ import { appendOutcome, computeConfidence } from './confidence';
 import { toVectorSQL } from '../../utils/vector';
 import { filterCandidatesByAction } from './action-role-filter';
 import { invalidateRedisCache, isTransient } from './redis-cache.utils';
+import { canonicalFrameUrl, findFrameByUrl, framesOf } from '../../utils/frame-url';
 
 /**
  * Converts a CandidateNode into a compact semantic string for element_embedding.
@@ -94,6 +95,16 @@ interface PlaywrightPageLike {
     };
   };
 }
+
+/**
+ * Minimal surface of a Playwright Frame used when resolving inside a child iframe.
+ * A Frame implements the same element API as a Page, so it satisfies the subset of
+ * PlaywrightPageLike that selector synthesis and uniqueness checks need.
+ */
+type FrameContext = {
+  url?: () => string;
+  locator?: (s: string) => { count: () => Promise<number> };
+};
 
 /**
  * Spec ref: Section 6.3 — LLMElementResolver
@@ -197,7 +208,7 @@ export class LLMElementResolver implements IElementResolver {
         ? candidates.find((c) => c.kaizenId === llmResult.llmPickedKaizenId && c.frameUrl)
         : undefined;
       if (pickedFrameCand?.frameUrl) {
-        const frameSet = await this.resolveInFrame(pickedFrameCand, llmResult, candidates, context);
+        const frameSet = await this.resolveInFrame(pickedFrameCand, llmResult, candidates, context, step);
         if (frameSet) return frameSet;
       }
 
@@ -536,8 +547,16 @@ export class LLMElementResolver implements IElementResolver {
   /**
    * Resolve an LLM-picked element that lives inside a child FRAME (e.g. a cookie-consent
    * CMP iframe). Validates the candidate's selectors WITHIN that frame (not the page) and
-   * returns a frame-scoped, session-only SelectorSet the engine acts on via the frame.
+   * returns a frame-scoped SelectorSet the engine acts on via the frame.
    * Returns null if the frame is gone or no selector resolves inside it.
+   *
+   * This path used to return without ever writing to `selector_cache`, so a consent
+   * banner re-paid the model on every run, forever — the last permanent floor under the
+   * cost curve after B19. The blocker was real but narrower than the conclusion drawn
+   * from it: a CMP iframe's URL carries per-session tokens, so it cannot be stored
+   * verbatim. The element inside it is as stable as any other. We store the frame's
+   * canonical identity (origin + pathname) instead, and cache the element normally.
+   * Spec: docs/specs/reliability/spec-iframe-selector-caching.md
    */
   private async resolveInFrame(
     cand: CandidateNode,
@@ -546,37 +565,94 @@ export class LLMElementResolver implements IElementResolver {
     llmResult: { selectors?: SelectorEntry[]; llmPickedKaizenId?: string | null; promptTokens?: number; completionTokens?: number; llmPromptedCandidates?: CompactCandidate[]; fromCache?: boolean },
     candidates: CandidateNode[],
     context: ResolutionContext,
+    step: StepAST,
   ): Promise<SelectorSet | null> {
     try {
-      const page = context.page as unknown as { frames?: () => Array<{ url?: () => string; locator?: (s: string) => { count: () => Promise<number> } }> };
-      const frames = typeof page.frames === 'function' ? page.frames() : [];
-      const frame = frames.find((f) => (typeof f.url === 'function' ? f.url() : '') === cand.frameUrl);
+      const frames = framesOf<FrameContext>(context.page);
+      const frame = cand.frameUrl ? findFrameByUrl(frames, cand.frameUrl) : null;
       if (!frame || !frame.locator) return null;
 
-      const kz: SelectorEntry[] = cand.kaizenId
-        ? [{ selector: `[data-kaizen-id='${cand.kaizenId}']`, strategy: 'css', confidence: 0.5 }]
+      const kzSelector = cand.kaizenId ? `[data-kaizen-id='${cand.kaizenId}']` : null;
+      const kz: SelectorEntry[] = kzSelector
+        ? [{ selector: kzSelector, strategy: 'css', confidence: 0.5 }]
         : [];
       const tryList: SelectorEntry[] = [...(llmResult.selectors ?? []), ...(cand.selectorCandidates ?? []), ...kz];
 
-      for (const s of tryList) {
+      const countIn = async (selector: string): Promise<number> => {
         try {
-          if ((await frame.locator(s.selector).count()) >= 1) {
-            this.observability.increment('resolver.frame_resolved');
-            return {
-              selectors: [s],
-              fromCache: false,
-              cacheSource: null,
-              resolutionSource: 'llm',
-              similarityScore: null,
-              candidates: llmResult.llmPromptedCandidates ?? toCompactCandidates(candidates),
-              llmPickedKaizenId: cand.kaizenId ?? null,
-              frameUrl: cand.frameUrl,
-              tokensUsed: llmResult.fromCache ? 0 : (llmResult.promptTokens ?? 0) + (llmResult.completionTokens ?? 0),
-            };
-          }
-        } catch { /* selector invalid in-frame — try next */ }
+          return await frame.locator!(selector).count();
+        } catch {
+          return 0;  // malformed in-frame selector — treat as no match
+        }
+      };
+
+      // Execution selector: the first that resolves at all, exactly as before.
+      // Cache selector: the first STABLE one that resolves UNIQUELY. A selector matching
+      // two elements must never be cached — Playwright would take the DOM-first one next
+      // run and act on the wrong element. Same rule the main-document path applies.
+      let executed: SelectorEntry | null = null;
+      let cacheable: SelectorEntry | null = null;
+
+      for (const s of tryList) {
+        const count = await countIn(s.selector);
+        if (count < 1) continue;
+        executed ??= s;
+        if (!cacheable && count === 1 && !s.selector.includes('data-kaizen-id')) {
+          cacheable = s;
+        }
+        if (executed && cacheable) break;
       }
-      return null;
+
+      if (!executed) return null;
+      this.observability.increment('resolver.frame_resolved');
+
+      // Nothing stable and unique inside the frame — the same blind spot B19 hit on the
+      // page: an unlabelled control whose only handle was the transient data-kaizen-id.
+      // Synthesize a structural selector from within the frame so it caches. A Playwright
+      // Frame exposes locator()/$$ and its documents resolve against the frame, so the
+      // page implementation works here unchanged.
+      if (!cacheable && this.cacheWrites && kzSelector) {
+        const synthesized = await this.synthesizeUniqueSelector(frame as unknown as PlaywrightPageLike, kzSelector);
+        if (synthesized) {
+          cacheable = synthesized;
+          this.observability.increment('resolver.frame_synthesized_selector');
+        }
+      }
+
+      const liveFrameUrl = typeof frame.url === 'function' ? frame.url() : cand.frameUrl;
+      const selectorSet: SelectorSet = {
+        selectors: [executed],
+        fromCache: false,
+        cacheSource: null,
+        resolutionSource: 'llm',
+        similarityScore: null,
+        candidates: llmResult.llmPromptedCandidates ?? toCompactCandidates(candidates),
+        llmPickedKaizenId: cand.kaizenId ?? null,
+        // The live URL, session tokens and all: the engine matches it exactly this run.
+        // The cache gets the canonical form below, which is what survives to the next.
+        frameUrl: liveFrameUrl,
+        tokensUsed: llmResult.fromCache ? 0 : (llmResult.promptTokens ?? 0) + (llmResult.completionTokens ?? 0),
+      };
+
+      // A frame with no durable identity (about:blank, srcdoc, data:) cannot be found
+      // again next run, so an entry pointing at it would only ever miss. Keep those
+      // session-only rather than write a row that can never hit.
+      const canonical = canonicalFrameUrl(liveFrameUrl);
+      if (this.cacheWrites && cacheable && canonical) {
+        void this.persistToCache(
+          step,
+          context,
+          { ...selectorSet, selectors: [cacheable], frameUrl: canonical },
+          // Pass the picked frame candidate so the element embedding describes the element
+          // we actually resolved; persistToCache falls back to candidates[0], which here
+          // would otherwise be an unrelated main-document node.
+          [cand],
+        );
+      } else if (this.cacheWrites && !cacheable) {
+        this.observability.increment('resolver.frame_uncacheable');
+      }
+
+      return selectorSet;
     } catch {
       return null;
     }
@@ -734,8 +810,11 @@ export class LLMElementResolver implements IElementResolver {
 
       this.observability.increment('resolver.cache_write', { domain: context.domain });
 
-      // Contribute to shared pool (fire-and-forget) — skips if tenant not opted in or quality < 0.8
-      if (this.sharedPool) {
+      // Contribute to shared pool (fire-and-forget) — skips if tenant not opted in or quality < 0.8.
+      // Frame-scoped entries stay out: the shared pool is keyed on (content_hash, domain) with no
+      // frame dimension, so a consent-banner selector would be handed to other tenants as if it
+      // lived in the main document. Promoting them needs its own key, not a default.
+      if (this.sharedPool && !selectorSet.frameUrl) {
         void this.sharedPool.contribute({
           tenantId: context.tenantId,
           contentHash: step.targetHash,
@@ -758,14 +837,19 @@ export class LLMElementResolver implements IElementResolver {
     stepEmbedding: number[],
     elementEmbedding: number[],
   ): Promise<void> {
+    // frame_url is the canonical (origin + pathname) identity of the iframe the element
+    // lives in, or NULL for the main document. It travels with the selectors because a
+    // frame-scoped selector is meaningless — and, run against the top document, actively
+    // harmful — without knowing where to run it.
     const sql = `INSERT INTO selector_cache
-           (tenant_id, content_hash, domain, selectors, step_embedding, element_embedding)
-         VALUES ($1, $2, $3, $4, $5::vector, $6::vector)
+           (tenant_id, content_hash, domain, selectors, step_embedding, element_embedding, frame_url)
+         VALUES ($1, $2, $3, $4, $5::vector, $6::vector, $7)
          ON CONFLICT (tenant_id, content_hash, domain)
          DO UPDATE SET
            selectors         = EXCLUDED.selectors,
            step_embedding    = EXCLUDED.step_embedding,
            element_embedding = EXCLUDED.element_embedding,
+           frame_url         = EXCLUDED.frame_url,
            updated_at        = now()
          WHERE selector_cache.pinned_at IS NULL`;
     const params = [
@@ -775,6 +859,7 @@ export class LLMElementResolver implements IElementResolver {
       JSON.stringify(selectorSet.selectors),
       toVectorSQL(stepEmbedding),
       toVectorSQL(elementEmbedding),
+      selectorSet.frameUrl ?? null,
     ];
 
     try {

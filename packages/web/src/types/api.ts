@@ -236,6 +236,11 @@ export type StepResult = {
    *  similarity at all. Never render this as a blanket "confidence" column.
    *  Measured, not assumed — docs/specs/roadmap/spec-phase-0-plumbing.md §5. */
   similarityScore: number | null;
+  /** The iframe this step's element was found in (origin + path), or null for the main
+   *  document — which is almost every step. Set on cookie-consent banners and other
+   *  third-party frames, where "the click happened on the page under test" would be
+   *  the wrong story to tell. */
+  frameUrl: string | null;
 };
 
 export type RunDetail = RunSummary & {

@@ -12,7 +12,7 @@ const row: StepResultRow = {
   selectorUsed: '#btn', screenshotKey: 'gs://b/t1/r1/4/after.png', durationMs: 88,
   resolutionSource: 'llm', similarityScore: null, domCandidates: [{ kaizenId: 'k1', role: 'button', name: 'Add', selector: '#btn' }],
   llmPickedKaizenId: 'k1', tokensUsed: 42, archetypeName: null, errorType: null,
-  capturedName: null, capturedValue: null,
+  capturedName: null, capturedValue: null, frameUrl: null,
 };
 
 const stepResultJob: PersistStepResultEvent = { kind: 'persist.step_result', row, attempt: 0 };
@@ -42,7 +42,8 @@ describe('persistence consumer', () => {
     expect(values[0]).toBe('sr-1');           // id
     expect(values[4]).toBe(4);                // step_index
     expect(values[13]).toBe(JSON.stringify(row.domCandidates));
-    expect(values).toHaveLength(20);
+    expect(values[20]).toBeNull();            // frame_url — main document
+    expect(values).toHaveLength(21);
   });
 
   it('double-delivery issues the same upsert twice — single effective row', async () => {

@@ -35,8 +35,8 @@ async function upsertStepResult(row: StepResultRow): Promise<void> {
        (id, tenant_id, run_id, step_id, step_index, content_hash, target_hash, status,
         selector_used, screenshot_key, duration_ms, resolution_source, similarity_score,
         dom_candidates, llm_picked_kaizen_id, tokens_used, archetype_name, error_type,
-        captured_name, captured_value)
-     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+        captured_name, captured_value, frame_url)
+     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
      ON CONFLICT (id) DO UPDATE SET
        status         = EXCLUDED.status,
        selector_used  = EXCLUDED.selector_used,
@@ -44,7 +44,8 @@ async function upsertStepResult(row: StepResultRow): Promise<void> {
        duration_ms    = EXCLUDED.duration_ms,
        error_type     = EXCLUDED.error_type,
        captured_name  = EXCLUDED.captured_name,
-       captured_value = EXCLUDED.captured_value`,
+       captured_value = EXCLUDED.captured_value,
+       frame_url      = EXCLUDED.frame_url`,
     [
       row.id, row.tenantId, row.runId, row.stepId, row.stepIndex,
       row.contentHash, row.targetHash, row.status,
@@ -52,7 +53,7 @@ async function upsertStepResult(row: StepResultRow): Promise<void> {
       row.resolutionSource, row.similarityScore,
       row.domCandidates ? JSON.stringify(row.domCandidates) : null,
       row.llmPickedKaizenId, row.tokensUsed, row.archetypeName, row.errorType,
-      row.capturedName, row.capturedValue,
+      row.capturedName, row.capturedValue, row.frameUrl ?? null,
     ],
   );
 }

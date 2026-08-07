@@ -128,8 +128,11 @@ export type CandidateNode = {
   /**
    * URL of the IFRAME this element lives in, when it was gathered from a child frame
    * (e.g. a third-party cookie-consent CMP). Undefined for main-document elements.
-   * The execution engine locates + acts on the element WITHIN this frame; such
-   * elements are session-only and never cached (frame URLs carry per-session tokens).
+   * The execution engine locates + acts on the element WITHIN this frame.
+   *
+   * This is the LIVE url, query string and all. A CMP iframe's query carries
+   * per-session tokens, so the cache stores its canonical origin + pathname instead.
+   * See src/utils/frame-url.ts and spec-iframe-selector-caching.md.
    */
   frameUrl?: string;
 };
