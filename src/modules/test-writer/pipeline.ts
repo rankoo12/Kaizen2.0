@@ -14,6 +14,10 @@ import { ScenarioWriter, type WrittenScenario } from './write/scenario-writer';
 import { dedupeScenarios } from './write/dedup';
 import { ValidationRunner } from './validate/validation-runner';
 import { FORM_DATA_TOKENS } from '../test-data/generate';
+import { LearnedCompiler } from '../test-compiler/learned.compiler';
+import type { ILLMGateway } from '../llm-gateway/interfaces';
+import type { LoginStep } from './recon/auth-session';
+import { loadActiveSteps } from '../../db/case-writer';
 
 /**
  * Test Writer pipeline — RECON → COMPREHEND → PLAN → [approval] → WRITE → VALIDATE.
@@ -36,6 +40,13 @@ export type TestWriterPipelineDeps = {
   planner: TestPlanner;
   writer: ScenarioWriter;
   validator: ValidationRunner;
+  /**
+   * General-purpose LLM seam, used ONLY to compile login-recipe steps that have
+   * no stored AST (spec §4.1). Optional: a public-scope deployment never needs
+   * it, and an authenticated job without it fails loudly rather than silently
+   * skipping the recipe.
+   */
+  llm?: ILLMGateway;
 };
 
 type JobRow = {
@@ -46,7 +57,57 @@ type JobRow = {
   test_plan: { scenarios?: PlannedScenario[] } | null;
   plan_notes: string | null;
   report: Record<string, unknown> | null;
+  // Consent columns — read from the ROW, never trusted from the payload (§10.1).
+  scope: 'public' | 'authenticated';
+  auth_consent: boolean;
+  login_case_id: string | null;
+  auth_consented_by: string | null;
 };
+
+/**
+ * Decides whether this job may crawl signed in, from the DATABASE ROW.
+ * Spec: docs/specs/test-writer/spec-authenticated-scope.md §10.1
+ *
+ * The tempting version of this check reads the payload — "it says authenticated,
+ * so verify payload.authConsent is true" — which validates the payload against
+ * itself and proves nothing. The DB CHECK constrains the generation_jobs ROW;
+ * the BullMQ payload is unconstrained. Anything that can enqueue (Redis access,
+ * a bug in the resume path, a future internal caller) could otherwise send
+ * {scope:'authenticated', authConsent:true, loginCaseId:<any case>} against a
+ * row recorded public, and the pipeline would sign in with no recorded consent,
+ * no consenting user and no role check.
+ *
+ * So the row decides, the row supplies the login case, and a disagreement is
+ * loud rather than silently resolved.
+ */
+export type ConsentVerdict =
+  | { mode: 'public' }
+  | { mode: 'authenticated'; loginCaseId: string }
+  | { mode: 'mismatch'; detail: string };
+
+export function decideConsent(payload: TestWriterJobPayload, row: {
+  scope: string; auth_consent: boolean; login_case_id: string | null; auth_consented_by: string | null;
+}): ConsentVerdict {
+  const rowWantsAuth = row.scope === 'authenticated';
+  const payloadWantsAuth = payload.scope === 'authenticated';
+
+  if (!rowWantsAuth && !payloadWantsAuth) return { mode: 'public' };
+
+  if (payloadWantsAuth !== rowWantsAuth) {
+    return {
+      mode: 'mismatch',
+      detail: `job scope is "${row.scope}" but the queued message asked for "${payload.scope}"`,
+    };
+  }
+  if (!row.auth_consent || !row.login_case_id || !row.auth_consented_by) {
+    return {
+      mode: 'mismatch',
+      detail: 'the job is marked authenticated but carries no recorded consent, consenter or sign-in test',
+    };
+  }
+  // The RECIPE comes from the row too — never payload.loginCaseId.
+  return { mode: 'authenticated', loginCaseId: row.login_case_id };
+}
 
 export async function runTestWriterJob(
   payload: TestWriterJobPayload,
@@ -54,7 +115,8 @@ export async function runTestWriterJob(
 ): Promise<void> {
   const pool = getPool();
   const { rows } = await pool.query<JobRow>(
-    `SELECT status, target_url, suite_id, options, test_plan, plan_notes, report
+    `SELECT status, target_url, suite_id, options, test_plan, plan_notes, report,
+            scope, auth_consent, login_case_id, auth_consented_by
      FROM generation_jobs WHERE id = $1 AND tenant_id = $2`,
     [payload.jobId, payload.tenantId],
   );
@@ -64,11 +126,15 @@ export async function runTestWriterJob(
     return;
   }
 
-  // P3 gate: authenticated crawling is not built. Fail loudly rather than
-  // silently degrading to an unauthenticated crawl that LOOKS authenticated.
-  if (payload.scope === 'authenticated') {
+  // The job ROW decides whether this crawl may sign in — see decideConsent.
+  const authDecision = decideConsent(payload, job);
+  if (authDecision.mode === 'mismatch') {
+    deps.obs.increment('testwriter.consent_mismatch');
+    deps.obs.log('error', 'testwriter.consent_mismatch', {
+      jobId: payload.jobId, detail: authDecision.detail,
+    });
     await finishJob(payload.jobId, 'blocked', null,
-      'Authenticated scope is not yet supported (planned: P3).');
+      'This analysis was stopped because its recorded permissions did not match what was requested.');
     return;
   }
 
@@ -88,8 +154,17 @@ export async function runTestWriterJob(
     const progress = makeProgressWriter(payload.jobId);
     await progress({ phase: 'recon' });
 
-    const recon = await runRecon(payload, deps, progress);
+    const recon = await runRecon(payload, deps, progress, authDecision);
     await progress({ phase: 'comprehend', pagesCrawled: recon.pagesCrawled });
+
+    // Sign-in failures are their own outcome, distinct from "everything was
+    // blocked": the message names the failing step so the tenant can fix the
+    // recipe rather than wonder why nothing happened.
+    if (recon.auth?.blockedReason) {
+      await finishJob(payload.jobId, 'blocked', { recon },
+        authBlockedMessage(recon.auth.blockedReason, recon.auth.blockedDetail));
+      return;
+    }
     if (recon.pagesCrawled === 0) {
       await finishJob(payload.jobId, 'blocked', { recon },
         'All reachable pages were blocked (challenge/robots).');
@@ -202,10 +277,26 @@ function makeProgressWriter(jobId: string): (p: JobProgress) => Promise<void> {
   };
 }
 
+/** Turns a sign-in failure into something the tenant can act on. */
+function authBlockedMessage(
+  reason: 'login_failed' | 'login_challenge' | 'login_budget_exhausted',
+  detail: string | null,
+): string {
+  switch (reason) {
+    case 'login_challenge':
+      return `Couldn't sign in — ${detail ?? 'your sign-in flow is protected by a bot check'}. Kaizen never bypasses these; use a test account without one.`;
+    case 'login_budget_exhausted':
+      return detail ?? 'Kaizen stopped after repeated sign-ins to avoid tripping your app\'s rate limits.';
+    default:
+      return `Couldn't sign in — ${detail ?? 'the sign-in test did not complete'}. Fix or re-run that test, then try again.`;
+  }
+}
+
 async function runRecon(
   payload: TestWriterJobPayload,
   deps: TestWriterPipelineDeps,
   progress: (p: JobProgress) => Promise<void>,
+  authDecision: ConsentVerdict,
 ): Promise<CrawlReport & { linksInserted: number }> {
   const budgets = {
     ...DEFAULT_BUDGETS,
@@ -213,8 +304,18 @@ async function runRecon(
   };
   const edges: Array<{ fromUrl: string; toUrl: string; viaElementName: string }> = [];
 
+  // The login recipe is loaded from the case id the ROW carries (§10.1). Steps
+  // with a stored compiled_ast cost nothing; the rest compile through the
+  // content-hash cache, billed to this tenant.
+  const auth = authDecision.mode === 'authenticated'
+    ? {
+        loginCaseId: authDecision.loginCaseId,
+        steps: await loadLoginSteps(payload.tenantId, authDecision.loginCaseId, deps),
+      }
+    : undefined;
+
   const report = await deps.crawler.crawl(
-    { tenantId: payload.tenantId, jobId: payload.jobId, targetUrl: payload.targetUrl, budgets },
+    { tenantId: payload.tenantId, jobId: payload.jobId, targetUrl: payload.targetUrl, budgets, auth },
     async (capture: PageCapture, pageIndex: number) => {
       await deps.repository.upsertPage(payload.tenantId, payload.suiteId, capture);
       for (const link of capture.outgoingLinks) {
@@ -379,6 +480,45 @@ async function runGenerationPhases(
 }
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
+
+/**
+ * Loads the login recipe's steps, compiling any that lack a stored AST.
+ * Spec: docs/specs/test-writer/spec-authenticated-scope.md §4.1
+ *
+ * A login case that has ever run normally arrives fully compiled, so this is
+ * usually free. Anything that does compile is billed to THIS tenant (the P2
+ * billing-tenant parameterization, finally wired) and — because a login step is
+ * exactly the shape that leaks credentials — never lands in the global
+ * compiled_ast_cache; LearnedCompiler suppresses that for literal-valued type
+ * steps (§12.3).
+ */
+async function loadLoginSteps(
+  tenantId: string,
+  loginCaseId: string,
+  deps: TestWriterPipelineDeps,
+): Promise<LoginStep[]> {
+  const rows = await loadActiveSteps(tenantId, loginCaseId);
+  if (rows.length === 0) {
+    throw new Error('The sign-in test has no active steps.');
+  }
+
+  const needsCompile = rows.some((r) => !r.compiledAst);
+  if (needsCompile && !deps.llm) {
+    throw new Error(
+      'The sign-in test has steps that were never compiled, and this deployment has no LLM gateway configured to compile them.',
+    );
+  }
+  const compiler = needsCompile
+    ? new LearnedCompiler(deps.llm!, deps.obs, tenantId)
+    : null;
+
+  const steps: LoginStep[] = [];
+  for (const row of rows) {
+    const ast = row.compiledAst ?? await compiler!.compile(row.rawText);
+    steps.push({ rawText: row.rawText, ast });
+  }
+  return steps;
+}
 
 async function loadTenantBrief(tenantId: string, suiteId: string): Promise<TenantBrief | null> {
   const { rows } = await getPool().query<{ tenant_brief: TenantBrief | null }>(
