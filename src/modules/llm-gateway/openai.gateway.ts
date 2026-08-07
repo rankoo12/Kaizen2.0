@@ -5,6 +5,7 @@ import type { ILLMGateway } from './interfaces';
 import type { StepAST, CandidateNode, LLMResolutionResult, CompactCandidate } from '../../types';
 import type { IBillingMeter } from '../billing-meter/interfaces';
 import type { IObservability } from '../observability/interfaces';
+import { isSecretStep } from '../test-writer/secret-steps';
 
 /**
  * Actions that can only target specific ARIA roles.
@@ -287,8 +288,13 @@ Return only valid JSON.`,
             content: `Pick the UI element that best matches the test step target. Return JSON: { "kaizenId": "kz-N" }`,
           },
           {
+            // The full sentence disambiguates, but for a credential step it carries the
+            // literal password to the provider — and resolution never needs the value,
+            // only the action and target. Spec: spec-authenticated-scope.md §12.2.
             role: 'user',
-            content: `Action: ${step.action} | Target: ${step.targetDescription}\nFull step: ${step.rawText}\nCandidates:\n${promptCandidates}`,
+            content: isSecretStep(step)
+              ? `Action: ${step.action} | Target: ${step.targetDescription}\nCandidates:\n${promptCandidates}`
+              : `Action: ${step.action} | Target: ${step.targetDescription}\nFull step: ${step.rawText}\nCandidates:\n${promptCandidates}`,
           },
         ],
       });

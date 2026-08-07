@@ -68,6 +68,7 @@ import { getPool, closePool } from '../db/pool';
 import { createRedisConnection, RUNS_QUEUE_NAME, SCREENSHOTS_QUEUE_NAME, PERSIST_QUEUE_NAME } from '../queue';
 import type { RunJobPayload } from '../queue';
 import type { StepAST, ClassifiedFailure, SelectorSet, SelectorEntry, RunContext } from '../types';
+import { isSecretStep, redactStepText, REDACTED } from '../modules/test-writer/secret-steps';
 
 // ─── Module Setup ─────────────────────────────────────────────────────────────
 
@@ -273,7 +274,7 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
     loopResult = await runStepLoop(runId, compiledSteps, {
       isCancelled,
       executeStep: (step, stepIndex, previousAfterPng, runContext) =>
-        executeStep(step, tabs.current, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext, runLog, attempt, (p) => { tabs.current = p; }),
+        executeStep(step, tabs.current, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext, runLog, attempt, (p) => { tabs.current = p; }, payload.behindAuth === true),
       recordSkippedSteps: (steps, startIndex, reason) =>
         recordSkippedSteps(tenantId, runId, steps, startIndex, reason, stepIds, attempt),
       onStepFailed: (stepIndex, step) => {
@@ -460,16 +461,33 @@ async function executeStep(
   runLog?: RunLogger,
   attempt: number = 0,
   setCurrentPage?: (p: Page) => void,
+  /**
+   * This run is executing behind a login wall (a Test Writer proving run for an
+   * authenticated draft). Nothing learned here may leave the tenant: no shared-pool
+   * contribution, no global archetype learning. The tenant's own selector_cache
+   * still fills. Spec: spec-authenticated-scope.md §4.1.
+   */
+  behindAuth: boolean = false,
 ): Promise<{ status: 'passed' | 'failed'; healed: boolean; afterPng: Buffer | null }> {
   // Resolve {{variable}} tokens captured by earlier steps before doing anything
   // else, so resolution, execution, and persistence all see the concrete values.
   // Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §3.4
   const step = interpolateStep(rawStep, runContext);
-  runLog?.log('resolve', `step ${String(stepIndex + 1).padStart(2, '0')} · ${step.action} · "${step.rawText}"`, {
+  // Credentials must not land in run_events. A login test typing a literal
+  // password leaked it twice here: into data.value, and into the message, which
+  // embeds the raw sentence — so redacting one column alone just moved the
+  // secret next door. Spec: spec-authenticated-scope.md §12.2.
+  const secretStep = isSecretStep(step);
+  const loggedText = secretStep ? redactStepText(step.rawText, step.value) : step.rawText;
+  runLog?.log('resolve', `step ${String(stepIndex + 1).padStart(2, '0')} · ${step.action} · "${loggedText}"`, {
     stepIndex,
-    data: { action: step.action, target: step.targetDescription, value: step.value },
+    data: {
+      action: step.action,
+      target: step.targetDescription,
+      value: secretStep ? REDACTED : step.value,
+    },
   });
-  const resolutionContext = { tenantId, domain, page, pageUrl: page.url() };
+  const resolutionContext = { tenantId, domain, page, pageUrl: page.url(), behindAuth };
   const stepStart = Date.now();
   // Accessible name of the element chosen by a click_random step — captured into
   // the run context for later {{variable}} reference (Gap C wires the store).
@@ -482,8 +500,10 @@ async function executeStep(
 
   // Reuse the previous step's after-screenshot as this step's before-screenshot.
   // Only capture a fresh one for the very first step (no previous).
+  // Secret steps upload nothing: /media is readable by every tenant member, and
+  // an authenticated draft replays its login prefix on every proving run.
   const beforePng = previousAfterPng ?? await page.screenshot({ type: 'png' }).catch(() => null);
-  if (!previousAfterPng && beforePng) {
+  if (!previousAfterPng && beforePng && !secretStep) {
     void bus.publish({ kind: 'screenshot.upload', tenantId, runId, stepIndex, timing: 'before', png: beforePng, attempt });
   }
 
@@ -728,7 +748,7 @@ async function executeStep(
   // The stored key is deterministic, so it's recorded on the step_result NOW
   // while the bytes upload asynchronously via the screenshot consumer —
   // GCS never blocks the step loop. Spec: spec-service-decomposition.md §4.1
-  const afterPng = await page.screenshot({ type: 'png' }).catch(() => null);
+  const afterPng = secretStep ? null : await page.screenshot({ type: 'png' }).catch(() => null);
   const afterKey = afterPng ? screenshots.keyFor(tenantId, runId, stepIndex, 'after') : null;
   if (afterPng) {
     void bus.publish({ kind: 'screenshot.upload', tenantId, runId, stepIndex, timing: 'after', png: afterPng, attempt });
@@ -781,7 +801,10 @@ async function executeStep(
     // on any site with the same accessible name skip the LLM entirely.
     // Skip for assertions — we never want to learn an archetype from a verify
     // step whose element name may be run-specific data.
-    if (!isAssertion && selectorSet.resolutionSource === 'llm' && selectorSet.llmPickedKaizenId && selectorSet.candidates) {
+    // Skip behind auth — element_archetypes is global, tenant-free AND domain-free
+    // (015_element_archetypes.sql), so learning from a signed-in page would publish
+    // a customer's private UI vocabulary to everyone. Spec: §4.1, §12 threat 3.
+    if (!isAssertion && !behindAuth && selectorSet.resolutionSource === 'llm' && selectorSet.llmPickedKaizenId && selectorSet.candidates) {
       const picked = selectorSet.candidates.find((c) => c.kaizenId === selectorSet.llmPickedKaizenId);
       if (picked) {
         await archetypeResolver.learn(picked.role, picked.name, step.action).catch((e: any) =>

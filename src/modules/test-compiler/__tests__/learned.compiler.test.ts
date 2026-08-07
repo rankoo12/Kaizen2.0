@@ -135,6 +135,90 @@ describe('LearnedCompiler', () => {
     expect(mockObservability.log).toHaveBeenCalledWith('warn', 'compiler.db_lookup_failed', expect.any(Object));
   });
 
+  // ─── Credentials must never reach the GLOBAL compile cache ─────────────────
+  // compiled_ast_cache is keyed on content_hash alone: no tenant_id, no RLS
+  // (002_seed_compiled_ast_cache.sql). Its ast_json stores `value`, so persisting
+  // a compiled password step published that password to every tenant, forever,
+  // outside any offboarding purge. Spec: spec-authenticated-scope.md §12.3.
+
+  it('does NOT write a password step to the global compiled_ast_cache', async () => {
+    const rawText = 'type "Hunter2!" into the password field';
+    mockQuery.mockResolvedValueOnce({ rows: [] }); // lookupFromDB — miss
+    mockLLMGateway.compileStep.mockResolvedValueOnce({
+      action: 'type', targetDescription: 'the password field', value: 'Hunter2!',
+      url: null, rawText, contentHash: 'stub', targetHash: 'th',
+    } as StepAST);
+
+    const result = await compiler.compile(rawText);
+
+    // The step still compiles correctly — it just isn't published.
+    expect(result.value).toBe('Hunter2!');
+    const inserts = mockQuery.mock.calls.filter((c) => String(c[0]).includes('INSERT INTO compiled_ast_cache'));
+    expect(inserts).toHaveLength(0);
+    expect(mockObservability.increment).toHaveBeenCalledWith('compiler.global_cache_write_skipped');
+  });
+
+  it('does NOT write any literal-valued type step to the global cache', async () => {
+    // Even a non-secret-named field: a literal typed value is tenant data, and
+    // the global cache is the wrong home for it.
+    const rawText = 'type "acme-internal-code" into the access field';
+    mockQuery.mockResolvedValueOnce({ rows: [] });
+    mockLLMGateway.compileStep.mockResolvedValueOnce({
+      action: 'type', targetDescription: 'the access field', value: 'acme-internal-code',
+      url: null, rawText, contentHash: 'stub', targetHash: 'th',
+    } as StepAST);
+
+    await compiler.compile(rawText);
+
+    const inserts = mockQuery.mock.calls.filter((c) => String(c[0]).includes('INSERT INTO compiled_ast_cache'));
+    expect(inserts).toHaveLength(0);
+  });
+
+  it('still caches a token-valued type step — {{email}} is not a secret', async () => {
+    const rawText = 'type {{email}} into the email field';
+    mockQuery
+      .mockResolvedValueOnce({ rows: [] })   // lookupFromDB
+      .mockResolvedValueOnce({ rows: [] });  // persistToDB
+    mockLLMGateway.compileStep.mockResolvedValueOnce({
+      action: 'type', targetDescription: 'the email field', value: '{{email}}',
+      url: null, rawText, contentHash: 'stub', targetHash: 'th',
+    } as StepAST);
+
+    await compiler.compile(rawText);
+
+    const inserts = mockQuery.mock.calls.filter((c) => String(c[0]).includes('INSERT INTO compiled_ast_cache'));
+    expect(inserts).toHaveLength(1);
+  });
+
+  // ─── Billing tenant ────────────────────────────────────────────────────────
+  // P2 promised this parameterization (spec-generation-pipeline.md §3) and never
+  // shipped it, so Test Writer fallback compiles billed the system tenant.
+
+  it('bills the system tenant by default', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] });
+    mockLLMGateway.compileStep.mockResolvedValueOnce({
+      action: 'click', targetDescription: 'x', value: null, url: null,
+      rawText: 'click x', contentHash: 'stub', targetHash: 'th',
+    } as StepAST);
+
+    await compiler.compile('click x');
+
+    expect(mockLLMGateway.compileStep).toHaveBeenCalledWith('click x', 'system_global');
+  });
+
+  it('bills the tenant it was constructed with', async () => {
+    const tenantCompiler = new LearnedCompiler(mockLLMGateway, mockObservability, 'tenant-abc');
+    mockQuery.mockResolvedValueOnce({ rows: [] }).mockResolvedValueOnce({ rows: [] });
+    mockLLMGateway.compileStep.mockResolvedValueOnce({
+      action: 'click', targetDescription: 'x', value: null, url: null,
+      rawText: 'click x', contentHash: 'stub', targetHash: 'th',
+    } as StepAST);
+
+    await tenantCompiler.compile('click x');
+
+    expect(mockLLMGateway.compileStep).toHaveBeenCalledWith('click x', 'tenant-abc');
+  });
+
   // ─── compileMany ───────────────────────────────────────────────────────────
 
   it('compiles multiple steps and returns them in order', async () => {

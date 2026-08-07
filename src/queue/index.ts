@@ -28,6 +28,18 @@ export type RunJobPayload = {
    * Spec: docs/specs/tests-ux/spec-duplicate-case-and-generated-data.md §2.3
    */
   seedVariables?: Record<string, string>;
+  /**
+   * This run executes against a behind-login surface, so nothing it learns may
+   * leave the tenant. The worker suppresses BOTH shared-pool contribution and
+   * global archetype learning when set — the tenant's own selector_cache still
+   * fills, which is what makes an authenticated draft's login prefix cheap.
+   *
+   * Set by the Test Writer for proving runs of drafts belonging to a
+   * scope='authenticated' generation job. Absent (falsy) for every ordinary
+   * run, so existing behaviour is unchanged.
+   * Spec: docs/specs/test-writer/spec-authenticated-scope.md §4.1, §12 threat 3
+   */
+  behindAuth?: boolean;
 };
 
 /**
