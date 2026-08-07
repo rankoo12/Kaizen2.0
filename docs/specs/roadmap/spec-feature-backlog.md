@@ -1,6 +1,7 @@
 # Spec: Post-redesign feature backlog
 
 Created: 2026-07-30
+Updated: 2026-08-07 — B11 designed; own spec at ../integration/spec-ci-integration.md
 
 ## 1. Where this list comes from
 
@@ -419,6 +420,15 @@ are no branch/commit/provenance columns and no GitHub App or webhook receiver.
 **Work** `runs.branch`, `runs.commit_sha`, `runs.ci_provider`; a GitHub App (or a documented
 `POST /runs` recipe plus a published Action); per-case CI opt-in. Biggest single item —
 worth its own spec before any code.
+
+**Designed 2026-08-07** — full spec at
+[spec-ci-integration.md](../integration/spec-ci-integration.md): one-engine/thin-adapters
+contract (exit code + JUnit XML), provenance columns (migrations start at 034), the
+environment model (domain aliasing + copy-on-write brain overlay with promote-on-merge),
+three-index affected-test selection harvested from execution, three-valued gating (healed =
+green + PR comment with the was→now diff), PR-scoped test drafts (makes B2 load-bearing),
+and the test-writer handshake (COORDINATION.md, 2026-08-07). v1 cut: workflow-step trigger,
+element-index selection, aliased reads with writes suppressed, PR comment.
 
 ### B12. Scheduling
 `run_trigger` already includes `schedule`, but nothing schedules. Needs a `schedules`
