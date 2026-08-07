@@ -1,6 +1,6 @@
 import * as fs from 'fs';
 import * as path from 'path';
-import { classifyInteraction, DESTRUCTIVE_VERBS } from '../recon/safety';
+import { classifyInteraction, DESTRUCTIVE_VERBS, isSessionEndingUrl, sensitiveTier } from '../recon/safety';
 import type { CandidateNode } from '../../../types';
 
 /**
@@ -198,7 +198,87 @@ describe('module isolation — test-writer never touches the shared pool', () =>
 
   it('exports the destructive lexicon for the WRITE-phase safe-mode filter', () => {
     expect(DESTRUCTIVE_VERBS.length).toBeGreaterThan(10);
+
     expect(DESTRUCTIVE_VERBS).toContain('delete');
     expect(DESTRUCTIVE_VERBS).toContain('purchase');
+  });
+});
+
+/**
+ * Authenticated scope — spec-authenticated-scope.md §5.2.
+ * The invariant: the crawl can never end its own session, and pages that render
+ * secrets are never surveyed, screenshotted or sent to a prompt.
+ */
+describe('isSessionEndingUrl — the real-world logout table', () => {
+  it.each([
+    ['/logout', 'the plain case'],
+    ['/log-out', 'hyphenated'],
+    ['/users/sign_out', 'Devise/Rails default — underscore, nested'],
+    ['/admin/logout/', 'Django admin — nested with a trailing slash'],
+    ['/index.php?action=logout', 'query-string only, with a file extension'],
+    ['/index.php?logout=1', 'query flag'],
+    ['/auth/signout', 'nested signout'],
+    ['/session/destroy', 'destroy-session naming'],
+    ['/api/v1/end-session', 'end-session naming'],
+    ['/deauth', 'deauth naming'],
+    ['https://app.example.com/logout?redirect=/home', 'absolute with query'],
+  ])('suppresses %s (%s)', (url) => {
+    expect(isSessionEndingUrl(url, 'https://app.example.com/dashboard')).toBe(true);
+  });
+
+  it.each([
+    '/checkout',
+    '/products/logo-design',
+    '/dashboard',
+    '/settings/profile',
+    '/blog/getting-started',
+  ])('leaves %s alone', (url) => {
+    expect(isSessionEndingUrl(url, 'https://app.example.com/')).toBe(false);
+  });
+
+  it('classifies an icon logout link with NO accessible name as session-ending', () => {
+    // The whole point: this used to classify as 'navigation' and get followed
+    // by the BFS queue, ending the session by GET.
+    const node = makeNode({ role: 'link', name: '', attributes: { href: '/users/sign_out' } });
+    expect(classifyInteraction(node, ctx)).toBe('session-ending');
+  });
+});
+
+describe('sensitiveTier', () => {
+  it.each([
+    'https://app.example.com/api-keys',
+    'https://app.example.com/settings/api_keys',
+    'https://app.example.com/billing',
+    'https://app.example.com/account/invoices',
+    'https://app.example.com/tokens',
+  ])('marks %s capture-suppressed (reading IS the exposure)', (url) => {
+    expect(sensitiveTier(url)).toBe('capture-suppressed');
+  });
+
+  it.each([
+    'https://app.example.com/settings',
+    'https://app.example.com/admin',
+    'https://app.example.com/user/profile',
+    'https://app.example.com/organization/members',
+  ])('marks %s passive-only', (url) => {
+    expect(sensitiveTier(url)).toBe('passive-only');
+  });
+
+  it.each([
+    'https://app.example.com/products',
+    'https://app.example.com/dashboard',
+    'https://app.example.com/search?q=shoes',
+    'https://app.example.com/',
+  ])('leaves %s fully crawlable', (url) => {
+    expect(sensitiveTier(url)).toBeNull();
+  });
+
+  it('prefers Tier A when a path is both', () => {
+    // /admin alone is Tier B, but the api-keys segment renders live secrets.
+    expect(sensitiveTier('https://app.example.com/admin/api-keys')).toBe('capture-suppressed');
+  });
+
+  it('does not over-match a segment that merely starts similarly', () => {
+    expect(sensitiveTier('https://app.example.com/settlements')).toBeNull();
   });
 });
