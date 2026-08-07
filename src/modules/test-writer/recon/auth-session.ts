@@ -5,6 +5,7 @@ import type { IChallengeDetector } from '../../execution-engine/challenge-detect
 import type { IObservability } from '../../observability/interfaces';
 import { isSecretStep } from '../secret-steps';
 import { normalizeUrl } from './url-normalizer';
+import { capturePageMeta } from './page-capture';
 
 /**
  * Session acquisition — executes a tenant's login recipe to obtain a signed-in
@@ -83,13 +84,34 @@ const ASSERTION_PREFIX = 'assert';
  * network. Checked at the API (spec §3.1) and again here, because the API check
  * is advisory once a job is running.
  */
-function isBlockedDestination(rawUrl: string, baseUrl?: string): string | null {
-  let host: string;
+/**
+ * Resolves a step's target URL, absolute-first.
+ *
+ * The obvious `new URL(target, page.url())` breaks on the FIRST login step: the
+ * crawler's page has not navigated yet, so its URL is `about:blank` (or empty
+ * under a test double) and an unusable base rejects even a perfectly good
+ * absolute URL. Absolute targets must not depend on where the page happens to be.
+ */
+function resolveTargetUrl(target: string, baseUrl?: string): URL | null {
   try {
-    host = (baseUrl ? new URL(rawUrl, baseUrl) : new URL(rawUrl)).hostname.toLowerCase();
+    return new URL(target);
   } catch {
-    return 'unparseable URL';
+    /* relative — needs a base */
   }
+  if (!baseUrl) return null;
+  try {
+    const base = new URL(baseUrl);
+    if (base.protocol !== 'http:' && base.protocol !== 'https:') return null;
+    return new URL(target, base);
+  } catch {
+    return null;
+  }
+}
+
+function isBlockedDestination(rawUrl: string, baseUrl?: string): string | null {
+  const resolved = resolveTargetUrl(rawUrl, baseUrl);
+  if (!resolved) return 'unparseable URL';
+  const host = resolved.hostname.toLowerCase();
   // Strip IPv6 brackets.
   const h = host.replace(/^\[|\]$/g, '');
   if (h === 'localhost' || h.endsWith('.localhost')) return 'loopback';
@@ -161,14 +183,13 @@ export async function acquireSession(
           return fail('login_failed',
             `${human} navigates to a ${blocked} address, which Kaizen will not open`);
         }
-        try {
-          const resolved = new URL(target, page.url());
-          if (resolved.origin !== rootOrigin) {
-            return fail('login_failed',
-              `${human} navigates to ${resolved.origin}, which is not the site being analyzed`);
-          }
-        } catch {
+        const resolved = resolveTargetUrl(target, page.url());
+        if (!resolved) {
           return fail('login_failed', `${human} has an unusable URL`);
+        }
+        if (resolved.origin !== rootOrigin) {
+          return fail('login_failed',
+            `${human} navigates to ${resolved.origin}, which is not the site being analyzed`);
         }
       }
 
@@ -256,8 +277,11 @@ export async function acquireSession(
     const landedUrl = normalizeUrl(page.url()) ?? page.url();
     if (!loginPageUrl) loginPageUrl = navigatedAtLeastOnce ? landedUrl : normalizeUrl(page.url());
 
-    const passwordStillVisible = await hasVisiblePasswordInput(page);
-    if (passwordStillVisible) {
+    // Same probe the crawler already trusts for auth-wall detection — reused
+    // rather than duplicated, so the two can never disagree about what a
+    // sign-in form looks like.
+    const { hasVisiblePasswordInput } = await capturePageMeta(page);
+    if (hasVisiblePasswordInput) {
       return fail('login_failed',
         'the sign-in form is still on screen after the test finished — the credentials were probably rejected');
     }
@@ -302,18 +326,6 @@ export function isSessionLoss(
   if (landedUrl !== requestedUrl && hasPasswordInput) return true;
   if (loginPageUrl && landedUrl === loginPageUrl && requestedUrl !== loginPageUrl) return true;
   return false;
-}
-
-async function hasVisiblePasswordInput(page: any): Promise<boolean> {
-  try {
-    return await page.evaluate(() =>
-      Array.from(document.querySelectorAll('input[type="password"]')).some((el) => {
-        const rect = (el as HTMLElement).getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0;
-      }));
-  } catch {
-    return false;
-  }
 }
 
 function errText(err: unknown): string {

@@ -64,7 +64,13 @@ export type PageCapture = {
   contentHash: string;
   screenshotKey: string | null;
   requiresAuth: boolean;
-  blocked: 'challenge' | 'robots' | null;
+  /**
+   * 'capture-suppressed' marks a Tier A sensitive page (/api-keys, /billing…)
+   * recorded as URL + title only. It is stored rather than skipped so the site
+   * model is honest about the gap instead of silently missing pages.
+   * Spec: docs/specs/test-writer/spec-authenticated-scope.md §5.2
+   */
+  blocked: 'challenge' | 'robots' | 'capture-suppressed' | null;
 };
 
 // ─── Crawl result (pipeline-level) ───────────────────────────────────────────
@@ -76,6 +82,25 @@ export type CrawlReport = {
   authScope: 'public' | 'authenticated';
   /** URLs discovered but not visited because the page budget was exhausted. */
   urlsSkippedByBudget: number;
+  /**
+   * Signed-in exploration outcome. Present only on authenticated jobs; the
+   * shape lives in recon/crawler.ts (AuthCrawlReport) and is mirrored into
+   * generation_jobs.report.auth.
+   * Spec: docs/specs/test-writer/spec-authenticated-scope.md §10.3
+   */
+  auth?: {
+    sessionVerification: 'assertion+heuristic' | 'heuristic' | null;
+    loginSteps: { total: number; passed: number };
+    reloginCount: number;
+    signInCount: number;
+    pagesBehindAuth: number;
+    probesSuppressed: number;
+    captureSuppressed: number;
+    sessionEndingBlocked: number;
+    endedEarly: 'session_lost' | null;
+    blockedReason: 'login_failed' | 'login_challenge' | 'login_budget_exhausted' | null;
+    blockedDetail: string | null;
+  };
 };
 
 // ─── Crawl budgets ───────────────────────────────────────────────────────────

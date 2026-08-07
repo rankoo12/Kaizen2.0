@@ -44,7 +44,13 @@ function makePage(opts: {
     advance: () => { idx++; },
     on(evt: string, fn: (arg: unknown) => void) { this.handlers[evt] = fn; },
     off(evt: string) { delete this.handlers[evt]; },
-    evaluate: async () => passwordAt(Math.min(idx, opts.urls.length - 1)),
+    // Shaped like capturePageMeta's return — auth-session reuses that probe
+    // rather than running its own.
+    evaluate: async () => ({
+      title: 'page',
+      headings: [],
+      hasVisiblePasswordInput: passwordAt(Math.min(idx, opts.urls.length - 1)),
+    }),
   };
 }
 

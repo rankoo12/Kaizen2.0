@@ -48,6 +48,28 @@ export class SiteModelRepository {
     suiteId: string,
     capture: PageCapture & { axOutline?: Record<string, unknown> },
   ): Promise<string> {
+    // requires_auth semantics are mode-dependent (spec-authenticated-scope.md §5.3).
+    //
+    // Public scope: the fresh public observation is authoritative in both
+    // directions — a formerly-walled page that is now public flips to false.
+    //
+    // Authenticated scope: an authenticated crawl visits genuinely public pages
+    // (home, pricing) through the same BFS, so overwriting with `true` would
+    // mislabel them. Preserve any prior verdict and default only NEW rows to
+    // true. Erring toward private is the only acceptable direction: a private
+    // page mislabeled public would leak into public-scope plans, while a public
+    // page mislabeled private merely narrows planning.
+    //
+    // Blocked captures are excluded entirely. blockedCapture() hardcodes
+    // requiresAuth:false, so a challenge or robots block during an authenticated
+    // re-crawl would otherwise flip a correctly-private page to public — a page
+    // nobody could read is evidence about the crawl, not about the page.
+    const requiresAuthSql = capture.blocked
+      ? 'site_pages.requires_auth'
+      : capture.requiresAuth
+        ? 'site_pages.requires_auth AND EXCLUDED.requires_auth'
+        : 'EXCLUDED.requires_auth';
+
     return withTenantTransaction(tenantId, async (client) => {
       const { rows } = await client.query<{ id: string }>(
         `INSERT INTO site_pages (
@@ -59,7 +81,7 @@ export class SiteModelRepository {
            headings = EXCLUDED.headings,
            ax_outline = EXCLUDED.ax_outline,
            content_hash = EXCLUDED.content_hash,
-           requires_auth = EXCLUDED.requires_auth,
+           requires_auth = ${requiresAuthSql},
            screenshot_key = COALESCE(EXCLUDED.screenshot_key, site_pages.screenshot_key),
            last_crawled_at = now(),
            -- content_hash-keyed classification cache: a re-crawl only invalidates
