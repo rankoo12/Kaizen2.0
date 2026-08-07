@@ -71,6 +71,36 @@ const TYPE_INCOMPATIBLE_ROLES = new Set([
   'heading', 'img', 'listbox', 'list', 'listitem',
 ]);
 
+/**
+ * Role compatibility, exposed for the Test Writer's schema gate so a generated
+ * step can be refused at WRITE time rather than discovered at run time.
+ *
+ * Same defect class as the dogfood note above, one layer earlier: a generator
+ * handed a page whose real input is hidden behind a modal will happily "type"
+ * into the nearest link unless something says no.
+ */
+export function isRoleCompatible(action: string, role: string): boolean {
+  switch (action) {
+    case 'type':
+    case 'clear':
+      // Strict at generation time (unlike the resolver's permissive fallback):
+      // the writer can see every element on the page, so "no text field here"
+      // means omit the step, never approximate it with a form or a link.
+      return TYPE_ROLES.has(role);
+    case 'select':
+      return SELECT_ROLES.has(role);
+    case 'check':
+    case 'uncheck':
+      return CHECK_ROLES.has(role);
+    case 'assert_checked':
+      return CHECK_ROLES.has(role);
+    default:
+      return true;   // pointer/assertion actions work against any role
+  }
+}
+
+export { TYPE_ROLES, CHECK_ROLES, SELECT_ROLES, TYPE_INCOMPATIBLE_ROLES };
+
 // ─── Public API ───────────────────────────────────────────────────────────────
 
 /**

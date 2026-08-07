@@ -11,6 +11,7 @@ import { tenantsRoutes } from './routes/tenants';
 import { membersRoutes } from './routes/members';
 import { platformRoutes } from './routes/platform';
 import { testCasesRoutes } from './routes/test-cases';
+import { testWriterRoutes } from './routes/test-writer';
 import { brainRoutes } from './routes/brain';
 import { closePool } from '../db/pool';
 
@@ -85,6 +86,7 @@ void app.register(membersRoutes);
 void app.register(platformRoutes);
 void app.register(runsRoutes);
 void app.register(testCasesRoutes);
+void app.register(testWriterRoutes);
 void app.register(brainRoutes);
 
 const shutdown = async (signal: string): Promise<void> => {

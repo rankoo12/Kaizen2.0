@@ -1,5 +1,5 @@
 /// <reference lib="dom" />
-import type { IDOMPruner } from './interfaces';
+import type { IDOMPruner, IPageSurveyor } from './interfaces';
 import type { CandidateNode, SelectorEntry } from '../../types';
 
 /**
@@ -20,7 +20,19 @@ import type { CandidateNode, SelectorEntry } from '../../types';
  * uses it to map its choice back to a physical element) but is NEVER the
  * primary selector stored in cache or used by the execution engine.
  */
-export class PlaywrightDOMPruner implements IDOMPruner {
+export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
+  /**
+   * RECON survey mode — the whole interactive surface of the page, capped.
+   * prune() already performs full Pass-1 extraction (the target description is
+   * only used by downstream similarity ranking, not here), so survey() is the
+   * same extraction with an explicit cap.
+   * Spec: docs/specs/test-writer/spec-recon-crawler.md §3
+   */
+  async survey(page: unknown, cap = 60): Promise<CandidateNode[]> {
+    const all = await this.prune(page, '');
+    return all.slice(0, cap);
+  }
+
   async prune(page: unknown, _targetDescription: string): Promise<CandidateNode[]> {
     const pwPage = page as any;
 
@@ -73,9 +85,13 @@ export class PlaywrightDOMPruner implements IDOMPruner {
 
         // ── 4. Extract attributes ─────────────────────────────────────────
         const attributes: Record<string, string> = {};
+        // aria-expanded / aria-haspopup / aria-controls / download feed the
+        // Test Writer's interaction safety classifier (safe-reveal detection).
+        // Spec: docs/specs/test-writer/spec-recon-crawler.md §4.1
         for (const attr of [
           'id', 'name', 'placeholder', 'aria-label', 'aria-labelledby',
           'type', 'href', 'title', 'data-testid', 'data-qa', 'data-test', 'role', 'draggable',
+          'aria-expanded', 'aria-haspopup', 'aria-controls', 'download',
         ]) {
           const val = el.getAttribute(attr);
           if (val) attributes[attr] = val;

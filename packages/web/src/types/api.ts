@@ -9,6 +9,86 @@ export type Suite = {
   caseCount: number;
   createdAt: string;
   updatedAt: string;
+  /** Consent for generated tests that create throwaway records. Default false. */
+  allowSyntheticData?: boolean;
+};
+
+// ─── Test Writer ("Kaizen as a QA engineer") ─────────────────────────────────
+// Spec: docs/specs/tests-ux/spec-testwriter-ux.md
+
+/** Where a generated test came from in its lifecycle. */
+export type CaseStatus = 'active' | 'draft' | 'validating' | 'rejected' | 'archived';
+export type CaseOrigin = 'user' | 'generated';
+
+export type GenerationJobStatus =
+  | 'queued' | 'running' | 'awaiting_plan_approval' | 'completed' | 'failed' | 'blocked';
+
+export type ScenarioSource = { kind: 'catalog'; archetypeKey: string } | { kind: 'llm' };
+
+export type PlannedScenario = {
+  name: string;
+  journey: string | null;
+  kind: 'happy' | 'negative' | 'edge';
+  priority: 'critical' | 'high' | 'normal';
+  /** WHY a QA engineer would write this. */
+  rationale: string;
+  /** WHAT it will do — present for AI gap-fill; catalog rows render their skeleton. */
+  outline?: string;
+  targetPages: string[];
+  source: ScenarioSource;
+  requiresSyntheticData?: boolean;
+};
+
+export type ScenarioRejection = {
+  name: string;
+  stage: 'safety' | 'schema' | 'render' | 'compile' | 'dedup' | 'judge' | 'validation' | 'consent';
+  reason: string;
+  runId?: string;
+};
+
+/** Live phase counts. Absent until the phase reports — never rendered as a guess. */
+export type JobProgress = {
+  phase: 'recon' | 'comprehend' | 'plan' | 'write' | 'validate';
+  pagesCrawled?: number;
+  scenariosWritten?: number;
+  scenariosTotal?: number;
+  validationRunsDone?: number;
+  validationRunsTotal?: number;
+};
+
+export type GenerationReport = {
+  progress?: JobProgress;
+  recon?: {
+    pagesCrawled: number; pagesBlocked: number; probesPerformed: number;
+    linksInserted?: number; urlsSkippedByBudget?: number;
+  };
+  comprehend?: {
+    pagesClassified: number; pagesReusedFromCache: number; journeys: number;
+    coverageGaps?: string[];
+    journeysDropped?: Array<{ name: string; reason: string }>;
+  };
+  plan?: { scenariosPlanned: number; fromCatalog: number; fromLlm: number };
+  write?: { attempted: number; written: number; deduped: number; survivedJudge: number };
+  validate?: { proposed: number; validated: number; unvalidated: number };
+  /** Per-phase spend, read from billing_events so it agrees with the invoice. */
+  tokenUsage?: Record<string, number>;
+  rejected?: ScenarioRejection[];
+  harvest?: Record<string, { finalUrl: string; heading: string | null; alertText: string | null }>;
+};
+
+export type GenerationJob = {
+  id: string;
+  suiteId: string;
+  targetUrl: string;
+  scope: 'public' | 'authenticated';
+  status: GenerationJobStatus;
+  options: Record<string, unknown>;
+  testPlan: { scenarios?: PlannedScenario[] } | null;
+  report: GenerationReport | null;
+  error: string | null;
+  createdAt: string;
+  startedAt: string | null;
+  finishedAt: string | null;
 };
 
 /** Who wrote a test. Null for cases predating migration 030 and for anything created
@@ -27,6 +107,13 @@ export type CaseSummary = {
   createdAt: string;
   updatedAt: string;
   createdBy: CaseAuthor | null;
+  /** Draft lifecycle + provenance. Older payloads omit these; treat as active/user. */
+  status?: CaseStatus;
+  origin?: CaseOrigin;
+  /** The run that proved a generated draft — its evidence. */
+  validationRunId?: string | null;
+  generationJobId?: string | null;
+  archetypeKey?: string | null;
   /** Aggregates over this case's whole run history. Computed per request rather than
    *  read from a rollup — measured at ~1.1ms for a tenant, and a cached copy would be
    *  one more place for numbers to disagree with their source. */
@@ -80,7 +167,9 @@ export type RunSummary = {
   suiteId: string | null;
   suiteName: string | null;
   status: RunStatus;
-  triggeredBy: 'web' | 'api' | 'cli' | 'schedule';
+  /** 'testwriter' marks a proving run — Kaizen's own evidence for a draft it
+   *  wants to propose. Excluded from the runs feed, reachable from the draft. */
+  triggeredBy: 'web' | 'api' | 'cli' | 'schedule' | 'testwriter';
   createdAt: string;
   completedAt: string | null;
   durationMs: number | null;

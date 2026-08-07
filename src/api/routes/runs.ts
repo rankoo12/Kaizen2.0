@@ -130,6 +130,12 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
     const values: unknown[]    = [tenantId];
     let vi = 2;
 
+    // Proving runs are Kaizen's own evidence for a draft it wants to propose —
+    // the user never wrote those tests, so they don't belong in the run history.
+    // Still reachable by id (GET /runs/:id) and from the draft that owns them.
+    // Spec: docs/specs/test-writer/spec-generation-pipeline.md §5
+    if (!query.caseId) conditions.push(`r.triggered_by <> 'testwriter'`);
+
     if (query.suiteId) { conditions.push(`r.suite_id = $${vi++}`); values.push(query.suiteId); }
     if (query.caseId)  { conditions.push(`r.case_id  = $${vi++}`); values.push(query.caseId); }
     if (query.status)  { conditions.push(`r.status   = $${vi++}`); values.push(query.status); }

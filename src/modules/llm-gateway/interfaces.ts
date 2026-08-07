@@ -42,6 +42,10 @@ export interface ILLMGateway {
    *  - LLMElementResolver: to persist step_embedding after resolution
    *  - CachedElementResolver: to embed the incoming query before pgvector search
    * This is a separate OpenAI Embeddings API call — not a chat completion.
+   *
+   * @param tenantId - when supplied, the call is metered to that tenant.
+   *   Optional for backwards compatibility with call sites that have no tenant
+   *   in scope; those calls remain unbilled (see docs/known-issues/).
    */
-  generateEmbedding(text: string): Promise<number[]>;
+  generateEmbedding(text: string, tenantId?: string): Promise<number[]>;
 }

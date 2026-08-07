@@ -163,7 +163,11 @@ describe('CompositeElementResolver', () => {
       await composite.resolve(makeStep(), makeContext());
 
       expect(gateway.generateEmbedding).toHaveBeenCalledTimes(1);
-      expect(gateway.generateEmbedding).toHaveBeenCalledWith('click submit button');
+      // The tenant travels with the call so embedding spend is billed rather
+      // than invisible (openai.gateway.ts generateEmbedding).
+      expect(gateway.generateEmbedding).toHaveBeenCalledWith(
+        'click submit button', '00000000-0000-0000-0000-000000000001',
+      );
     });
 
     it('propagates the embedding via ResolutionContext.stepEmbedding', async () => {

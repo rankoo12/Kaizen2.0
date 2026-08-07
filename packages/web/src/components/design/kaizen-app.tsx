@@ -12,6 +12,9 @@ import { RunScreen } from './screen-run';
 import { RunsScreen } from './screen-runs';
 import { BrainScreen } from './screen-brain';
 import { UsageScreen } from './screen-usage';
+import { WriterScreen } from './screen-writer';
+import { AnalysesScreen } from './screen-analyses';
+import { AnalyzeSheet } from './writer-analyze-sheet';
 import { useDesignData, type DesignCase } from './use-design-data';
 import { useAuth } from '@/context/auth-context';
 
@@ -43,6 +46,9 @@ export default function KaizenApp() {
   const [sidebar, setSidebar] = useState(true);
   /** Test being edited on the author screen; null means 'creating a new one'. */
   const [editing, setEditing] = useState<string | null>(null);
+  /** Which Test Writer job the writer screen is showing. */
+  const [writerFocus, setWriterFocus] = useState<{ suiteId: string; jobId: string } | null>(null);
+  const [analyzeOpen, setAnalyzeOpen] = useState(false);
 
   // Appearance + grouping are per-device preferences, so they live in localStorage
   // rather than on the tenant (the API has nowhere to put them).
@@ -125,6 +131,68 @@ export default function KaizenApp() {
     setScreen('run');
   }
 
+  /* One job per suite is watched — the one that most recently needed the user.
+     Nothing lives only in memory: this is re-derived from the API on mount, so a
+     reload (or a walk away and back) still finds the delivery waiting. */
+  const [pendingDelivery, setPendingDelivery] = useState<
+    { jobId: string; suiteId: string; status: string; count: number; pagesCrawled?: number | null } | null>(null);
+
+  const scanJobs = useCallback(async () => {
+    if (suites.length === 0) { setPendingDelivery(null); return; }
+    try {
+      const results = await Promise.all(suites.map(async (s) => {
+        const r = await fetch(`/api/proxy/suites/${s.id}/jobs`);
+        if (!r.ok) return null;
+        const { jobs } = await r.json();
+        return (jobs ?? [])[0] ? { ...jobs[0], suiteId: s.id } : null;
+      }));
+      const jobs = results.filter(Boolean) as any[];
+      // Ranked by what most needs the user: a plan blocking on approval, then a
+      // job still working (which must stay reachable — leaving the writer screen
+      // used to strand it with no way back), then a finished delivery.
+      const waiting = jobs.find((j) => j.status === 'awaiting_plan_approval');
+      const working = jobs.find((j) => j.status === 'running' || j.status === 'queued');
+      const delivered = jobs.find((j) => j.status === 'completed' && (j.report?.validate?.proposed ?? 0) > 0);
+      // A job that proposed NOTHING still has to be reachable: its report is
+      // where the reasons live, and "0 tests, no way to see why" is the worst
+      // possible outcome to hide.
+      const finished = jobs.find((j) => ['completed', 'failed', 'blocked'].includes(j.status));
+      const winner = waiting ?? working ?? delivered ?? finished ?? null;
+      setPendingDelivery(winner ? {
+        jobId: winner.id, suiteId: winner.suiteId, status: winner.status,
+        count: winner.report?.validate?.proposed ?? 0,
+        pagesCrawled: winner.report?.progress?.pagesCrawled ?? null,
+      } : null);
+    } catch { /* the banner is a convenience; its absence must not break the list */ }
+  }, [suites]);
+
+  useEffect(() => { void scanJobs(); }, [scanJobs]);
+
+  /* Keep the banner honest while a job works: without this it would report
+     "exploring" long after the job finished, and a delivery would only appear
+     after a manual refresh. Polling stops once nothing is in flight. */
+  const jobInFlight = pendingDelivery?.status === 'running' || pendingDelivery?.status === 'queued';
+  useEffect(() => {
+    if (!jobInFlight) return;
+    const id = setInterval(scanJobs, 4000);
+    return () => clearInterval(id);
+  }, [jobInFlight, scanJobs]);
+
+  /** Accepting a draft is reversible, so it is announced rather than confirmed. */
+  const acceptDraft = useCallback(async (c: DesignCase) => {
+    try {
+      const r = await fetch(`/api/proxy/cases/${c.id}`, {
+        method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'active' }),
+      });
+      if (!r.ok) throw new Error();
+      showToast(`Added “${c.name}” to ${c.suiteName}`, 'success');
+      refetch();
+    } catch {
+      showToast('Could not accept that draft', 'error');
+    }
+  }, [refetch, showToast]);
+
   async function deleteCase(c: DesignCase) {
     try {
       const r = await fetch(`/api/proxy/cases/${c.id}`, { method: 'DELETE' });
@@ -164,8 +232,9 @@ export default function KaizenApp() {
         n: () => { setEditing(null); go('author'); },
         '1': () => go('tests'),
         '2': () => go('runs'),
-        '3': () => go('brain'),
-        '4': () => go('usage'),
+        '3': () => go('analyses'),
+        '4': () => go('brain'),
+        '5': () => go('usage'),
       };
       const fn = map[e.key.toLowerCase()];
       if (!fn) return;
@@ -182,12 +251,15 @@ export default function KaizenApp() {
     { label: 'File', items: [
       { label: 'New Test', key: '⌘N', onClick: () => { setEditing(null); go('author'); } },
       { label: 'New Suite', onClick: () => go('author') },
+      '-',
+      { label: 'Analyze an app…', onClick: () => setAnalyzeOpen(true) },
     ] },
     { label: 'View', items: [
       { label: 'Tests', key: '⌘1', onClick: () => go('tests') },
       { label: 'Runs', key: '⌘2', onClick: () => go('runs') },
-      { label: 'The Brain', key: '⌘3', onClick: () => go('brain') },
-      { label: 'Usage', key: '⌘4', onClick: () => go('usage') },
+      { label: 'Analyses', key: '⌘3', onClick: () => go('analyses') },
+      { label: 'The Brain', key: '⌘4', onClick: () => go('brain') },
+      { label: 'Usage', key: '⌘5', onClick: () => go('usage') },
       '-',
       { label: 'Next appearance', key: '⇧⌘A', onClick: nextAppearance },
       { label: sidebar ? 'Hide sidebar' : 'Show sidebar', key: '⌥⌘S', onClick: () => setSidebar(!sidebar) },
@@ -208,7 +280,20 @@ export default function KaizenApp() {
       <TestsScreen cases={cases} suites={suites} stats={stats}
         onOpen={openCase} onNew={() => { setEditing(null); go('author'); }} onRun={runNow}
         onEdit={(c) => editCase(c.id)} onDelete={deleteCase}
-        suiteFilter={suite} onClearSuite={() => setSuite(null)} group={group} showToast={showToast} />
+        suiteFilter={suite} onClearSuite={() => setSuite(null)} group={group} showToast={showToast}
+        onAnalyze={() => setAnalyzeOpen(true)}
+        onAcceptDraft={acceptDraft}
+        onOpenProof={(c) => {
+          if (!c.validationRunId) return;
+          setFocus({ caseId: c.id, runId: c.validationRunId, name: c.name });
+          setScreen('run');
+        }}
+        pendingDelivery={pendingDelivery}
+        onOpenDelivery={() => {
+          if (!pendingDelivery) return;
+          setWriterFocus({ suiteId: pendingDelivery.suiteId, jobId: pendingDelivery.jobId });
+          setScreen('writer');
+        }} />
     ) : screen === 'author' ? (
       <AuthorScreen suites={suites} defaultSuiteId={suite} editCaseId={editing}
         onBack={() => { setEditing(null); go('tests', suite); }}
@@ -240,6 +325,24 @@ export default function KaizenApp() {
           setFocus({ caseId, runId, name: caseName, stepResultId });
           setScreen('run');
         }} />
+      )
+      : screen === 'analyses' ? (
+        <AnalysesScreen suites={suites}
+          onAnalyze={() => setAnalyzeOpen(true)}
+          onOpen={(suiteId, jobId) => { setWriterFocus({ suiteId, jobId }); setScreen('writer'); }} />
+      )
+      : screen === 'writer' && writerFocus ? (
+        <WriterScreen suiteId={writerFocus.suiteId} jobId={writerFocus.jobId}
+          suiteName={suites.find((s) => s.id === writerFocus.suiteId)?.name ?? 'this suite'}
+          onBack={() => go('tests', writerFocus.suiteId)}
+          onOpenRun={(caseId, runId) => {
+            const known = cases.find((c) => c.id === caseId)?.name;
+            setFocus({ caseId, runId, name: known ?? 'Proving run' });
+            setScreen('run');
+          }}
+          onAnalyzeAgain={() => setAnalyzeOpen(true)}
+          onCasesChanged={refetch}
+          showToast={showToast} />
       )
       : screen === 'usage' ? (
         <UsageScreen appearance={appearance} setAppearance={setAppearance}
@@ -282,6 +385,19 @@ export default function KaizenApp() {
           <Toast toast={toast} />
         </div>
       </div>
+      {analyzeOpen && (
+        <AnalyzeSheet suites={suites} defaultSuiteId={suite}
+          defaultUrl={cases.find((c) => !suite || c.suiteId === suite)?.baseUrl}
+          onClose={() => setAnalyzeOpen(false)}
+          showToast={showToast}
+          onStarted={(suiteId, jobId) => {
+            setAnalyzeOpen(false);
+            setWriterFocus({ suiteId, jobId });
+            setSuite(suiteId);
+            setScreen('writer');
+            showToast('Exploring your app — this keeps running if you leave', 'info');
+          }} />
+      )}
     </div>
   );
 }

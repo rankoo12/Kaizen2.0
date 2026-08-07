@@ -20,6 +20,41 @@ import { getPool } from '../../db/pool';
 /** Billing tenant ID used for LLM calls during compilation (not tied to any user tenant). */
 const SYSTEM_TENANT_ID = 'system_global';
 
+/**
+ * Normalise raw step text before hashing so surface variants that carry
+ * identical intent share the same contentHash:
+ *   - lowercase + trim
+ *   - strip surrounding and embedded straight/curly quotes from values
+ *     so `type "hello" in username` === `type hello in username`
+ *   - collapse internal whitespace
+ *
+ * Exported because the Test Writer's canonical renderer constructs ASTs
+ * directly and must produce byte-identical hashes to a compile of the same
+ * sentence (spec-generation-pipeline.md §3).
+ */
+export function normaliseStepText(text: string): string {
+  return text
+    .trim()
+    .toLowerCase()
+    .replace(/[""'']/g, '')   // strip curly quotes
+    .replace(/"/g, '')        // strip straight double quotes
+    .replace(/'/g, '')        // strip straight single quotes
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+/** SHA-256 of the normalised step text — the compiled_ast_cache key. */
+export function stepContentHash(text: string): string {
+  return createHash('sha256').update(normaliseStepText(text)).digest('hex');
+}
+
+/** SHA-256(action + ':' + targetDescription) — the selector-cache key. */
+export function stepTargetHash(action: string, targetDescription: string | null): string {
+  return createHash('sha256')
+    .update(`${action}:${(targetDescription ?? '').trim().toLowerCase()}`)
+    .digest('hex');
+}
+
 export class LearnedCompiler implements ITestCompiler {
   // L1: process-local hot cache — avoids repeated DB reads within a run
   private readonly cache = new Map<string, StepAST>();
@@ -29,33 +64,12 @@ export class LearnedCompiler implements ITestCompiler {
     private readonly observability: IObservability,
   ) {}
 
-  /**
-   * Normalise raw step text before hashing so surface variants that carry
-   * identical intent share the same contentHash:
-   *   - lowercase + trim
-   *   - strip surrounding and embedded straight/curly quotes from values
-   *     so `type "hello" in username` === `type hello in username`
-   *   - collapse internal whitespace
-   */
-  private normalise(text: string): string {
-    return text
-      .trim()
-      .toLowerCase()
-      .replace(/[""'']/g, '')   // strip curly quotes
-      .replace(/"/g, '')        // strip straight double quotes
-      .replace(/'/g, '')        // strip straight single quotes
-      .replace(/\s+/g, ' ')
-      .trim();
-  }
-
   private hash(text: string): string {
-    return createHash('sha256').update(this.normalise(text)).digest('hex');
+    return stepContentHash(text);
   }
 
   private targetHash(action: string, targetDescription: string | null): string {
-    return createHash('sha256')
-      .update(`${action}:${(targetDescription ?? '').trim().toLowerCase()}`)
-      .digest('hex');
+    return stepTargetHash(action, targetDescription);
   }
 
   async compile(rawText: string): Promise<StepAST> {

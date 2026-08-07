@@ -31,6 +31,7 @@ import { PostgresBillingMeter } from '../../modules/billing-meter/postgres.billi
 import { usageThisMonth } from '../../modules/billing-meter/usage';
 import { PinoObservability } from '../../modules/observability/pino.observability';
 import { generateFormData } from '../../modules/test-data/generate';
+import type { StepAST } from '../../types';
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -50,6 +51,12 @@ const UpdateSuiteBody = z.object({
   name:        z.string().min(1).max(200).optional(),
   description: z.string().max(1000).nullable().optional(),
   tags:        z.array(z.string()).optional(),
+  /**
+   * Consent for generated tests that create throwaway records (signup, cart).
+   * Off by default; set from the analyze dialog or the plan-review footer.
+   * Spec: docs/specs/test-writer/spec-generation-pipeline.md §6.2
+   */
+  allowSyntheticData: z.boolean().optional(),
 });
 
 const CreateCaseBody = z.object({
@@ -58,10 +65,34 @@ const CreateCaseBody = z.object({
   steps:   z.array(z.string().min(1)).min(1, 'At least one step is required'),
 });
 
+const CaseListQuery = z.object({
+  /**
+   * Comma-separated subset of the case statuses
+   * (active | draft | validating | rejected | archived).
+   * Defaults to active,draft,validating — what a user can act on.
+   */
+  status: z.string().optional(),
+});
+
+/**
+ * Transitions the API will perform. `validating` and `rejected` are written only
+ * by the Test Writer — a user can archive a rejected case, never resurrect one
+ * into the suite without a fresh proving run.
+ * Spec: docs/specs/tests-ux/spec-draft-review-ux.md §1
+ */
+const ALLOWED_STATUS_TRANSITIONS: Record<string, readonly string[]> = {
+  draft:    ['active', 'archived'],
+  active:   ['archived'],
+  archived: ['draft'],          // restore / undo an accept
+  rejected: ['archived'],
+};
+
 const UpdateCaseBody = z.object({
   name:    z.string().min(1).max(300).optional(),
   baseUrl: z.string().url().optional(),
   steps:   z.array(z.string().min(1)).optional(),
+  /** Draft lifecycle: accept (draft→active), dismiss (→archived), restore/undo. */
+  status:  z.enum(['active', 'draft', 'archived']).optional(),
 });
 
 const RunCaseBody = z.object({
@@ -91,7 +122,7 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
         created_at: Date; updated_at: Date; case_count: number;
       }>(
         `SELECT ts.id, ts.name, ts.description, ts.tags,
-                ts.created_at, ts.updated_at,
+                ts.created_at, ts.updated_at, ts.allow_synthetic_data,
                 COUNT(tc.id)::int AS case_count
          FROM test_suites ts
          LEFT JOIN test_cases tc ON tc.suite_id = ts.id
@@ -145,6 +176,9 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
     if (parsed.data.name        !== undefined) { updates.push(`name        = $${i++}`); values.push(parsed.data.name); }
     if (parsed.data.description !== undefined) { updates.push(`description = $${i++}`); values.push(parsed.data.description); }
     if (parsed.data.tags        !== undefined) { updates.push(`tags        = $${i++}`); values.push(parsed.data.tags); }
+    if (parsed.data.allowSyntheticData !== undefined) {
+      updates.push(`allow_synthetic_data = $${i++}`); values.push(parsed.data.allowSyntheticData);
+    }
 
     values.push(suiteId);
     values.push(tenantId);
@@ -152,11 +186,11 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
     const suite = await withTenantTransaction(tenantId, async (client) => {
       const { rows } = await client.query<{
         id: string; name: string; description: string | null; tags: string[];
-        created_at: Date; updated_at: Date;
+        created_at: Date; updated_at: Date; allow_synthetic_data: boolean;
       }>(
         `UPDATE test_suites SET ${updates.join(', ')}
          WHERE id = $${i} AND tenant_id = $${i + 1}
-         RETURNING id, name, description, tags, created_at, updated_at`,
+         RETURNING id, name, description, tags, created_at, updated_at, allow_synthetic_data`,
         values,
       );
       if (rows.length === 0) return null;
@@ -202,10 +236,23 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
     const { suiteId } = request.params as { suiteId: string };
     const { tenantId } = request;
 
+    // Default view: what a user acts on — their tests plus anything Kaizen is
+    // proposing. `rejected`/`archived` are report-only and must be asked for.
+    const parsedQuery = CaseListQuery.safeParse(request.query ?? {});
+    if (!parsedQuery.success) {
+      return reply.status(400).send({ error: 'INVALID_REQUEST', details: parsedQuery.error.issues });
+    }
+    const statuses = parsedQuery.data.status
+      ? parsedQuery.data.status.split(',').map((s) => s.trim()).filter(Boolean)
+      : ['active', 'draft', 'validating'];
+
     const cases = await withTenantTransaction(tenantId, async (client) => {
       const { rows } = await client.query<{
         id: string; name: string; base_url: string;
         created_at: Date; updated_at: Date;
+        status: string; origin: string;
+        validation_run_id: string | null; generation_job_id: string | null;
+        archetype_key: string | null;
         last_run_id: string | null; last_run_status: string | null; last_run_completed_at: Date | null;
         last_run_duration_ms: number | null; last_run_total_tokens: number | null;
         author_id: string | null; author_name: string | null; author_email: string | null;
@@ -217,6 +264,9 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
         // LEFT JOIN, not inner: cases predating migration 030 have no created_by, and so
         // do cases created through an API key. They must still appear in the list.
         `SELECT tc.id, tc.name, tc.base_url, tc.created_at, tc.updated_at,
+                -- Draft lifecycle (migration 028/032): without these the web cannot
+                -- tell a Kaizen-written draft from a test the user owns.
+                tc.status, tc.origin, tc.validation_run_id, tc.generation_job_id, tc.archetype_key,
                 st.runs, st.passed, st.healed, st.failed, st.avg_duration_ms,
                 ch.lookups, ch.cached,
                 ft.tokens        AS first_run_tokens,
@@ -275,8 +325,9 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
              FROM runs fr WHERE fr.case_id = tc.id ORDER BY fr.created_at ASC LIMIT 1
          ) ft ON true
          WHERE tc.suite_id = $1 AND tc.tenant_id = $2
+           AND tc.status = ANY($3::text[])
          ORDER BY tc.created_at DESC`,
-        [suiteId, tenantId],
+        [suiteId, tenantId, statuses],
       );
       return rows;
     });
@@ -459,20 +510,37 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
     const { tenantId } = request;
 
     const result = await withTenantTransaction(tenantId, async (client) => {
+      // A status change is a lifecycle transition, not a field write: check what
+      // the case is now before allowing where it may go.
+      if (parsed.data.status !== undefined) {
+        const { rows: current } = await client.query<{ status: string }>(
+          `SELECT status FROM test_cases WHERE id = $1 AND tenant_id = $2`,
+          [caseId, tenantId],
+        );
+        if (current.length === 0) return null;
+        const from = current[0].status;
+        const to = parsed.data.status;
+        if (from !== to && !(ALLOWED_STATUS_TRANSITIONS[from] ?? []).includes(to)) {
+          return { invalidTransition: { from, to } } as const;
+        }
+      }
+
       const caseUpdates: string[] = ['updated_at = now()'];
       const caseVals: unknown[]   = [];
       let vi = 1;
       if (parsed.data.name    !== undefined) { caseUpdates.push(`name     = $${vi++}`); caseVals.push(parsed.data.name); }
       if (parsed.data.baseUrl !== undefined) { caseUpdates.push(`base_url = $${vi++}`); caseVals.push(parsed.data.baseUrl); }
+      if (parsed.data.status  !== undefined) { caseUpdates.push(`status   = $${vi++}`); caseVals.push(parsed.data.status); }
       caseVals.push(caseId);
       caseVals.push(tenantId);
 
       const { rows: caseRows } = await client.query<{
-        id: string; name: string; base_url: string; suite_id: string;
+        id: string; name: string; base_url: string; suite_id: string; status: string;
         created_at: Date; updated_at: Date;
       }>(
         `UPDATE test_cases SET ${caseUpdates.join(', ')}
-         WHERE id = $${vi} AND tenant_id = $${vi + 1} RETURNING id, name, base_url, suite_id, created_at, updated_at`,
+         WHERE id = $${vi} AND tenant_id = $${vi + 1}
+         RETURNING id, name, base_url, suite_id, status, created_at, updated_at`,
         caseVals,
       );
       if (caseRows.length === 0) return null;
@@ -535,6 +603,13 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
     });
 
     if (!result) return reply.status(404).send({ error: 'CASE_NOT_FOUND' });
+    if ('invalidTransition' in result && result.invalidTransition) {
+      const { from, to } = result.invalidTransition;
+      return reply.status(400).send({
+        error: 'INVALID_STATUS_TRANSITION',
+        message: `A case cannot go from ${from} to ${to}.`,
+      });
+    }
 
     return reply.send({
       case: {
@@ -542,6 +617,7 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
         name:      result.case.name,
         baseUrl:   result.case.base_url,
         suiteId:   result.case.suite_id,
+        status:    result.case.status,
         createdAt: result.case.created_at,
         updatedAt: result.case.updated_at,
         steps:     result.steps.map((s) => ({
@@ -718,9 +794,9 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
     // Fetch case + active steps inside tenant transaction
     const caseData = await withTenantTransaction(tenantId, async (client) => {
       const { rows: caseRows } = await client.query<{
-        id: string; suite_id: string; base_url: string;
+        id: string; suite_id: string; base_url: string; status: string;
       }>(
-        `SELECT id, suite_id, base_url FROM test_cases WHERE id = $1 AND tenant_id = $2`,
+        `SELECT id, suite_id, base_url, status FROM test_cases WHERE id = $1 AND tenant_id = $2`,
         [caseId, tenantId],
       );
       if (caseRows.length === 0) return null;
@@ -729,8 +805,14 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       // step_results.step_id — without it, runs.ts can't LEFT JOIN to recover
       // the step's natural-language text for the timeline display.
       // Spec: docs/specs/workers/spec-live-run-updates.md §5.1.1
-      const { rows: stepRows } = await client.query<{ id: string; raw_text: string }>(
-        `SELECT ts.id, ts.raw_text
+      // compiled_ast is populated for Test-Writer-generated steps: the canonical
+      // renderer built the AST definitionally, so re-compiling its own sentence
+      // would spend tokens rediscovering what is already known.
+      // Spec: docs/specs/test-writer/spec-generation-pipeline.md §3
+      const { rows: stepRows } = await client.query<{
+        id: string; raw_text: string; compiled_ast: StepAST | null;
+      }>(
+        `SELECT ts.id, ts.raw_text, ts.compiled_ast
          FROM test_case_steps tcs
          JOIN test_steps ts ON ts.id = tcs.step_id
          WHERE tcs.case_id = $1 AND tcs.is_active = true
@@ -742,10 +824,23 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
         ...caseRows[0],
         steps:   stepRows.map((r) => r.raw_text),
         stepIds: stepRows.map((r) => r.id),
+        storedAsts: stepRows.map((r) => r.compiled_ast),
       };
     });
 
     if (!caseData) return reply.status(404).send({ error: 'CASE_NOT_FOUND' });
+
+    // A draft has not been accepted into the suite yet, and a rejected case
+    // failed its proving run — neither is part of what "green" means here.
+    if (caseData.status !== 'active') {
+      return reply.status(400).send({
+        error: 'CASE_NOT_ACTIVE',
+        message: caseData.status === 'draft'
+          ? 'This test is a draft Kaizen proposed. Accept it into the suite before running it.'
+          : `A ${caseData.status} test cannot be run.`,
+        status: caseData.status,
+      });
+    }
 
     const { rows: budgetRows } = await getPool().query<{ llm_budget_tokens_monthly: string }>(
       `SELECT llm_budget_tokens_monthly FROM tenants WHERE id = $1`,
@@ -771,8 +866,10 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
 
     const baseUrl = parsed.data.baseUrl ?? caseData.base_url;
 
-    // Compile natural-language steps → AST
-    const compiledSteps = await compiler.compileMany(caseData.steps);
+    // Compile natural-language steps → AST, reusing any stored AST as-is.
+    const compiledSteps = await Promise.all(
+      caseData.steps.map(async (rawText, i) => caseData.storedAsts[i] ?? compiler.compile(rawText)),
+    );
 
     // Create run record and enqueue
     const { rows } = await getPool().query<{ id: string }>(
@@ -810,6 +907,7 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
 function mapSuite(row: {
   id: string; name: string; description: string | null; tags: string[];
   created_at: Date; updated_at: Date; case_count: number;
+  allow_synthetic_data?: boolean;
 }) {
   return {
     id:          row.id,
@@ -817,6 +915,7 @@ function mapSuite(row: {
     description: row.description,
     tags:        row.tags ?? [],
     caseCount:   row.case_count,
+    allowSyntheticData: row.allow_synthetic_data ?? false,
     createdAt:   row.created_at,
     updatedAt:   row.updated_at,
   };
@@ -825,6 +924,9 @@ function mapSuite(row: {
 function mapCaseSummary(row: {
   id: string; name: string; base_url: string;
   created_at: Date; updated_at: Date;
+  status?: string; origin?: string;
+  validation_run_id?: string | null; generation_job_id?: string | null;
+  archetype_key?: string | null;
   last_run_id: string | null; last_run_status: string | null;
   last_run_completed_at: Date | null;
   last_run_duration_ms: number | null;
@@ -847,6 +949,13 @@ function mapCaseSummary(row: {
     baseUrl:   row.base_url,
     createdAt: row.created_at,
     updatedAt: row.updated_at,
+    // Draft lifecycle + provenance. A generated test keeps its origin and the id
+    // of the run that proved it for as long as it exists.
+    status:    row.status ?? 'active',
+    origin:    row.origin ?? 'user',
+    validationRunId:  row.validation_run_id ?? null,
+    generationJobId:  row.generation_job_id ?? null,
+    archetypeKey:     row.archetype_key ?? null,
     // null for cases written before migration 030 and for anything created through an
     // API key. The UI shows nothing at all rather than "Unknown" — an absent author is
     // a fact about the record, not a person we failed to name.

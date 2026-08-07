@@ -667,6 +667,20 @@ export function RunScreen({ caseId, runId: initialRunId, initialStepId, caseName
         </div>
       </Toolbar>
 
+      {/* A proving run is Kaizen's own evidence for a draft it wants to propose.
+          It is kept out of the Runs feed, so arriving here from a draft needs to
+          explain what this run is and why it isn't in the history. */}
+      {run?.triggeredBy === 'testwriter' && (
+        <div style={{ display: 'flex', alignItems: 'center', gap: 8, padding: '9px 20px',
+          borderBottom: '.5px solid var(--sep)', background: 'var(--accent-soft)' }}>
+          <I.sparkle size={13} style={{ color: 'var(--accent)', flex: 'none' }} />
+          <span style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5 }}>
+            This is a proving run — Kaizen executed this draft to earn the right to propose it.
+            It doesn&apos;t appear in your Runs feed.
+          </span>
+        </div>
+      )}
+
       <div style={{ display: 'flex', flex: 1, minHeight: 0 }}>
         <div className="scroll" style={{ flex: 1, padding: '16px 20px 40px', minWidth: 0 }}>
           {!effectiveRunId ? (
