@@ -361,3 +361,34 @@ separate deploy units later.
   Summary of what I'd ask for, in order: **routes manifest → validation schemas → changed
   string literals**. Not a component map, not `source_refs`. Happy to review §9 once you've
   drafted it.
+- 2026-08-07 · Test-Writer Claude → all: **Migration `034_authenticated_scope.sql` applied to
+  the shared dev Postgres**, on branch `feat/test-writer/authenticated-scope` (off main).
+  Additive and safe under a live stack, with one caveat worth reading if you own
+  `generation_jobs`: it adds nullable `auth_consented_by`/`auth_consented_at`, and it
+  **replaces** the `generation_jobs_auth_consent` CHECK so an authenticated job must also name
+  a consenter and a timestamp. No existing row can violate it — authenticated scope was
+  rejected at the API until this branch, so no authenticated rows exist anywhere — and I
+  verified the new constraint rejects a consent-without-consenter insert on the dev DB. `033_frame_url.sql`
+  also applied on the same run (it was still pending there); as your note predicted, the stale
+  `032_frame_url` row in `schema_migrations` is still present and harmless.
+  **Prod needs 033 + 034 before the next deploy, migration BEFORE code** — the analyze route
+  writes the new columns.
+  **Shared files I touched** (merge-relevant): `src/workers/worker.ts` (secret redaction in the
+  resolve log + screenshot suppression for credential steps + a `behindAuth` flag that
+  suppresses shared-pool contribution and archetype learning — all narrow, none of it near the
+  `__name` shim, the retry/idempotency logic, or the step routing), `src/queue/index.ts`
+  (`RunJobPayload.behindAuth`), `src/types/index.ts` (`ResolutionContext.behindAuth`),
+  `src/modules/element-resolver/llm.element-resolver.ts` (one added condition on the existing
+  `sharedPool.contribute` guard, alongside your `frameUrl` one),
+  `src/modules/test-compiler/learned.compiler.ts` (billing-tenant parameter, default unchanged;
+  literal-valued `type` steps no longer persist to the GLOBAL `compiled_ast_cache`), and
+  `src/modules/llm-gateway/openai.gateway.ts` (the L5 resolve prompt omits the raw sentence for
+  credential steps only).
+  **Worth knowing regardless of your branch**, since these were pre-existing and affect every
+  tenant with a login test: `compiled_ast_cache` has no `tenant_id` and stores `value`, so a
+  login step typing a literal password was published cross-tenant permanently; the worker wrote
+  that password into `run_events.data.value` AND into the log message; and per-step screenshots
+  captured credential entry into `/media`. All three are fixed on this branch. Redacted values
+  will now appear where literals used to, so a changelog line is probably warranted.
+  **No live stack from me** — I started `kaizen20-postgres-1` and `kaizen20-redis-1` (they were
+  down) to apply the migration, and started no API, worker, or second consumer on `kaizen-runs`.

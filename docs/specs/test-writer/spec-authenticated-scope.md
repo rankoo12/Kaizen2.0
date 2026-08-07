@@ -1,10 +1,21 @@
 # Spec — Authenticated Scope (Phase 3: signed-in exploration + generation)
 
 Created: 2026-08-06
-Branch: `feat/test-writer/authenticated-scope`
-Status: Design agreed with product owner; adversarially reviewed (security,
-groundedness, product) with all findings applied; implementation not started.
-Three decisions await the product owner — §16.
+Branch: `feat/test-writer/authenticated-scope` (off main, after P2 merged as #65)
+Status: **Backend implemented** (2026-08-07) — §3 through §10 and §12 are built
+and unit-tested; migration 034 applied to the shared dev DB. Design was
+adversarially reviewed (security, groundedness, product) with all findings
+applied before implementation.
+
+Not yet done: the §11 consent UX (analyze-sheet card, login-test picker and its
+empty state, progress/blocked/report faces) and the §14 live dogfood run against
+Kaizen's own app. Three decisions still await the product owner — §16.
+
+Deviations found while building, each recorded at its section: the L5 resolver
+prompt is redacted for credential steps but `compileStep` deliberately is not
+(§12.2 item 3); the origin guard resolves absolute URLs without depending on the
+page's current location (§3.1); and auth-session reuses `capturePageMeta`'s
+password probe rather than duplicating it (§4.3).
 
 > Companion to `spec-test-writer-service.md` (umbrella), `spec-recon-crawler.md`
 > (whose §5 sketched this phase in P0 — this spec supersedes that sketch),
