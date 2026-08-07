@@ -1,4 +1,6 @@
--- Migration 032: frame provenance for elements resolved inside a child iframe
+-- Migration 033: frame provenance for elements resolved inside a child iframe
+-- (originally numbered 032; renumbered because feat/test-writer/generation-pipeline
+--  already carries 032_test_writer_p2.sql — see COORDINATION.md, 2026-08-07)
 --
 -- Spec: docs/specs/reliability/spec-iframe-selector-caching.md (backlog B9)
 --

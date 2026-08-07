@@ -1,6 +1,7 @@
 # Spec: iframe-resolved elements never reach the cache
 
 Created: 2026-08-05
+Updated: 2026-08-07 — migration renumbered 032 → 033 (test-writer branch owns 032)
 
 Backlog item **B9** in [spec-feature-backlog.md](../roadmap/spec-feature-backlog.md).
 Sibling of [spec-assertion-selector-caching.md](./spec-assertion-selector-caching.md) (B19) —
@@ -91,7 +92,7 @@ normally. A miss costs one LLM call; a false hit costs a red run on a healthy si
 
 ## 4. Design
 
-### 4.1 Storage — migration 032
+### 4.1 Storage — migration 033
 
 ```sql
 ALTER TABLE selector_cache ADD COLUMN IF NOT EXISTS frame_url TEXT;
