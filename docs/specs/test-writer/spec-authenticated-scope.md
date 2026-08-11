@@ -693,13 +693,12 @@ that only appear behind auth:
    throwaway records with per-run unique seed data" and contains `submit`,
    `save`, `apply`, `send` (write-safety.ts:31-35). Behind auth those verbs
    *overwrite the signed-in account's real settings* — the per-suite
-   `allow_synthetic_data` flag would then be authorizing something the tenant
-   never agreed to, since its consent copy promises disposable records. For
-   v1, the conservative cut: **in authenticated jobs, SYNTHETIC-matched
-   scenarios are written but held as unvalidated drafts** regardless of the
-   synthetic flag, with the existing `consent`-stage rejection entry
-   explaining why. Raising them to validated requires a distinct grant, which
-   §7's matrix does not currently offer and P3 does not invent.
+   `allow_synthetic_data` flag then authorizes something heavier than the
+   phrase suggests. **The rule (revised 2026-08-07, see §7):** the suite flag
+   governs — SYNTHETIC-matched scenarios are held unvalidated when it is OFF
+   and validated when it is ON — but the rejection wording and the §11 consent
+   copy must both say what it means under auth, because "creates throwaway
+   data" misdescribes saving to a real account.
 
 Plus a grounding rule, which is the cheapest of the three because it removes
 the possibility rather than filtering it: **in authenticated jobs, pages
@@ -1051,7 +1050,7 @@ they get closed, not where they were introduced.
 | 3b | **Secret/PII egress from captured content** | A signed-in `/api-keys`, `/billing` or `/members` page renders live secrets and personal data, which normal capture writes into `page_elements` + `ax_outline` + a screenshot, then sends to the LLM provider for classification | §5.2's two-tier rule: Tier A captures URL + title only (no survey, no screenshot, no classification call); Tier B is scrubbed with `scrubSecrets` + email/phone/digit redaction before persistence and before any prompt, screenshots off by default |
 | 4 | Prompt injection from authenticated page content | crawled text now includes PRIVATE pages feeding COMPREHEND/PLAN prompts; an injected instruction could try to steer generation toward destructive actions executed by a SIGNED-IN proving run | Same delimit-as-untrusted + ignore-embedded-instructions posture (umbrella §13.3) — and the hard backstops are code, not prompts: the write-phase graduated safety filter and the recon classifier cannot be talked out of their lexicons; the hostile-page fixture suite gains a behind-login variant |
 | 5 | Unsafe action as a signed-in user — **by the crawler** | probes/navigation on a live account | §5.2 in full: token-normalized logout suppression with audit counts, two-tier sensitive-path rule, forms never submitted, ambiguity resolves to `mutating`, dialogs dismissed and narrowed during login |
-| 5b | Unsafe action as a signed-in user — **by the proving run** | the validation run executes generated steps as a real, possibly admin, user; the P2 write-safety lexicon was calibrated for anonymous scope and allows "Revoke" / "Remove" | §6.5: authenticated-scope `HARD_BLOCK` extension, SYNTHETIC held unvalidated, sensitive pages excluded from grounding so the step cannot be written at all |
+| 5b | Unsafe action as a signed-in user — **by the proving run** | the validation run executes generated steps as a real, possibly admin, user; the P2 write-safety lexicon was calibrated for anonymous scope and allows "Revoke" / "Remove" | §6.5: authenticated-scope `HARD_BLOCK` extension (delete/revoke/disable/reset refused outright), SYNTHETIC gated on the suite flag with copy that states it saves as the real user, sensitive pages excluded from grounding so the step cannot be written at all |
 | 5c | Account lockout / rate-limit trip | ~N sign-ins per job, two concurrent, one credential | §5.1 sign-in budget: concurrency 1, per-job cap, minimum interval, and prefix-step failures classified `unvalidated` rather than `rejected` |
 | 6 | Consent bypass | a job crawls signed-in without a valid grant | Four independent layers, one of which had to be rebuilt: Zod + role + impersonation checks at the API, the widened DB CHECK (consent must name a consenter), the **row-authoritative** pipeline gate (§10.1 — the payload is not a trust boundary), and the crawler only receiving `auth` params the pipeline constructed from the row |
 | 6b | Arbitrary navigation via the login recipe | a `navigate` step in the recipe points at cloud metadata, loopback, or an internal service reachable from the container | §3.1: API-time off-origin rejection plus execution-time re-enforcement and private/link-local blocking |
@@ -1151,9 +1150,10 @@ sentences per tenant, and login steps normally arrive with a stored
 - **Precise public/private page partition** (unauthenticated probing) —
   §5.3's conservative marking + "run a public analyze first" covers v1.
 - **Per-suite standing auth consent** — rejected (§8.1).
-- **"Proving runs may save changes as the signed-in user"** — the third
-  consent grant §7 identifies. Until it exists, SYNTHETIC-matched scenarios in
-  authenticated jobs ship unvalidated (§6.5). P3.5.
+- **A third "may save as the signed-in user" grant** — considered and
+  REJECTED (§7). Two explicit consents already state the intent; a third would
+  be ceremony that leaves the highest-value scenario in any app permanently
+  unproven.
 - **Restricting report/media visibility for authenticated runs** — v1
   discloses the audience in the consent copy (§11) rather than changing
   access control mid-phase; flagged there as an open decision.
