@@ -5,11 +5,13 @@ import type { IChallengeDetector } from '../../execution-engine/challenge-detect
 import type { IObservability } from '../../observability/interfaces';
 import type { ScreenshotService } from '../../media/screenshot.service';
 import type { CrawlBudgets, CrawlReport, LinkCapture, PageCapture } from '../interfaces';
-import { classifyInteraction } from './safety';
+import { classifyInteraction, isSessionEndingUrl, sensitiveTier } from './safety';
 import { runProbes } from './probe';
 import { capturePageMeta, captureForms, captureLinks, condenseOutline } from './page-capture';
 import { normalizeUrl, isSameOrigin, pathOf } from './url-normalizer';
 import { fetchRobots, isAllowed } from './robots';
+import { acquireSession, isSessionLoss, type AuthSessionDeps, type LoginStep } from './auth-session';
+import { scrubCapture } from './capture-scrub';
 
 /**
  * RECON crawler — bounded, same-origin BFS with safety-gated interactive
@@ -26,6 +28,15 @@ export type CrawlParams = {
   jobId: string;
   targetUrl: string;
   budgets: CrawlBudgets;
+  /**
+   * Present only for consented authenticated jobs. The pipeline constructs this
+   * from the generation_jobs ROW (never from the queue payload — spec §10.1), so
+   * the crawler cannot be talked into signing in by a forged message.
+   */
+  auth?: {
+    loginCaseId: string;
+    steps: LoginStep[];
+  };
 };
 
 /** Called once per captured page, in crawl order — persist incrementally so a
@@ -39,7 +50,33 @@ export type ReconCrawlerDeps = {
   obs: IObservability;
   /** Optional — when absent, screenshotKey stays null (local dev without GCS). */
   screenshots?: ScreenshotService;
+  /**
+   * Execution seam for the login recipe. Required only when CrawlParams.auth is
+   * set; a public crawl never constructs it.
+   */
+  auth?: Pick<AuthSessionDeps, 'engine' | 'resolver' | 'assertionResolver'>;
 };
+
+/** What the authenticated crawl reports back. Absent on public jobs. */
+export type AuthCrawlReport = {
+  sessionVerification: 'assertion+heuristic' | 'heuristic' | null;
+  loginSteps: { total: number; passed: number };
+  reloginCount: number;
+  signInCount: number;
+  pagesBehindAuth: number;
+  probesSuppressed: number;
+  captureSuppressed: number;
+  sessionEndingBlocked: number;
+  endedEarly: 'session_lost' | null;
+  blockedReason: 'login_failed' | 'login_challenge' | 'login_budget_exhausted' | null;
+  blockedDetail: string | null;
+  /** Set by the pipeline, which knows the suite's history (spec §5.3). */
+  publicPartitionUnverified?: boolean;
+};
+
+/** Ceiling on sign-ins per job — see spec §5.1. Crawl + re-login only; proving
+ *  runs are counted by the validation runner against the same budget. */
+const MAX_SIGN_INS_PER_CRAWL = 3;
 
 const SURVEY_CAP = 60;
 
@@ -56,13 +93,29 @@ export class ReconCrawler {
 
     const robots = await fetchRobots(rootOrigin);
 
+    const authed = !!params.auth;
     const report: CrawlReport = {
       pagesCrawled: 0,
       pagesBlocked: 0,
       probesPerformed: 0,
-      authScope: 'public',
+      authScope: authed ? 'authenticated' : 'public',
       urlsSkippedByBudget: 0,
     };
+    const auth: AuthCrawlReport | null = authed
+      ? {
+          sessionVerification: null,
+          loginSteps: { total: params.auth!.steps.length, passed: 0 },
+          reloginCount: 0,
+          signInCount: 0,
+          pagesBehindAuth: 0,
+          probesSuppressed: 0,
+          captureSuppressed: 0,
+          sessionEndingBlocked: 0,
+          endedEarly: null,
+          blockedReason: null,
+          blockedDetail: null,
+        }
+      : null;
 
     const startedAt = Date.now();
     const visited = new Set<string>();
@@ -92,7 +145,52 @@ export class ReconCrawler {
     });
     page.on('dialog', (dialog: any) => void dialog.dismiss().catch(() => {}));
 
+    // ── Session acquisition (authenticated scope only) ──────────────────────
+    // Runs BEFORE the BFS so every navigation below is made as a signed-in user,
+    // on this same context. Spec §4.
+    let loginPageUrl: string | null = null;
+    const signIn = async (): Promise<boolean> => {
+      if (!params.auth || !auth) return false;
+      if (auth.signInCount >= MAX_SIGN_INS_PER_CRAWL) {
+        auth.blockedReason = 'login_budget_exhausted';
+        auth.blockedDetail =
+          `Kaizen stopped after ${auth.signInCount} sign-ins to avoid tripping your app's rate limits.`;
+        return false;
+      }
+      auth.signInCount++;
+      const result = await acquireSession(page, {
+        tenantId: params.tenantId,
+        rootOrigin,
+        steps: params.auth.steps,
+        domain: new URL(rootNormalized).hostname,
+        pageTimeoutMs: budgets.pageTimeoutMs,
+      }, { ...this.deps.auth!, challenges, obs });
+
+      auth.loginSteps.passed = result.stepsPassed;
+      if (!result.verified) {
+        auth.blockedReason = result.reason;
+        auth.blockedDetail = result.detail;
+        return false;
+      }
+      auth.sessionVerification = result.sessionVerification;
+      loginPageUrl = result.loginPageUrl;
+      return true;
+    };
+
     try {
+      if (authed) {
+        if (!await signIn()) {
+          report.auth = auth!;
+          return report;   // blocked — the pipeline surfaces auth.blockedReason
+        }
+        // The landed page is worth exploring too: it is the app's signed-in
+        // entry point, and it costs one page of budget.
+        const landed = normalizeUrl(page.url());
+        if (landed && landed !== rootNormalized && isSameOrigin(landed, rootOrigin)) {
+          queue.push({ url: landed, depth: 0 });
+        }
+      }
+
       while (queue.length > 0) {
         if (report.pagesCrawled + report.pagesBlocked >= budgets.maxPages) break;
         if (Date.now() - startedAt > budgets.jobTimeoutMs) {
@@ -103,6 +201,18 @@ export class ReconCrawler {
         const { url, depth } = queue.shift()!;
         if (visited.has(url)) continue;
         visited.add(url);
+
+        // Never navigate to a logout URL, in ANY scope. The BFS queue — not the
+        // click path — is how a crawler ends its own session: the classic logout
+        // is an icon link with no accessible name that classifies as ordinary
+        // navigation. A public-scope GET /logout is harmless only by luck.
+        //
+        // Filtered at enqueue (below) AND here: the seed URL and the post-login
+        // landing URL enter the queue without passing that filter.
+        if (isSessionEndingUrl(url)) {
+          obs.increment('testwriter.session_ending_url_blocked');
+          continue;
+        }
 
         if (!isAllowed(robots, pathOf(url))) {
           report.pagesBlocked++;
@@ -133,15 +243,58 @@ export class ReconCrawler {
           continue; // never attempt bypass (spec §2.2)
         }
 
-        const meta = await capturePageMeta(page);
-        const landed = normalizeUrl(page.url()) ?? url;
+        let meta = await capturePageMeta(page);
+        let landed = normalizeUrl(page.url()) ?? url;
+
+        // ── Session-loss detection (authenticated scope) ─────────────────────
+        // Same predicate the public crawler uses for auth walls, plus: landing
+        // on the recorded login URL is a loss whether or not the form rendered.
+        // One re-login, then stop with a partial model — everything captured so
+        // far is already persisted, and partial knowledge is still knowledge.
+        if (auth && isSessionLoss(landed, url, loginPageUrl, meta.hasVisiblePasswordInput)) {
+          if (auth.reloginCount >= 1 || !await signIn()) {
+            auth.endedEarly = 'session_lost';
+            obs.log('warn', 'testwriter.crawl_session_lost', {
+              jobId: params.jobId, pagesCrawled: report.pagesCrawled,
+            });
+            break;
+          }
+          auth.reloginCount++;
+          try {
+            await page.goto(url, { timeout: budgets.pageTimeoutMs, waitUntil: 'domcontentloaded' });
+            await page.waitForLoadState('networkidle', { timeout: 5_000 }).catch(() => {});
+          } catch {
+            continue;
+          }
+          meta = await capturePageMeta(page);
+          landed = normalizeUrl(page.url()) ?? url;
+          // Still walled after a fresh sign-in: this page is simply not ours to see.
+          if (isSessionLoss(landed, url, loginPageUrl, meta.hasVisiblePasswordInput)) {
+            await sink(authWallCapture(url), pageIndex++);
+            report.pagesCrawled++;
+            continue;
+          }
+        }
 
         // Auth-wall detection (public scope): a redirect that lands on a page
         // with a password input is a login wall — record the requested URL as
         // requires_auth and do NOT crawl beyond it. Spec §5.
-        if (landed !== url && meta.hasVisiblePasswordInput) {
+        if (!auth && landed !== url && meta.hasVisiblePasswordInput) {
           await sink(authWallCapture(url), pageIndex++);
           report.pagesCrawled++;
+          continue;
+        }
+
+        // ── Tier A: reading IS the exposure ─────────────────────────────────
+        // /api-keys and /billing render live secrets on a signed-in account.
+        // Record URL + title only: no survey, no forms, no screenshot, no
+        // ax_outline, and therefore no classification call. Spec §5.2.
+        if (auth && sensitiveTier(landed) === 'capture-suppressed') {
+          auth.captureSuppressed++;
+          auth.pagesBehindAuth++;
+          await sink(suppressedCapture(landed, meta.title), pageIndex++);
+          report.pagesCrawled++;
+          obs.increment('testwriter.capture_suppressed');
           continue;
         }
 
@@ -154,11 +307,28 @@ export class ReconCrawler {
         const links = await captureLinks(page, page.url(), rootOrigin);
 
         // Safety gate: ONLY safe-reveal candidates are ever probed.
-        const safeReveals = survey.filter(
-          (c) => classifyInteraction(c, { rootOrigin, pageUrl: page.url() }) === 'safe-reveal',
-        );
+        const classified = survey.map((c) => ({
+          node: c,
+          verdict: classifyInteraction(c, { rootOrigin, pageUrl: page.url() }),
+        }));
+        const safeReveals = classified.filter((c) => c.verdict === 'safe-reveal').map((c) => c.node);
+
+        // Count the logout CONTROLS we refused, not only the logout URLs. The
+        // dogfood reported sessionEndingBlocked: 0 on a page with a visible
+        // "Sign out" button — correctly suppressed, silently uncounted, because
+        // the audit only tallied the frontier filter. An audit trail that misses
+        // the case it exists to record is not one.
+        if (auth) {
+          auth.sessionEndingBlocked += classified.filter((c) => c.verdict === 'session-ending').length;
+        }
+        // Tier B: capture the page, but never probe it. On a settings page a
+        // misclassified toggle IS the user's configuration — reading is safe,
+        // revealing is not. One auditable decision per page. Spec §5.2.
+        const passiveOnly = !!auth && sensitiveTier(landed) === 'passive-only';
+        if (passiveOnly && auth) auth.probesSuppressed++;
         const { reveals, probesPerformed } = await runProbes(
-          page, safeReveals, budgets.probesPerPage, { pageUrl: page.url(), rootOrigin, obs },
+          page, passiveOnly ? [] : safeReveals, budgets.probesPerPage,
+          { pageUrl: page.url(), rootOrigin, obs },
         );
         report.probesPerformed += probesPerformed;
 
@@ -168,8 +338,12 @@ export class ReconCrawler {
 
         const { outline, contentHash } = condenseOutline(survey, forms, meta.title, meta.headings);
 
+        // Tier B screenshots are off by default: on a signed-in members or
+        // profile page the PNG is the densest PII artifact in the system, and
+        // /media is readable by every workspace member. Re-enabled only by the
+        // P6 per-suite screenshot control. Spec §5.2.
         let screenshotKey: string | null = null;
-        if (screenshots) {
+        if (screenshots && !passiveOnly) {
           try {
             const png: Buffer = await page.screenshot({ timeout: 10_000 });
             screenshotKey = await screenshots.upload(
@@ -180,7 +354,7 @@ export class ReconCrawler {
           }
         }
 
-        const capture: PageCapture = {
+        let capture: PageCapture & { axOutline?: Record<string, unknown> } = {
           urlNormalized: landed,
           title: meta.title,
           headings: meta.headings,
@@ -190,26 +364,41 @@ export class ReconCrawler {
           revealedStates: reveals,
           contentHash,
           screenshotKey,
-          requiresAuth: false,
+          // Everything seen while signed in is private until proven otherwise.
+          // The repository preserves a prior public `false` so an authenticated
+          // re-crawl of the marketing pages cannot vandalise public knowledge.
+          requiresAuth: authed,
           blocked: null,
         };
         // ax_outline rides on the capture via condenseOutline in the repository;
         // pass it along without widening the shared type.
-        (capture as PageCapture & { axOutline?: Record<string, unknown> }).axOutline = outline;
+        capture.axOutline = outline;
 
+        // Tier B: redact secrets and PII before this reaches storage OR a prompt.
+        if (passiveOnly) capture = scrubCapture(capture);
+
+        if (auth) auth.pagesBehindAuth++;
         await sink(capture, pageIndex++);
         report.pagesCrawled++;
 
         if (depth + 1 <= budgets.maxDepth) {
           for (const link of outgoing) {
-            if (!visited.has(link.toUrlNormalized) && isSameOrigin(link.toUrlNormalized, rootOrigin)) {
-              queue.push({ url: link.toUrlNormalized, depth: depth + 1 });
+            if (visited.has(link.toUrlNormalized)) continue;
+            if (!isSameOrigin(link.toUrlNormalized, rootOrigin)) continue;
+            // Suppressed HERE, at enqueue — this is the audit point, because a
+            // logout URL that never enters the queue is never dequeued either.
+            if (isSessionEndingUrl(link.toUrlNormalized)) {
+              if (auth) auth.sessionEndingBlocked++;
+              obs.increment('testwriter.session_ending_url_blocked');
+              continue;
             }
+            queue.push({ url: link.toUrlNormalized, depth: depth + 1 });
           }
         }
       }
 
       report.urlsSkippedByBudget = queue.filter((q) => !visited.has(q.url)).length;
+      if (auth) report.auth = auth;
       return report;
     } finally {
       await context.close().catch(() => {});
@@ -231,6 +420,28 @@ function blockedCapture(url: string, blocked: 'challenge' | 'robots'): PageCaptu
     screenshotKey: null,
     requiresAuth: false,
     blocked,
+  };
+}
+
+/**
+ * A Tier A sensitive page: recorded so the site model is honest that it exists,
+ * with nothing captured from it. No survey, no forms, no screenshot, no outline
+ * — and because there is no outline, COMPREHEND never sends it to a prompt.
+ * Spec: docs/specs/test-writer/spec-authenticated-scope.md §5.2
+ */
+function suppressedCapture(url: string, title: string): PageCapture {
+  return {
+    urlNormalized: url,
+    title,
+    headings: [],
+    survey: [],
+    forms: [],
+    outgoingLinks: [],
+    revealedStates: [],
+    contentHash: createHash('sha256').update(`capture-suppressed:${url}`).digest('hex'),
+    screenshotKey: null,
+    requiresAuth: true,
+    blocked: 'capture-suppressed',
   };
 }
 

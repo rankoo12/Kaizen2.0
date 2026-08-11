@@ -6,9 +6,12 @@
  *   GET  /testwriter/jobs/:jobId    — job status + report + test plan (UI polls)
  *   GET  /suites/:suiteId/jobs      — job history for a suite
  *
- * All routes require JWT auth. Authenticated scope requires BOTH a login case
- * AND an explicit consent flag (also CHECK-constrained in migration 028) —
- * P1 additionally rejects it outright until the login-recipe flow (P3) lands.
+ * All routes require JWT auth. Authenticated scope additionally requires an
+ * admin/owner role, a non-impersonated session, an eligible login recipe, and
+ * explicit consent recorded with the consenting user and timestamp — the last
+ * of which migration 034 CHECK-constrains, so the audit trail is a schema
+ * guarantee rather than a convention this route happens to follow.
+ * Spec: docs/specs/test-writer/spec-authenticated-scope.md §3.1, §8
  */
 
 import type { FastifyInstance } from 'fastify';
@@ -23,6 +26,8 @@ import { prepareBrief, MAX_BRIEF_CHARS } from '../../modules/test-writer/brief-i
 import { OpenAITestWriterGateway } from '../../modules/llm-gateway/testwriter.gateway';
 import { PostgresBillingMeter } from '../../modules/billing-meter/postgres.billing-meter';
 import { PinoObservability } from '../../modules/observability/pino.observability';
+import { FORM_DATA_TOKENS } from '../../modules/test-data/generate';
+import { blockedDestinationReason } from '../../modules/test-writer/recon/destination-guard';
 
 const AnalyzeBody = z.object({
   targetUrl: z.string().url(),
@@ -49,6 +54,110 @@ const PlanApprovalBody = z.object({
   notes: z.string().max(2000).optional(),
 });
 
+/**
+ * Canonical origin for an app instance.
+ * Spec: docs/specs/test-writer/spec-authenticated-scope.md §3.1
+ *
+ * v1 is the identity function. The indirection exists for a collision that is
+ * already visible: B11 (CI integration) runs against PREVIEW deploys
+ * (`app-pr-123.vercel.app`) while the tenant's sign-in test lives on
+ * `app.example.com`, so a literal `===` would reject every CI-triggered
+ * authenticated job — exactly the case that matters most. B11 §5.1 defines a
+ * tenant-owner-configured alias table; when it exists this consults it and the
+ * integration point is one function rather than a change to the gate itself.
+ * Recorded in COORDINATION.md (2026-08-07).
+ */
+function resolveCanonicalOrigin(rawUrl: string): string | null {
+  try {
+    return new URL(rawUrl).origin;
+  } catch {
+    return null;
+  }
+}
+
+type EligibilityError = { error: string; message: string };
+
+/**
+ * Validates the login recipe before a job is ever created — a job that cannot
+ * sign in should never be enqueued. Returns null when the case is usable.
+ */
+async function checkLoginCase(
+  tenantId: string,
+  loginCaseId: string,
+  targetUrl: string,
+): Promise<EligibilityError | null> {
+  const { rows } = await getPool().query<{
+    status: string | null; base_url: string; steps: string[];
+  }>(
+    `SELECT c.status, c.base_url,
+            COALESCE(ARRAY_AGG(ts.raw_text ORDER BY tcs.position)
+                     FILTER (WHERE ts.raw_text IS NOT NULL), '{}') AS steps
+     FROM test_cases c
+     LEFT JOIN test_case_steps tcs ON tcs.case_id = c.id AND tcs.is_active = true
+     LEFT JOIN test_steps ts ON ts.id = tcs.step_id
+     WHERE c.id = $1 AND c.tenant_id = $2
+     GROUP BY c.id, c.status, c.base_url`,
+    [loginCaseId, tenantId],
+  );
+
+  const found = rows[0];
+  if (!found) {
+    return { error: 'LOGIN_CASE_NOT_FOUND', message: "That sign-in test wasn't found." };
+  }
+
+  // Drafts, validating and archived cases are unproven or retired; a sign-in
+  // recipe must be one the tenant actually trusts.
+  if ((found.status ?? 'active') !== 'active') {
+    return {
+      error: 'LOGIN_CASE_NOT_ACTIVE',
+      message: 'The sign-in test must be an approved, active test — this one is not.',
+    };
+  }
+
+  const caseOrigin = resolveCanonicalOrigin(found.base_url);
+  const targetOrigin = resolveCanonicalOrigin(targetUrl);
+  if (!caseOrigin || !targetOrigin || caseOrigin !== targetOrigin) {
+    return {
+      error: 'LOGIN_CASE_ORIGIN_MISMATCH',
+      message: "The sign-in test runs against a different site than the one you're analyzing.",
+    };
+  }
+
+  // base_url is metadata; the STEPS are what execute. A navigate step can point
+  // anywhere, including cloud metadata or an internal service reachable from the
+  // Test Writer container. auth-session re-enforces this at execution time.
+  const offOrigin = found.steps.find((text) => {
+    const match = /\b(?:https?:\/\/[^\s"'<>]+)/i.exec(text ?? '');
+    if (!match) return false;
+    const origin = resolveCanonicalOrigin(match[0].replace(/["'.,)]+$/, ''));
+    return origin !== null && origin !== targetOrigin;
+  });
+  if (offOrigin) {
+    return {
+      error: 'LOGIN_CASE_NAVIGATES_OFF_ORIGIN',
+      message: `That sign-in test navigates outside the site being analyzed ("${offOrigin.slice(0, 80)}").`,
+    };
+  }
+
+  // Validation runs inject random per-run values for the seed tokens
+  // (RunJobPayload.seedVariables), so a recipe typing {{password}} would sign in
+  // with a random string and fail every proving run.
+  const seedCollision = found.steps.find((text) =>
+    SEED_TOKEN_PATTERN.test(text ?? ''));
+  if (seedCollision) {
+    return {
+      error: 'LOGIN_CASE_USES_SEED_TOKENS',
+      message:
+        'This sign-in test uses {{email}}/{{password}} placeholders — Kaizen fills those with random data on proving runs. Use a test with fixed credentials or a sign-in button.',
+    };
+  }
+
+  return null;
+}
+
+const SEED_TOKEN_PATTERN = new RegExp(
+  `\\{\\{\\s*(?:${FORM_DATA_TOKENS.join('|')})\\s*\\}\\}`, 'i');
+
 export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
   const queue = createTestWriterQueue();
   const obs = new PinoObservability(app.log as never);
@@ -64,18 +173,54 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
     const body = parsed.data;
     const { tenantId } = request;
 
+    // Kaizen fetches this URL from inside our own network and hands back what it
+    // saw as page structure and screenshots — so an unbounded target is a
+    // server-side request forgery primitive: `http://169.254.169.254/latest/
+    // meta-data/iam/...` would return cloud credentials through the site model.
+    // Applies to EVERY scope. The public crawler carried this exposure since P1;
+    // the P3 dogfood is what surfaced it. Private networks are allowed only when
+    // the deployment opts in (local dev, self-hosted).
+    const blockedTarget = blockedDestinationReason(body.targetUrl);
+    if (blockedTarget) {
+      return reply.status(400).send({
+        error: 'TARGET_NOT_ALLOWED',
+        message: `Kaizen will not analyze a ${blockedTarget} address. Point it at a reachable public URL for the app you want tested.`,
+      });
+    }
+
     if (body.scope === 'authenticated') {
       if (!body.loginCaseId || !body.authConsent) {
         return reply.status(400).send({
           error: 'AUTH_CONSENT_REQUIRED',
-          message: 'Authenticated analysis requires a login case AND explicit consent (authConsent: true).',
+          message: 'Signed-in analysis needs a sign-in test and your explicit consent.',
         });
       }
-      // P3 gate — do not accept a job the pipeline cannot honor yet.
-      return reply.status(400).send({
-        error: 'AUTH_SCOPE_NOT_SUPPORTED',
-        message: 'Authenticated analysis is not available yet. Run a public analysis for now.',
-      });
+
+      // Consenting to Kaizen acting as a signed-in user on the tenant's own
+      // systems is an administrative grant, the same class as member management.
+      // Written positively rather than as a rank comparison: requireRole's
+      // `order[request.role] < order[minimum]` evaluates FALSE when role is
+      // undefined (the API-key path sets a tenant but no role), so a rank check
+      // here would fail OPEN if this route ever moves to requireTenant.
+      if (request.role !== 'admin' && request.role !== 'owner') {
+        return reply.status(403).send({
+          error: 'AUTH_SCOPE_REQUIRES_ADMIN',
+          message: 'Signed-in exploration can only be enabled by a workspace admin or owner.',
+        });
+      }
+
+      // An impersonated support session must not be able to grant this: the
+      // audit row would attribute the product's largest grant to a customer
+      // employee who never clicked it, which is worse than no audit trail.
+      if (request.isImpersonation) {
+        return reply.status(403).send({
+          error: 'AUTH_SCOPE_NOT_VIA_IMPERSONATION',
+          message: "Signed-in exploration can't be enabled from a support session.",
+        });
+      }
+
+      const eligibility = await checkLoginCase(tenantId, body.loginCaseId, body.targetUrl);
+      if (eligibility) return reply.status(400).send(eligibility);
     }
 
     const suiteExists = await withTenantTransaction(tenantId, async (client) => {
@@ -135,12 +280,21 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
       );
     }
 
+    // Consent is stamped with WHO granted it and WHEN — migration 034's CHECK
+    // refuses an authenticated job that names no consenter, so this is a schema
+    // guarantee rather than a convention this route happens to follow.
+    const isAuth = body.scope === 'authenticated';
     const { rows } = await getPool().query<{ id: string }>(
-      `INSERT INTO generation_jobs (tenant_id, suite_id, target_url, scope, auth_consent, login_case_id, options)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+      `INSERT INTO generation_jobs (
+         tenant_id, suite_id, target_url, scope, auth_consent, login_case_id,
+         auth_consented_by, auth_consented_at, options)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
        RETURNING id`,
       [tenantId, suiteId, body.targetUrl, body.scope, body.authConsent,
-        body.loginCaseId ?? null, JSON.stringify(body.options)],
+        body.loginCaseId ?? null,
+        isAuth ? request.userId : null,
+        isAuth ? new Date() : null,
+        JSON.stringify(body.options)],
     );
     const jobId = rows[0].id;
 

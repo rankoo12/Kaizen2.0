@@ -814,7 +814,11 @@ export class LLMElementResolver implements IElementResolver {
       // Frame-scoped entries stay out: the shared pool is keyed on (content_hash, domain) with no
       // frame dimension, so a consent-banner selector would be handed to other tenants as if it
       // lived in the main document. Promoting them needs its own key, not a default.
-      if (this.sharedPool && !selectorSet.frameUrl) {
+      //
+      // Behind-login resolutions stay out for a stronger reason: the pool is read by every tenant
+      // on the same domain, so contributing here would publish the structure of a customer's
+      // private, signed-in app. Spec: spec-authenticated-scope.md §4.1, §12 threat 3.
+      if (this.sharedPool && !selectorSet.frameUrl && !context.behindAuth) {
         void this.sharedPool.contribute({
           tenantId: context.tenantId,
           contentHash: step.targetHash,

@@ -195,7 +195,11 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
           ' but mark them "requiresSyntheticData": true — they will be proposed unvalidated.',
       input.scope === 'public'
         ? 'Scope is PUBLIC: never plan a scenario whose pages are marked REQUIRES_AUTH.'
-        : 'Scope is AUTHENTICATED.',
+        : 'Scope is AUTHENTICATED: every test will run signed in, because the sign-in'
+          + ' steps are prepended to it. So never plan a catalog entry marked'
+          + ' SIGNED-OUT-ONLY, and never plan a scenario whose premise is being logged'
+          + ' out (signing up, signing in, password reset, or expecting a redirect to'
+          + ' the login page) — those belong to a public analysis and cannot pass here.',
       UNTRUSTED_PREAMBLE,
       '',
       'Return only valid JSON matching exactly:',

@@ -4,6 +4,7 @@ import type { StepAST } from '../../types';
 import type { ILLMGateway } from '../llm-gateway/interfaces';
 import type { IObservability } from '../observability/interfaces';
 import { getPool } from '../../db/pool';
+import { isSecretStep, isTokenValue } from '../test-writer/secret-steps';
 
 /**
  * Phase 1 Implementation of ITestCompiler — Pure LearnedCompiler.
@@ -59,10 +60,22 @@ export class LearnedCompiler implements ITestCompiler {
   // L1: process-local hot cache — avoids repeated DB reads within a run
   private readonly cache = new Map<string, StepAST>();
 
+  /**
+   * Tenant billed for L3 fallback compiles. Defaults to the system tenant so
+   * every existing caller is unchanged; the Test Writer passes the job's tenant
+   * so its fallback compiles bill the customer who caused them
+   * (spec-generation-pipeline.md §3 promised this in P2 and it never shipped —
+   * spec-authenticated-scope.md §10.5).
+   */
+  private readonly billingTenantId: string;
+
   constructor(
     private readonly llmGateway: ILLMGateway,
     private readonly observability: IObservability,
-  ) {}
+    billingTenantId: string = SYSTEM_TENANT_ID,
+  ) {
+    this.billingTenantId = billingTenantId;
+  }
 
   private hash(text: string): string {
     return stepContentHash(text);
@@ -100,7 +113,7 @@ export class LearnedCompiler implements ITestCompiler {
 
       // L3 — LLM fallback
       this.observability.increment('compiler.cache_miss');
-      const llmAst = await this.llmGateway.compileStep(rawText, SYSTEM_TENANT_ID);
+      const llmAst = await this.llmGateway.compileStep(rawText, this.billingTenantId);
       const ast: StepAST = {
         ...llmAst,
         rawText,
@@ -108,8 +121,20 @@ export class LearnedCompiler implements ITestCompiler {
         targetHash: this.targetHash(llmAst.action, llmAst.targetDescription),
       };
 
-      // Write back to L2 and L1
-      await this.persistToDB(contentHash, ast);
+      // Write back to L2 and L1 — EXCEPT for credentials.
+      //
+      // compiled_ast_cache is global: content_hash is its only key, there is no
+      // tenant_id and no RLS (002_seed_compiled_ast_cache.sql). Its ast_json
+      // stores `value`, so persisting a compiled "type <literal> into the
+      // password field" publishes that password to every tenant, permanently,
+      // outside any offboarding purge. The step recompiles next time instead;
+      // that is a handful of sentences per tenant, and login steps normally
+      // arrive with a stored compiled_ast anyway.
+      if (isSecretStep(ast) || (ast.action === 'type' && ast.value && !isTokenValue(ast.value))) {
+        this.observability.increment('compiler.global_cache_write_skipped');
+      } else {
+        await this.persistToDB(contentHash, ast);
+      }
       this.cache.set(contentHash, ast);
 
       return ast;

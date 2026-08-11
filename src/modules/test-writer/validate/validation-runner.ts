@@ -3,6 +3,7 @@ import { getPool } from '../../../db/pool';
 import { createCase } from '../../../db/case-writer';
 import { generateFormData } from '../../test-data/generate';
 import type { RunJobPayload } from '../../../queue';
+import type { StepAST } from '../../../types';
 import type { IObservability } from '../../observability/interfaces';
 import type { OracleHarvest, ScenarioRejection } from '../../../types/test-writer';
 import type { WrittenScenario } from '../write/scenario-writer';
@@ -45,6 +46,13 @@ export class ValidationRunner {
     scenarios: WrittenScenario[];
     syntheticDataConsent: boolean;
     validate: boolean;
+    /**
+     * The tenant's sign-in steps, prepended to every generated draft so it is
+     * self-contained: each proving run signs in for itself, and a draft that
+     * passes is proven to work from a cold browser. Absent on public jobs.
+     * Spec: docs/specs/test-writer/spec-authenticated-scope.md §6.2, §7
+     */
+    loginPrefix?: Array<{ rawText: string; ast: StepAST }>;
   }): Promise<ValidationOutcome> {
     const outcome: ValidationOutcome = { proposed: [], rejected: [], harvest: {} };
     if (params.scenarios.length === 0) return outcome;
@@ -66,8 +74,14 @@ export class ValidationRunner {
       }
     };
 
+    // Authenticated jobs validate ONE at a time. Two concurrent proving runs
+    // sign in with the same credentials seconds apart, which is exactly the
+    // pattern that trips rate limiting, anomaly detection and account lockout —
+    // locking the customer out of the account they consented with. Sequential
+    // costs wall-clock, not correctness. Spec §5.1.
+    const concurrency = params.loginPrefix ? 1 : CONCURRENCY;
     await Promise.all(
-      Array.from({ length: Math.min(CONCURRENCY, params.scenarios.length) }, worker),
+      Array.from({ length: Math.min(concurrency, params.scenarios.length) }, worker),
     );
     return outcome;
   }
@@ -80,11 +94,20 @@ export class ValidationRunner {
     const consentBlocked = scenario.needsConsent && !params.syntheticDataConsent;
     const willRun = params.validate && !consentBlocked;
 
+    // Every scenario in an authenticated job carries the sign-in steps, not just
+    // the ones touching requires_auth pages: the whole site model describes the
+    // signed-in app, so any generated test must run signed in to reach what was
+    // observed. The prefix is ~free — its ASTs are copied, and its selectors are
+    // already warm in the tenant's cache from the login case's own runs.
+    const prefix = params.loginPrefix ?? [];
+    const prefixSteps = prefix.map((s) => ({ rawText: s.rawText, compiledAst: s.ast }));
+    const bodySteps = scenario.steps.map((s) => ({ rawText: s.text, compiledAst: s.ast }));
+
     const created = await createCase(params.tenantId, {
       suiteId: params.suiteId,
       name: scenario.name,
       baseUrl: params.baseUrl,
-      steps: scenario.steps.map((s) => ({ rawText: s.text, compiledAst: s.ast })),
+      steps: [...prefixSteps, ...bodySteps],
       // A case that will not be executed is proposed as a draft immediately;
       // one that will be executed waits for its evidence.
       status: willRun ? 'validating' : 'draft',
@@ -127,13 +150,37 @@ export class ValidationRunner {
     await this.runQueue.add('run', {
       runId,
       tenantId: params.tenantId,
-      compiledSteps: scenario.steps.map((s) => s.ast),
+      compiledSteps: [...prefix.map((s) => s.ast), ...scenario.steps.map((s) => s.ast)],
       stepIds: created.steps.map((s) => s.id),
       baseUrl: params.baseUrl,
       seedVariables: generateFormData(),
+      // Nothing this run learns behind the login wall may leave the tenant: no
+      // shared-pool contribution, no global archetype learning (spec §4.1).
+      behindAuth: prefix.length > 0,
     });
 
     const status = await this.pollToTerminal(runId);
+
+    // A run that died IN THE SIGN-IN PREFIX says nothing about the generated
+    // test. Recording it as `rejected` would blame the scenario for an app-side
+    // lockout or an expired account and teach the customer to distrust correct
+    // tests, so it is proposed unvalidated with an honest reason instead.
+    if (prefix.length > 0 && status !== 'passed' && status !== 'healed') {
+      const failedInPrefix = await this.failedWithinFirstSteps(runId, prefix.length);
+      if (failedInPrefix) {
+        await pool.query(`UPDATE test_cases SET status = 'draft' WHERE id = $1`, [created.id]);
+        outcome.proposed.push({
+          caseId: created.id, name: scenario.name, runId, validated: false, healed: false,
+        });
+        outcome.rejected.push({
+          name: scenario.name, stage: 'validation', runId,
+          reason: 'could not prove this test — signing in failed during validation, so the test itself is unproven rather than wrong',
+        });
+        this.obs.increment('testwriter.validation_signin_unavailable');
+        return;
+      }
+    }
+
     const verdict = this.judgeRun(scenario, status);
 
     // Harvest whatever the run observed after its last state change, so the
@@ -211,6 +258,25 @@ export class ValidationRunner {
    * recognise the real success/error text; a richer harvest needs a worker-side
    * capture (deferred — spec §5.1).
    */
+  /**
+   * True when the run's first failure landed inside the login prefix.
+   *
+   * step_index is stamped by the worker (migration 027), so "did it get past the
+   * sign-in steps" is a direct question rather than an inference from the error
+   * text. Rows predating that column are NULL and simply do not match, which
+   * degrades to the ordinary rejected path — the conservative direction.
+   */
+  private async failedWithinFirstSteps(runId: string, prefixLength: number): Promise<boolean> {
+    const { rows } = await getPool().query<{ step_index: number | null }>(
+      `SELECT step_index FROM step_results
+       WHERE run_id = $1 AND status = 'failed' AND step_index IS NOT NULL
+       ORDER BY step_index ASC LIMIT 1`,
+      [runId],
+    );
+    const first = rows[0]?.step_index;
+    return typeof first === 'number' && first < prefixLength;
+  }
+
   private async harvestRunState(runId: string): Promise<OracleHarvest | null> {
     const pool = getPool();
     const { rows } = await pool.query<{ message: string | null; data: Record<string, unknown> | null }>(

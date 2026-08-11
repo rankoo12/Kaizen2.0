@@ -226,6 +226,19 @@ export type ResolutionContext = {
    * Undefined when targetDescription is null (navigate/wait) — guard skipped.
    */
   stepEmbedding?: number[];
+  /**
+   * This resolution is happening on a behind-login page, so what it learns is
+   * the tenant's private knowledge and must not leave the tenant. Suppresses
+   * contribution to the SHARED selector pool (`is_shared`, `tenant_id NULL`),
+   * which every other tenant on the same domain reads. The tenant's own
+   * selector_cache write is unaffected — that is the tenant's memory of its own
+   * app, and suppressing it would make authenticated tests permanently cold.
+   *
+   * The worker sets this from RunJobPayload.behindAuth; the Test Writer's
+   * auth-session sets it for login-recipe execution during a crawl.
+   * Spec: docs/specs/test-writer/spec-authenticated-scope.md §4.1
+   */
+  behindAuth?: boolean;
 };
 
 /**

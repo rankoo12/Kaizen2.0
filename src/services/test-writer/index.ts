@@ -29,8 +29,15 @@ import { TestPlanner } from '../../modules/test-writer/plan/test-planner';
 import { ScenarioWriter } from '../../modules/test-writer/write/scenario-writer';
 import { ValidationRunner } from '../../modules/test-writer/validate/validation-runner';
 import { OpenAITestWriterGateway } from '../../modules/llm-gateway/testwriter.gateway';
+import { OpenAIGateway } from '../../modules/llm-gateway/openai.gateway';
 import { PostgresBillingMeter } from '../../modules/billing-meter/postgres.billing-meter';
 import { BrowserPool } from '../../workers/browser-pool';
+import { PlaywrightExecutionEngine } from '../../modules/execution-engine/playwright.execution-engine';
+import { CompositeElementResolver } from '../../modules/element-resolver/composite.element-resolver';
+import { CachedElementResolver } from '../../modules/element-resolver/cached.element-resolver';
+import { LLMElementResolver } from '../../modules/element-resolver/llm.element-resolver';
+import { ArchetypeElementResolver } from '../../modules/element-resolver/archetype.element-resolver';
+import { DBArchetypeResolver } from '../../modules/element-resolver/db.archetype-resolver';
 import {
   createRedisConnection, createRunQueue, TESTWRITER_QUEUE_NAME, type TestWriterJobPayload,
 } from '../../queue';
@@ -45,12 +52,60 @@ const logger = pino({
 
 const obs = new PinoObservability(logger);
 const pool = new BrowserPool();
+const domPruner = new PlaywrightDOMPruner();
+
+// ── Login-recipe execution seam (P3) ─────────────────────────────────────────
+// The crawler needs to RUN the tenant's sign-in test before the BFS starts, so
+// it needs the same engine + resolver the worker uses. One deliberate
+// difference: LLMElementResolver is constructed WITHOUT a SharedPoolService.
+//
+// Copying the worker's wiring verbatim would silently break the absolute
+// shared-pool prohibition — `persistToCache` contributes to `selector_cache`
+// rows with `is_shared = true, tenant_id NULL`, which every other tenant on the
+// same domain reads. Behind a login wall those selectors describe a customer's
+// private app. The tenant's OWN cache still fills, which is what keeps an
+// authenticated draft's login prefix cheap.
+// Spec: docs/specs/test-writer/spec-authenticated-scope.md §4.1, §12 threat 3.
+const cacheRedis = createRedisConnection();
+cacheRedis.on('error', (err) =>
+  obs.log('warn', 'redis.cache_connection_error', { error: err.message }));
+
+const llm = new OpenAIGateway(new PostgresBillingMeter(obs), obs, undefined, cacheRedis);
+const authResolver = new CompositeElementResolver(
+  [
+    new ArchetypeElementResolver(domPruner, new DBArchetypeResolver(obs), obs),
+    new CachedElementResolver(cacheRedis, llm, obs),
+    new LLMElementResolver(domPruner, llm, obs, /* sharedPool */ undefined, cacheRedis),
+  ],
+  obs,
+  llm,
+);
+
+// Assertions verify the page as it is NOW: skip the cached resolver entirely and
+// never write back, exactly as the run worker does. A cached "verify X" selector
+// is a stale answer to a question about the current DOM.
+const authAssertionResolver = new CompositeElementResolver(
+  [
+    new ArchetypeElementResolver(domPruner, new DBArchetypeResolver(obs), obs),
+    new LLMElementResolver(domPruner, llm, obs, /* sharedPool */ undefined, cacheRedis, {
+      cacheReads: true, cacheWrites: false,
+    }),
+  ],
+  obs,
+  llm,
+);
+
 const crawler = new ReconCrawler({
   pool,
-  surveyor: new PlaywrightDOMPruner(),
+  surveyor: domPruner,
   challenges: new PageChallengeDetector(),
   obs,
   screenshots: new ScreenshotService(obs),
+  auth: {
+    engine: new PlaywrightExecutionEngine(obs),
+    resolver: authResolver,
+    assertionResolver: authAssertionResolver,
+  },
 });
 const repository = new SiteModelRepository();
 
@@ -69,6 +124,10 @@ const deps = {
   planner: new TestPlanner(gateway, obs),
   writer: new ScenarioWriter(gateway, obs),
   validator: new ValidationRunner(runQueue, obs),
+  // Compiles login-recipe steps that have no stored AST (spec §4.1). Billed to
+  // the job's tenant, and never written to the global compile cache when the
+  // step carries a literal value (§12.3).
+  llm,
 };
 
 const worker = new Worker<TestWriterJobPayload>(

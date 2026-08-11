@@ -48,6 +48,28 @@ export class SiteModelRepository {
     suiteId: string,
     capture: PageCapture & { axOutline?: Record<string, unknown> },
   ): Promise<string> {
+    // requires_auth semantics are mode-dependent (spec-authenticated-scope.md §5.3).
+    //
+    // Public scope: the fresh public observation is authoritative in both
+    // directions — a formerly-walled page that is now public flips to false.
+    //
+    // Authenticated scope: an authenticated crawl visits genuinely public pages
+    // (home, pricing) through the same BFS, so overwriting with `true` would
+    // mislabel them. Preserve any prior verdict and default only NEW rows to
+    // true. Erring toward private is the only acceptable direction: a private
+    // page mislabeled public would leak into public-scope plans, while a public
+    // page mislabeled private merely narrows planning.
+    //
+    // Blocked captures are excluded entirely. blockedCapture() hardcodes
+    // requiresAuth:false, so a challenge or robots block during an authenticated
+    // re-crawl would otherwise flip a correctly-private page to public — a page
+    // nobody could read is evidence about the crawl, not about the page.
+    const requiresAuthSql = capture.blocked
+      ? 'site_pages.requires_auth'
+      : capture.requiresAuth
+        ? 'site_pages.requires_auth AND EXCLUDED.requires_auth'
+        : 'EXCLUDED.requires_auth';
+
     return withTenantTransaction(tenantId, async (client) => {
       const { rows } = await client.query<{ id: string }>(
         `INSERT INTO site_pages (
@@ -59,7 +81,7 @@ export class SiteModelRepository {
            headings = EXCLUDED.headings,
            ax_outline = EXCLUDED.ax_outline,
            content_hash = EXCLUDED.content_hash,
-           requires_auth = EXCLUDED.requires_auth,
+           requires_auth = ${requiresAuthSql},
            screenshot_key = COALESCE(EXCLUDED.screenshot_key, site_pages.screenshot_key),
            last_crawled_at = now(),
            -- content_hash-keyed classification cache: a re-crawl only invalidates
@@ -199,6 +221,30 @@ export class SiteModelRepository {
     });
   }
 
+  /**
+   * True when this suite has never observed a page as PUBLIC.
+   * Spec: docs/specs/test-writer/spec-authenticated-scope.md §5.3
+   *
+   * An authenticated crawl defaults new pages to `requires_auth = true`, which
+   * errs in the only acceptable direction but cannot distinguish "we watched
+   * this page redirect to login" from "we never checked". When no public crawl
+   * has ever run for the suite, EVERY mark is the conservative default — so the
+   * report says so rather than presenting a guess as a finding. The user's fix
+   * is one public analyze, which is authoritative in both directions and
+   * corrects the whole partition.
+   */
+  async hasPublicObservation(tenantId: string, suiteId: string): Promise<boolean> {
+    return withTenantTransaction(tenantId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT 1 FROM site_pages
+         WHERE tenant_id = $1 AND suite_id = $2 AND requires_auth = false
+         LIMIT 1`,
+        [tenantId, suiteId],
+      );
+      return rows.length > 0;
+    });
+  }
+
   async listClassifiedPages(tenantId: string, suiteId: string): Promise<ClassifiedPage[]> {
     return withTenantTransaction(tenantId, async (client) => {
       const { rows } = await client.query<{
@@ -292,8 +338,23 @@ export class SiteModelRepository {
    * exists to pre-seed the tenant's selector cache so the proving run doesn't
    * pay the model to rediscover what the crawl already found (§5.2).
    */
+  /**
+   * Elements WRITE may cite, capped per page.
+   *
+   * The cap is a prompt-budget control: every element costs roughly 15 tokens
+   * in the WRITE prompt, so 80 is ~1.2k tokens per page against a measured
+   * ~6k-token generateScenario call. 40 was arbitrary and too low for a dense
+   * app — Kaizen's own tests page carries 56 interactive elements, and a B2B
+   * table with per-row actions runs well past 100, so the cap was silently
+   * deciding which flows were writable.
+   *
+   * Note for multi-page scenarios: this is PER PAGE, so a 3-page scenario now
+   * admits up to 240 elements. If that proves expensive, taper by page count
+   * rather than dropping the cap back — losing the only text field on a page is
+   * far more costly than a few hundred tokens.
+   */
   async getGroundingElements(
-    tenantId: string, suiteId: string, urls: string[], perPageCap = 40,
+    tenantId: string, suiteId: string, urls: string[], perPageCap = 80,
   ): Promise<GroundingElement[]> {
     if (urls.length === 0) return [];
     return withTenantTransaction(tenantId, async (client) => {
@@ -301,21 +362,36 @@ export class SiteModelRepository {
         id: string; page_url: string; role: string; name: string;
         kind: string; revealed_by: string | null; selector: string | null; rn: string;
       }>(
+        // The per-page cap is ROUND-ROBIN ACROSS KINDS, not a flat alphabetical
+        // slice. Ordering by (kind, name) and cutting at 40 sorted 'button'
+        // ahead of 'input' and 'other', so on a button-heavy page every text
+        // field fell off the end: the P3 dogfood handed WRITE 40 buttons and
+        // ZERO inputs, then asked it to type a search query. It cited a button,
+        // the schema gate rejected it, and the job proposed nothing — four runs
+        // in a row, with the real field sitting at row 47.
+        //
+        // Ranking within each kind first and interleaving guarantees the scarce
+        // kinds survive: you cannot write a form test without an input, and the
+        // 41st button is worth far less than the 1st text field.
         `SELECT id, page_url, role, name, kind, revealed_by, selector, rn FROM (
-           SELECT pe.id, sp.url_normalized AS page_url, pe.role, pe.name, pe.kind,
-                  pe.revealed_by, pe.selector,
-                  ROW_NUMBER() OVER (PARTITION BY pe.page_id ORDER BY pe.kind, pe.name) AS rn
-           FROM page_elements pe
-           JOIN site_pages sp ON sp.id = pe.page_id
-           WHERE pe.tenant_id = $1 AND sp.suite_id = $2
-             AND sp.url_normalized = ANY($3::text[])
-             AND pe.name <> ''
-             -- Form rows are CONTEXT, not targets: they are stored so the model
-             -- can see a page's form shapes (passed separately as summaries),
-             -- but a <form> is not something you can type into. Leaving them
-             -- citable had the writer typing into forms whenever the real field
-             -- was hidden behind a modal.
-             AND pe.kind <> 'form'
+           SELECT id, page_url, role, name, kind, revealed_by, selector,
+                  ROW_NUMBER() OVER (PARTITION BY page_id ORDER BY kind_rank, kind, name) AS rn
+           FROM (
+             SELECT pe.id, sp.url_normalized AS page_url, pe.role, pe.name, pe.kind,
+                    pe.revealed_by, pe.selector, pe.page_id,
+                    ROW_NUMBER() OVER (PARTITION BY pe.page_id, pe.kind ORDER BY pe.name) AS kind_rank
+             FROM page_elements pe
+             JOIN site_pages sp ON sp.id = pe.page_id
+             WHERE pe.tenant_id = $1 AND sp.suite_id = $2
+               AND sp.url_normalized = ANY($3::text[])
+               AND pe.name <> ''
+               -- Form rows are CONTEXT, not targets: they are stored so the model
+               -- can see a page's form shapes (passed separately as summaries),
+               -- but a <form> is not something you can type into. Leaving them
+               -- citable had the writer typing into forms whenever the real field
+               -- was hidden behind a modal.
+               AND pe.kind <> 'form'
+           ) by_kind
          ) ranked
          WHERE rn <= $4`,
         [tenantId, suiteId, urls, perPageCap],

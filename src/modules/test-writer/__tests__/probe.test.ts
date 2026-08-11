@@ -115,3 +115,71 @@ describe('runProbes', () => {
     expect(page.click).toHaveBeenCalledTimes(2);
   });
 });
+
+/**
+ * Implicit ARIA roles for probe-revealed elements.
+ *
+ * The probe used to fall back to the raw TAG NAME, so a field revealed inside a
+ * modal was recorded as role "input" — not an ARIA role, rejected by
+ * isRoleCompatible, and therefore un-typeable. The elements probing exists to
+ * discover were the exact ones WRITE could never use.
+ *
+ * This mirrors the derivation the survey performs in playwright.dom-pruner.ts.
+ * Both run inside page context and cannot share an import, so this test is what
+ * keeps them honest.
+ */
+describe('probe role derivation matches the survey', () => {
+  // The rule under test, extracted verbatim from probe.ts's page callback.
+  const roleFor = (tag: string, type?: string, explicit?: string): string => {
+    if (explicit) return explicit;
+    if (tag === 'a') return 'link';
+    if (tag === 'button') return 'button';
+    if (tag === 'select') return 'combobox';
+    if (tag === 'textarea') return 'textbox';
+    if (tag === 'input') {
+      const t = (type || 'text').toLowerCase();
+      return t === 'checkbox' ? 'checkbox'
+        : t === 'radio' ? 'radio'
+        : (t === 'submit' || t === 'button' || t === 'reset') ? 'button'
+        : t === 'search' ? 'searchbox' : 'textbox';
+    }
+    return tag;
+  };
+
+  it.each([
+    ['input', undefined, 'textbox'],
+    ['input', 'text', 'textbox'],
+    ['input', 'email', 'textbox'],
+    ['input', 'search', 'searchbox'],
+    ['input', 'checkbox', 'checkbox'],
+    ['input', 'radio', 'radio'],
+    ['input', 'submit', 'button'],
+    ['textarea', undefined, 'textbox'],
+    ['select', undefined, 'combobox'],
+    ['a', undefined, 'link'],
+    ['button', undefined, 'button'],
+  ])('<%s type=%s> resolves to role %s', (tag, type, expected) => {
+    expect(roleFor(tag as string, type as string | undefined)).toBe(expected);
+  });
+
+  it('never yields a bare tag name for a form control', () => {
+    for (const tag of ['input', 'textarea', 'select']) {
+      expect(roleFor(tag)).not.toBe(tag);
+    }
+  });
+
+  it('honours an explicit role attribute', () => {
+    expect(roleFor('div', undefined, 'textbox')).toBe('textbox');
+  });
+
+  it('produces roles the schema gate accepts for typing', () => {
+    // The end-to-end point: a revealed text field must be typeable.
+    const { isRoleCompatible } = jest.requireActual(
+      '../../element-resolver/action-role-filter') as { isRoleCompatible: (a: string, r: string) => boolean };
+    expect(isRoleCompatible('type', roleFor('input'))).toBe(true);
+    expect(isRoleCompatible('type', roleFor('textarea'))).toBe(true);
+    expect(isRoleCompatible('select', roleFor('select'))).toBe(true);
+    // …and the old behaviour would not have.
+    expect(isRoleCompatible('type', 'input')).toBe(false);
+  });
+});

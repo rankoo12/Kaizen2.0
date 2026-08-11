@@ -70,6 +70,36 @@ export type GenerationReport = {
   plan?: { scenariosPlanned: number; fromCatalog: number; fromLlm: number };
   write?: { attempted: number; written: number; deduped: number; survivedJudge: number };
   validate?: { proposed: number; validated: number; unvalidated: number };
+  /**
+   * Signed-in exploration outcome. Present only on `scope: 'authenticated'` jobs.
+   * Spec: docs/specs/test-writer/spec-authenticated-scope.md §10.3
+   */
+  auth?: {
+    /** How the session was proven. Null when the job never got that far. */
+    sessionVerification: 'assertion+heuristic' | 'heuristic' | null;
+    loginSteps: { total: number; passed: number };
+    /** Times the session dropped mid-crawl and was restored (max 1). */
+    reloginCount: number;
+    /** Total sign-ins performed, capped so a flaky app can't be hammered. */
+    signInCount: number;
+    pagesBehindAuth: number;
+    /** Tier B pages captured but never probed. */
+    probesSuppressed: number;
+    /** Tier A pages recorded as URL + title only — reading them IS the exposure. */
+    captureSuppressed: number;
+    /** Logout URLs the crawler saw and refused — the audit trail. */
+    sessionEndingBlocked: number;
+    endedEarly: 'session_lost' | null;
+    blockedReason: 'login_failed' | 'login_challenge' | 'login_budget_exhausted' | null;
+    blockedDetail: string | null;
+    /**
+     * True when no public crawl has ever run for this suite, so every
+     * requires_auth mark is a conservative default. Render as guidance
+     * ("run a public analysis to tell public pages from private ones"),
+     * never as a failure.
+     */
+    publicPartitionUnverified?: boolean;
+  };
   /** Per-phase spend, read from billing_events so it agrees with the invoice. */
   tokenUsage?: Record<string, number>;
   rejected?: ScenarioRejection[];

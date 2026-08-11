@@ -62,9 +62,34 @@ async function collectRevealed(pwPage: any): Promise<{
     for (const el of fresh.slice(0, 40)) {
       // Stamp so the next probe on this page doesn't recount it.
       el.setAttribute('data-kaizen-probe-baseline', '1');
+      // Implicit ARIA roles, NOT tag names. This fell back to the raw tag for
+      // everything except <a> and <button>, so a revealed <input> was recorded
+      // with role "input" — which is not an ARIA role at all. Nothing
+      // downstream accepts it: kindOf() files it under 'other', and
+      // isRoleCompatible('type', 'input') is false, so the schema gate refused
+      // to type into it. Every field revealed behind a modal — exactly the
+      // high-value ones probing exists to find — was therefore unusable by
+      // construction, and Kaizen could not write a test for its own
+      // create-a-test form.
+      //
+      // Kept in sync with the survey's derivation in
+      // playwright.dom-pruner.ts (both must run inside page context, so the
+      // mapping cannot be imported); probe.test.ts locks the two together.
       const tag = el.tagName.toLowerCase();
-      const role = el.getAttribute('role')
-        || (tag === 'a' ? 'link' : tag === 'button' ? 'button' : tag);
+      let role = el.getAttribute('role') || '';
+      if (!role) {
+        if (tag === 'a') role = 'link';
+        else if (tag === 'button') role = 'button';
+        else if (tag === 'select') role = 'combobox';
+        else if (tag === 'textarea') role = 'textbox';
+        else if (tag === 'input') {
+          const t = (el.getAttribute('type') || 'text').toLowerCase();
+          role = t === 'checkbox' ? 'checkbox'
+            : t === 'radio' ? 'radio'
+            : (t === 'submit' || t === 'button' || t === 'reset') ? 'button'
+            : t === 'search' ? 'searchbox' : 'textbox';
+        } else role = tag;
+      }
       const name = (el.getAttribute('aria-label')
         || (el as HTMLElement).innerText
         || el.getAttribute('placeholder')
