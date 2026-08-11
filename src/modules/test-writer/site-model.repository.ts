@@ -338,8 +338,23 @@ export class SiteModelRepository {
    * exists to pre-seed the tenant's selector cache so the proving run doesn't
    * pay the model to rediscover what the crawl already found (§5.2).
    */
+  /**
+   * Elements WRITE may cite, capped per page.
+   *
+   * The cap is a prompt-budget control: every element costs roughly 15 tokens
+   * in the WRITE prompt, so 80 is ~1.2k tokens per page against a measured
+   * ~6k-token generateScenario call. 40 was arbitrary and too low for a dense
+   * app — Kaizen's own tests page carries 56 interactive elements, and a B2B
+   * table with per-row actions runs well past 100, so the cap was silently
+   * deciding which flows were writable.
+   *
+   * Note for multi-page scenarios: this is PER PAGE, so a 3-page scenario now
+   * admits up to 240 elements. If that proves expensive, taper by page count
+   * rather than dropping the cap back — losing the only text field on a page is
+   * far more costly than a few hundred tokens.
+   */
   async getGroundingElements(
-    tenantId: string, suiteId: string, urls: string[], perPageCap = 40,
+    tenantId: string, suiteId: string, urls: string[], perPageCap = 80,
   ): Promise<GroundingElement[]> {
     if (urls.length === 0) return [];
     return withTenantTransaction(tenantId, async (client) => {
