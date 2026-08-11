@@ -1299,11 +1299,16 @@ The three questions this spec deferred, now resolved by the product owner.
 ### 16.1 Keep the admin-or-owner gate (§8.3)
 
 Signing into a customer's system is the largest grant in the product and
-belongs with member management. **The gate stands; the dogfood adapts.** If the
-demo tenant's users are plain members, the acceptance run uses the workspace
-OWNER — every workspace has one by construction, so no fixture is blocked and
-no dev-mode exception is needed. Bending a security boundary to fit a test
-fixture is the wrong direction: the fixture is the cheap thing to change.
+belongs with member management. **The gate stands; the dogfood adapts.**
+Bending a security boundary to fit a test fixture is the wrong direction — the
+fixture is the cheap thing to change, and every workspace has an owner by
+construction.
+
+**Verified on the shared dev DB (2026-08-07): the concern does not arise.**
+Every membership row is `owner`, including `test@test.com` in "Demo user's
+Workspace", so the gate blocks no existing account and the acceptance run needs
+no role bump. Recorded as a fact rather than an assumption because the opposite
+would have been discovered mid-dogfood.
 
 ### 16.2 Disclose the audience; do not restrict it (§11)
 
