@@ -307,9 +307,20 @@ export class ReconCrawler {
         const links = await captureLinks(page, page.url(), rootOrigin);
 
         // Safety gate: ONLY safe-reveal candidates are ever probed.
-        const safeReveals = survey.filter(
-          (c) => classifyInteraction(c, { rootOrigin, pageUrl: page.url() }) === 'safe-reveal',
-        );
+        const classified = survey.map((c) => ({
+          node: c,
+          verdict: classifyInteraction(c, { rootOrigin, pageUrl: page.url() }),
+        }));
+        const safeReveals = classified.filter((c) => c.verdict === 'safe-reveal').map((c) => c.node);
+
+        // Count the logout CONTROLS we refused, not only the logout URLs. The
+        // dogfood reported sessionEndingBlocked: 0 on a page with a visible
+        // "Sign out" button — correctly suppressed, silently uncounted, because
+        // the audit only tallied the frontier filter. An audit trail that misses
+        // the case it exists to record is not one.
+        if (auth) {
+          auth.sessionEndingBlocked += classified.filter((c) => c.verdict === 'session-ending').length;
+        }
         // Tier B: capture the page, but never probe it. On a settings page a
         // misclassified toggle IS the user's configuration — reading is safe,
         // revealing is not. One auditable decision per page. Spec §5.2.

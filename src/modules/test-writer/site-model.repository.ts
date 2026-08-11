@@ -347,21 +347,36 @@ export class SiteModelRepository {
         id: string; page_url: string; role: string; name: string;
         kind: string; revealed_by: string | null; selector: string | null; rn: string;
       }>(
+        // The per-page cap is ROUND-ROBIN ACROSS KINDS, not a flat alphabetical
+        // slice. Ordering by (kind, name) and cutting at 40 sorted 'button'
+        // ahead of 'input' and 'other', so on a button-heavy page every text
+        // field fell off the end: the P3 dogfood handed WRITE 40 buttons and
+        // ZERO inputs, then asked it to type a search query. It cited a button,
+        // the schema gate rejected it, and the job proposed nothing — four runs
+        // in a row, with the real field sitting at row 47.
+        //
+        // Ranking within each kind first and interleaving guarantees the scarce
+        // kinds survive: you cannot write a form test without an input, and the
+        // 41st button is worth far less than the 1st text field.
         `SELECT id, page_url, role, name, kind, revealed_by, selector, rn FROM (
-           SELECT pe.id, sp.url_normalized AS page_url, pe.role, pe.name, pe.kind,
-                  pe.revealed_by, pe.selector,
-                  ROW_NUMBER() OVER (PARTITION BY pe.page_id ORDER BY pe.kind, pe.name) AS rn
-           FROM page_elements pe
-           JOIN site_pages sp ON sp.id = pe.page_id
-           WHERE pe.tenant_id = $1 AND sp.suite_id = $2
-             AND sp.url_normalized = ANY($3::text[])
-             AND pe.name <> ''
-             -- Form rows are CONTEXT, not targets: they are stored so the model
-             -- can see a page's form shapes (passed separately as summaries),
-             -- but a <form> is not something you can type into. Leaving them
-             -- citable had the writer typing into forms whenever the real field
-             -- was hidden behind a modal.
-             AND pe.kind <> 'form'
+           SELECT id, page_url, role, name, kind, revealed_by, selector,
+                  ROW_NUMBER() OVER (PARTITION BY page_id ORDER BY kind_rank, kind, name) AS rn
+           FROM (
+             SELECT pe.id, sp.url_normalized AS page_url, pe.role, pe.name, pe.kind,
+                    pe.revealed_by, pe.selector, pe.page_id,
+                    ROW_NUMBER() OVER (PARTITION BY pe.page_id, pe.kind ORDER BY pe.name) AS kind_rank
+             FROM page_elements pe
+             JOIN site_pages sp ON sp.id = pe.page_id
+             WHERE pe.tenant_id = $1 AND sp.suite_id = $2
+               AND sp.url_normalized = ANY($3::text[])
+               AND pe.name <> ''
+               -- Form rows are CONTEXT, not targets: they are stored so the model
+               -- can see a page's form shapes (passed separately as summaries),
+               -- but a <form> is not something you can type into. Leaving them
+               -- citable had the writer typing into forms whenever the real field
+               -- was hidden behind a modal.
+               AND pe.kind <> 'form'
+           ) by_kind
          ) ranked
          WHERE rn <= $4`,
         [tenantId, suiteId, urls, perPageCap],

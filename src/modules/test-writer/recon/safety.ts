@@ -146,6 +146,41 @@ const REVEAL_NAMES = [
   'next', 'previous', 'details', 'read more',
 ] as const;
 
+/**
+ * Buttons that OPEN a creation form rather than commit anything.
+ * Spec: docs/specs/test-writer/spec-recon-crawler.md §4.1
+ *
+ * Found by the P3 dogfood. Kaizen's own "New Test" button carries no
+ * `aria-haspopup`, so it fell through to the default `mutating` and was never
+ * clicked — which meant the create-a-test FORM was never revealed, the crawl
+ * captured 41 elements of which exactly one was a text input, and the planned
+ * scenario "create a new test and ensure it appears in the list" could not be
+ * written for want of a field to type into. The most valuable flow in the app
+ * was invisible because the door to it was never opened.
+ *
+ * The distinction the old rule missed: **opening a form is not mutating;
+ * submitting it is** — and the crawler never submits forms. So an opener is
+ * exactly the kind of state-reveal probing exists for.
+ *
+ * Deliberately narrow. Matched as a PREFIX so "New Test" and "Create suite"
+ * qualify while "Create account" — a submit sitting at the end of a signup
+ * form — does not, and `add` is excluded entirely because "Add to cart" and
+ * "Add member" are real mutations. Both earlier gates still run first: an
+ * `input[type=submit]` and anything in DESTRUCTIVE_VERBS are already `mutating`
+ * before this is consulted.
+ */
+const OPENER_PREFIXES = [
+  'new ', 'create new', 'compose', 'write a', 'start a', 'start new',
+] as const;
+
+/** Exact names that are openers on their own. */
+const OPENER_EXACT = ['new', '+', 'create', 'add new'] as const;
+
+function isOpenerName(name: string): boolean {
+  if (OPENER_EXACT.includes(name as never)) return true;
+  return OPENER_PREFIXES.some((p) => name.startsWith(p));
+}
+
 function matchesAny(name: string, lexicon: readonly string[]): boolean {
   return lexicon.some((term) =>
     new RegExp(`(^|\\b)${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\b|$)`).test(name));
@@ -217,6 +252,11 @@ export function classifyInteraction(node: CandidateNode, ctx: SafetyContext): In
   if ('aria-expanded' in attrs) return 'safe-reveal';          // disclosure toggle
   if ('aria-haspopup' in attrs) return 'safe-reveal';          // menu/dialog opener
   if (matchesAny(name, REVEAL_NAMES)) return 'safe-reveal';
+  // Creation-form openers. Reached only AFTER the submit-type and
+  // destructive-verb gates above, so "Add to cart" and `type="submit"` are
+  // already excluded. This is what makes every create/edit form in an app
+  // reachable — without it, the flows worth testing most stay invisible.
+  if (isOpenerName(name)) return 'safe-reveal';
 
   // 6. Everything else — unnamed buttons, menu items, unknown widgets —
   //    resolves DOWN.

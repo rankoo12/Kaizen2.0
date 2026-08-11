@@ -42,11 +42,20 @@ export type AuthSessionDeps = {
   engine: IExecutionEngine;
   resolver: IElementResolver;
   /**
-   * Separate chain for assertion steps, mirroring the worker: an assertion must
-   * verify the page as it is NOW, so it skips the cached resolver and never
-   * writes back. Without it the dogfood's "verify Tests is visible" read a
-   * cached selector and matched the login form's email box.
-   * Falls back to `resolver` when absent (unit tests that supply one stub).
+   * Reserved for an assertion-specific chain. Currently UNUSED, deliberately.
+   *
+   * Mirroring the worker's cache-skipping assertion resolver here looked
+   * obviously right and was measurably wrong: with it, the login recipe's
+   * terminal assertion ("verify the text 'Tests' is visible") failed to resolve
+   * on two consecutive dogfood runs, blocking the whole job, where the ordinary
+   * chain resolves it from the tenant's warm cache every time.
+   *
+   * The reasoning that misled me: a stale cached selector is a real hazard for
+   * assertions INSIDE a generated test, which run repeatedly against changing
+   * data. A login recipe's assertion is different — it is the same three steps
+   * against the same sign-in flow, and its cache entry is exactly what should
+   * answer. The bug this was paired with (an assertion matching the login
+   * form's email box) had a different cause entirely, fixed by the settle.
    */
   assertionResolver?: IElementResolver;
   challenges: IChallengeDetector;
@@ -186,9 +195,8 @@ export async function acquireSession(
 
       const isAssertion = ast.action.startsWith(ASSERTION_PREFIX);
       if (!NO_ELEMENT_ACTIONS.has(ast.action)) {
-        const forStep = (isAssertion && deps.assertionResolver) || resolver;
         try {
-          selectorSet = await forStep.resolve(ast, {
+          selectorSet = await resolver.resolve(ast, {
             tenantId,
             domain,
             page,

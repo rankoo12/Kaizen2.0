@@ -1280,7 +1280,52 @@ grounding invariant held (nothing invented reached a test), but the target was
 close to a worst case for crawl breadth. Re-run against a multi-page app before
 treating the prefix and validation clauses as met.
 
-**Three defects the run found, all now fixed:**
+**Second pass (same day) — the flow the founder asked for now works end to end.**
+Asked why Kaizen could not write a test *inside Kaizen*, the answer turned out to
+be two starvation bugs upstream of WRITE, neither of them P3's:
+
+- **Form openers were never clicked.** The safety classifier resolves unknown
+  button names DOWNWARD, so `New Test` — carrying no `aria-haspopup` — was
+  `mutating` and never probed. The create-a-test FORM therefore never entered
+  the site model. Opening a form is not mutating; submitting it is, and the
+  crawler never submits. Openers are now `safe-reveal` (narrowly: `new`,
+  `create new`, `compose`…, never `add`, and only after the submit-type and
+  destructive-verb gates). Measured: 41 → 56 elements, 14 → 29 revealed, and the
+  name/steps/suite fields of the create-test form all captured.
+- **The grounding cap starved the scarce kinds.** `getGroundingElements` capped
+  at 40 per page ordered `(kind, name)`, and `button` sorts before `input`. On a
+  page with 46 buttons, WRITE received 40 buttons and ZERO text fields, then was
+  asked to type a search query — so it cited a button and the schema gate killed
+  it, four runs running, with the real field sitting at row 47. The cap is now
+  round-robin across kinds: the search box moved from rank 47 to rank 2.
+
+With both fixed: **1 scenario proposed, validated GREEN through the real
+worker**, saved as a draft carrying the login prefix —
+
+```
+0  navigate to http://localhost:3001/login      ← prefix
+1  click the "Demo user" button                 ← prefix
+2  verify the text "Tests" is visible           ← prefix
+3  navigate to http://localhost:3001/tests
+4  type ""><script>alert(1)</script>" in the "Search tests" field
+5  press Enter
+6  verify the results or no-results header is visible
+7  verify the url contains "tests"
+```
+
+That closes the two clauses the first pass could not reach: **drafts carry the
+login prefix** and **validate green**. Step 4 targets the exact element the
+grounding cap had been truncating, which is the causal evidence.
+
+**One change reverted after measurement.** Mirroring the worker's cache-skipping
+assertion resolver inside auth-session looked obviously right and broke the login
+recipe's terminal assertion on two consecutive runs. A login recipe's assertion
+is the same three steps against the same flow every time — its cache entry is
+exactly what should answer it. The hazard that rule guards against is real for
+assertions inside GENERATED tests, not here. Kept as a documented dead parameter
+rather than silently dropped, so the next reader does not re-derive it.
+
+**Three defects the first pass found, all now fixed:**
 1. The private-address guard blocked `localhost`, making local and self-hosted
    targets impossible — and it sat only on login steps, so the ANALYZE TARGET
    was unguarded in every scope. The public crawler had carried that SSRF

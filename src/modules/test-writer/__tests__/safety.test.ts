@@ -282,3 +282,47 @@ describe('sensitiveTier', () => {
     expect(sensitiveTier('https://app.example.com/settlements')).toBeNull();
   });
 });
+
+/**
+ * Creation-form openers — found by the P3 dogfood.
+ * Kaizen's "New Test" button carried no aria-haspopup, classified `mutating`,
+ * and was never clicked — so the create-a-test form was never revealed and the
+ * flow the product exists to test could not be written.
+ */
+describe('classifyInteraction — form openers', () => {
+  it.each([
+    'New Test',
+    'New Suite',
+    'New',
+    'Create new project',
+    'Compose message',
+    'Write a test yourself',
+    '+',
+  ])('treats "%s" as a safe-reveal opener', (name) => {
+    expect(classifyInteraction(makeNode({ name }), ctx)).toBe('safe-reveal');
+  });
+
+  it.each([
+    ['Add to cart', 'a real mutation already in the destructive lexicon'],
+    ['Delete test', 'destructive'],
+    ['Save changes', 'commits'],
+    ['Publish', 'irreversible'],
+    ['Subscribe', 'creates a record'],
+  ])('still refuses "%s" (%s)', (name) => {
+    expect(classifyInteraction(makeNode({ name }), ctx)).toBe('mutating');
+  });
+
+  it('refuses a submit-typed button even when it is opener-shaped', () => {
+    // "Create account" at the end of a signup form is a SUBMIT, not a door.
+    const node = makeNode({ name: 'Create account', attributes: { type: 'submit' } });
+    expect(classifyInteraction(node, ctx)).toBe('mutating');
+  });
+
+  it('does not treat "add member" as an opener — add is excluded on purpose', () => {
+    expect(classifyInteraction(makeNode({ name: 'Add member' }), ctx)).toBe('mutating');
+  });
+
+  it('keeps sign-out blocked regardless', () => {
+    expect(classifyInteraction(makeNode({ name: 'Sign out' }), ctx)).toBe('session-ending');
+  });
+});
