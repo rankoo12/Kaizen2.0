@@ -6,6 +6,8 @@ import type { IObservability } from '../../observability/interfaces';
 import { isSecretStep } from '../secret-steps';
 import { normalizeUrl } from './url-normalizer';
 import { capturePageMeta } from './page-capture';
+import { blockedDestinationReason } from './destination-guard';
+import { settleAfterNavigation } from '../../execution-engine/settle';
 
 /**
  * Session acquisition — executes a tenant's login recipe to obtain a signed-in
@@ -39,6 +41,14 @@ export type AuthSessionParams = {
 export type AuthSessionDeps = {
   engine: IExecutionEngine;
   resolver: IElementResolver;
+  /**
+   * Separate chain for assertion steps, mirroring the worker: an assertion must
+   * verify the page as it is NOW, so it skips the cached resolver and never
+   * writes back. Without it the dogfood's "verify Tests is visible" read a
+   * cached selector and matched the login form's email box.
+   * Falls back to `resolver` when absent (unit tests that supply one stub).
+   */
+  assertionResolver?: IElementResolver;
   challenges: IChallengeDetector;
   obs: IObservability;
 };
@@ -76,15 +86,6 @@ const DIALOG_RAISING = new Set(['click', 'double_click', 'press_key']);
 const ASSERTION_PREFIX = 'assert';
 
 /**
- * Destinations a login recipe may never reach, whatever its origin says.
- *
- * The recipe's steps execute verbatim on the crawler's page, so a `navigate`
- * step is an arbitrary-navigation primitive inside Kaizen's own infrastructure:
- * cloud metadata (169.254.169.254), loopback services, anything on the container
- * network. Checked at the API (spec §3.1) and again here, because the API check
- * is advisory once a job is running.
- */
-/**
  * Resolves a step's target URL, absolute-first.
  *
  * The obvious `new URL(target, page.url())` breaks on the FIRST login step: the
@@ -108,27 +109,6 @@ function resolveTargetUrl(target: string, baseUrl?: string): URL | null {
   }
 }
 
-function isBlockedDestination(rawUrl: string, baseUrl?: string): string | null {
-  const resolved = resolveTargetUrl(rawUrl, baseUrl);
-  if (!resolved) return 'unparseable URL';
-  const host = resolved.hostname.toLowerCase();
-  // Strip IPv6 brackets.
-  const h = host.replace(/^\[|\]$/g, '');
-  if (h === 'localhost' || h.endsWith('.localhost')) return 'loopback';
-  if (h === '::1' || h === '0:0:0:0:0:0:0:1') return 'IPv6 loopback';
-  if (h.endsWith('.internal') || h.endsWith('.local')) return 'internal hostname';
-  const v4 = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(h);
-  if (v4) {
-    const [a, b] = [Number(v4[1]), Number(v4[2])];
-    if (a === 127) return 'loopback';
-    if (a === 10) return 'private network';
-    if (a === 169 && b === 254) return 'link-local / cloud metadata';
-    if (a === 172 && b >= 16 && b <= 31) return 'private network';
-    if (a === 192 && b === 168) return 'private network';
-    if (a === 0) return 'unspecified address';
-  }
-  return null;
-}
 
 /**
  * Runs the login recipe on `page` and verifies a session exists afterwards.
@@ -178,7 +158,7 @@ export async function acquireSession(
       // Guard every navigation, not just the case's base_url (spec §3.1).
       if (ast.action === 'navigate') {
         const target = ast.url ?? ast.value ?? '';
-        const blocked = isBlockedDestination(target, page.url());
+        const blocked = blockedDestinationReason(target, page.url());
         if (blocked) {
           return fail('login_failed',
             `${human} navigates to a ${blocked} address, which Kaizen will not open`);
@@ -204,9 +184,11 @@ export async function acquireSession(
         selectors: [], resolutionSource: 'cache', tokensUsed: 0,
       } as unknown as SelectorSet;
 
+      const isAssertion = ast.action.startsWith(ASSERTION_PREFIX);
       if (!NO_ELEMENT_ACTIONS.has(ast.action)) {
+        const forStep = (isAssertion && deps.assertionResolver) || resolver;
         try {
-          selectorSet = await resolver.resolve(ast, {
+          selectorSet = await forStep.resolve(ast, {
             tenantId,
             domain,
             page,
@@ -226,6 +208,7 @@ export async function acquireSession(
       }
 
       acceptDialogs = DIALOG_RAISING.has(ast.action);
+      const urlBefore = page.url();
       let result;
       try {
         result = await engine.executeStep(ast, selectorSet, page);
@@ -234,6 +217,11 @@ export async function acquireSession(
       } finally {
         acceptDialogs = false;
       }
+
+      // A sign-in click navigates. Without waiting for the destination to
+      // settle, the NEXT step resolves against the page we just left — the
+      // dogfood's assertion matched the login form's email box that way.
+      if (result.status !== 'failed') await settleAfterNavigation(page, urlBefore);
 
       if (result.status !== 'passed') {
         // No healing by design — see the module header.
@@ -257,7 +245,7 @@ export async function acquireSession(
         }
       }
 
-      if (ast.action.startsWith(ASSERTION_PREFIX) && i === steps.length - 1) {
+      if (isAssertion && i === steps.length - 1) {
         sawTerminalAssertionPass = true;
       }
     }
@@ -332,4 +320,3 @@ function errText(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
 }
 
-export const __testing = { isBlockedDestination };

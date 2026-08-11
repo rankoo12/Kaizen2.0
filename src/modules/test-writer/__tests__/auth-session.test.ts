@@ -1,4 +1,5 @@
-import { acquireSession, isSessionLoss, __testing, type LoginStep } from '../recon/auth-session';
+import { acquireSession, isSessionLoss, type LoginStep } from '../recon/auth-session';
+import { blockedDestinationReason } from '../recon/destination-guard';
 import type { StepAST } from '../../../types';
 
 /**
@@ -224,8 +225,8 @@ describe('acquireSession — navigation guards (§3.1)', () => {
   });
 
   it('classifies blocked destinations correctly', () => {
-    expect(__testing.isBlockedDestination('http://169.254.169.254/')).toBe('link-local / cloud metadata');
-    expect(__testing.isBlockedDestination('https://app.example.com/login')).toBeNull();
+    expect(blockedDestinationReason('http://169.254.169.254/')).toBe('link-local / cloud metadata');
+    expect(blockedDestinationReason('https://app.example.com/login')).toBeNull();
   });
 });
 

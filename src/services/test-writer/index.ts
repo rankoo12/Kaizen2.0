@@ -81,6 +81,20 @@ const authResolver = new CompositeElementResolver(
   llm,
 );
 
+// Assertions verify the page as it is NOW: skip the cached resolver entirely and
+// never write back, exactly as the run worker does. A cached "verify X" selector
+// is a stale answer to a question about the current DOM.
+const authAssertionResolver = new CompositeElementResolver(
+  [
+    new ArchetypeElementResolver(domPruner, new DBArchetypeResolver(obs), obs),
+    new LLMElementResolver(domPruner, llm, obs, /* sharedPool */ undefined, cacheRedis, {
+      cacheReads: true, cacheWrites: false,
+    }),
+  ],
+  obs,
+  llm,
+);
+
 const crawler = new ReconCrawler({
   pool,
   surveyor: domPruner,
@@ -90,6 +104,7 @@ const crawler = new ReconCrawler({
   auth: {
     engine: new PlaywrightExecutionEngine(obs),
     resolver: authResolver,
+    assertionResolver: authAssertionResolver,
   },
 });
 const repository = new SiteModelRepository();

@@ -27,6 +27,7 @@ import { OpenAITestWriterGateway } from '../../modules/llm-gateway/testwriter.ga
 import { PostgresBillingMeter } from '../../modules/billing-meter/postgres.billing-meter';
 import { PinoObservability } from '../../modules/observability/pino.observability';
 import { FORM_DATA_TOKENS } from '../../modules/test-data/generate';
+import { blockedDestinationReason } from '../../modules/test-writer/recon/destination-guard';
 
 const AnalyzeBody = z.object({
   targetUrl: z.string().url(),
@@ -171,6 +172,21 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
     }
     const body = parsed.data;
     const { tenantId } = request;
+
+    // Kaizen fetches this URL from inside our own network and hands back what it
+    // saw as page structure and screenshots — so an unbounded target is a
+    // server-side request forgery primitive: `http://169.254.169.254/latest/
+    // meta-data/iam/...` would return cloud credentials through the site model.
+    // Applies to EVERY scope. The public crawler carried this exposure since P1;
+    // the P3 dogfood is what surfaced it. Private networks are allowed only when
+    // the deployment opts in (local dev, self-hosted).
+    const blockedTarget = blockedDestinationReason(body.targetUrl);
+    if (blockedTarget) {
+      return reply.status(400).send({
+        error: 'TARGET_NOT_ALLOWED',
+        message: `Kaizen will not analyze a ${blockedTarget} address. Point it at a reachable public URL for the app you want tested.`,
+      });
+    }
 
     if (body.scope === 'authenticated') {
       if (!body.loginCaseId || !body.authConsent) {

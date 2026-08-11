@@ -1221,6 +1221,12 @@ Unit (`__tests__`, mock page / engine / repository):
   exceeding the cap ends `blocked: login_budget_exhausted`; a run failing on a
   prefix step yields `draft (unvalidated)`, never `rejected`.
 
+**Dogfood run 2026-08-07 — results recorded below each clause.** Job
+`9b48948b` against Kaizen's own app via the demo sign-in, from a separate
+tenant. Summary: the authenticated machinery passed every clause it governs;
+the generation outcome was starved by a one-page crawl, for a reason that is
+not P3's (see `docs/known-issues/spa-button-navigation-invisible-to-recon.md`).
+
 Live acceptance (P3 exit criteria — dogfood on Kaizen's own web app, demo
 login):
 
@@ -1251,6 +1257,42 @@ login):
 7. `grep` of `run_events` for the demo password finds nothing (trivially true
    for a button recipe — the assertion documents the pattern); a control run
    with a literal-credential login case shows `[redacted]` in resolve events.
+
+### 14.1 Dogfood results (2026-08-07, job `9b48948b`)
+
+| Clause | Result |
+|---|---|
+| Login case = credential-free demo sign-in | **PASS** — 3/3 steps, zero credentials in step text; ran green through the normal worker first (275 tokens, then cached) |
+| `sessionVerification` set | **PASS** — `assertion+heuristic`, both signals present |
+| Explores behind auth, `requires_auth = true` | **PASS** — `/tests` captured with 41 elements, marked private, classified `dashboard` |
+| Session survives the crawl | **PASS** — `signInCount: 1`, `reloginCount: 0`, `endedEarly: null` |
+| Zero mutating interactions | **PASS** — 4 probes, all safe-reveal; nothing submitted |
+| No cross-tenant writes | **PASS** — zero rows touched in `selector_cache WHERE is_shared` and zero in `element_archetypes` during the job, while 2 TENANT-scoped cache rows filled. The isolation invariant, proven live rather than argued |
+| Sensitive-path suppression | **NOT OBSERVABLE** — Kaizen's app has no `/settings`-class route, exactly as §14 predicted. Unit-tested only |
+| Drafts carry the login prefix, validate green | **NOT REACHED** — 0 scenarios survived WRITE (below) |
+
+**What the run did NOT prove, honestly.** `pagesCrawled: 1`,
+`linksInserted: 0` — Kaizen's nav is `<button onClick>`, so the anchor-following
+BFS had nothing to enqueue. All three planned scenarios were then rejected by
+the schema gate for citing elements outside that small grounding set, so no
+draft was written and the prefix/validation clauses were never exercised. The
+grounding invariant held (nothing invented reached a test), but the target was
+close to a worst case for crawl breadth. Re-run against a multi-page app before
+treating the prefix and validation clauses as met.
+
+**Three defects the run found, all now fixed:**
+1. The private-address guard blocked `localhost`, making local and self-hosted
+   targets impossible — and it sat only on login steps, so the ANALYZE TARGET
+   was unguarded in every scope. The public crawler had carried that SSRF
+   exposure since P1. Now one shared guard on both entry points, with
+   `KAIZEN_ALLOW_PRIVATE_TARGETS` as an explicit opt-in that hosted deployments
+   never set (§3.1).
+2. auth-session never settled after a navigation, so the step after a sign-in
+   click resolved against the page it had just left — the assertion matched the
+   login form's email box. The worker's bounded settle is now shared code.
+3. auth-session used the interaction resolver for assertions; the worker
+   deliberately uses a no-cache chain, because an assertion must verify the page
+   as it is NOW. Now mirrored (§4.1).
 
 ## 15. Amendments to existing specs (cross-references only — do not edit here)
 

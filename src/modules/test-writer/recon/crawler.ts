@@ -54,7 +54,7 @@ export type ReconCrawlerDeps = {
    * Execution seam for the login recipe. Required only when CrawlParams.auth is
    * set; a public crawl never constructs it.
    */
-  auth?: Pick<AuthSessionDeps, 'engine' | 'resolver'>;
+  auth?: Pick<AuthSessionDeps, 'engine' | 'resolver' | 'assertionResolver'>;
 };
 
 /** What the authenticated crawl reports back. Absent on public jobs. */

@@ -69,6 +69,7 @@ import { createRedisConnection, RUNS_QUEUE_NAME, SCREENSHOTS_QUEUE_NAME, PERSIST
 import type { RunJobPayload } from '../queue';
 import type { StepAST, ClassifiedFailure, SelectorSet, SelectorEntry, RunContext } from '../types';
 import { isSecretStep, redactStepText, REDACTED } from '../modules/test-writer/secret-steps';
+import { settleAfterNavigation } from '../modules/execution-engine/settle';
 
 // ─── Module Setup ─────────────────────────────────────────────────────────────
 
@@ -715,26 +716,7 @@ async function executeStep(
   // selector that never caches AND a click that silently no-ops. All waits are bounded so
   // a chatty page (long-poll / websocket) or a never-quiet DOM can never hang the run.
   if (result.status !== 'failed') {
-    try {
-      const p = page as {
-        url?: () => string;
-        waitForLoadState?: (s: string, o?: { timeout?: number }) => Promise<void>;
-        evaluate?: (fn: () => unknown) => Promise<unknown>;
-      };
-      if (p.url && p.url() !== urlBefore) {
-        // Network settle (server-rendered navs). Instant when there is no network I/O.
-        await p.waitForLoadState?.('networkidle', { timeout: 2500 }).catch(() => {});
-        // DOM-quiescence settle: a CLIENT-SIDE route change (e.g. saucedemo login) does no
-        // network I/O, so `networkidle` returns immediately — we must instead wait for the
-        // DOM to stop mutating (the page finished rendering/hydrating). Bounded to 2s.
-        await p.evaluate?.(() => new Promise((resolve) => {
-          let timer = setTimeout(() => resolve(null), 400);
-          const mo = new MutationObserver(() => { clearTimeout(timer); timer = setTimeout(() => resolve(null), 400); });
-          mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
-          setTimeout(() => { mo.disconnect(); resolve(null); }, 2000);
-        })).catch(() => {});
-      }
-    } catch { /* settling is best-effort — never fail a step on it */ }
+    await settleAfterNavigation(page, urlBefore);
   }
 
   runLog?.log(isAssertion ? 'assert' : 'execute',
