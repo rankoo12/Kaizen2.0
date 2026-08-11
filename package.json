@@ -18,7 +18,7 @@
     "start:screenshot": "node dist/services/screenshot/index.js",
     "start:persistence": "node dist/services/persistence/index.js",
     "start:testwriter": "node dist/services/test-writer/index.js",
-    "db:migrate": "tsx scripts/migrate.ts",
+    "db:migrate": "node scripts/migrate.js",
     "typecheck": "tsc --noEmit",
     "typecheck:web": "tsc --noEmit -p packages/web/tsconfig.json",
     "lint": "eslint src --ext .ts",

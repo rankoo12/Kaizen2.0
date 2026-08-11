@@ -5,18 +5,23 @@
  * - Tracks applied migrations in a schema_migrations table.
  * - Wraps each migration in a transaction; rolls back on error.
  *
- * Usage: tsx scripts/migrate.ts
+ * Plain JavaScript on purpose: the production image installs with
+ * `npm ci --omit=dev` and never compiles scripts/, so the runner must work
+ * with nothing but production deps (pg, dotenv) and a bare `node`. That is
+ * what lets Railway's pre-deploy command run migrations before each deploy.
+ *
+ * Usage: node scripts/migrate.js
  */
-import { Client } from 'pg';
-import fs from 'fs';
-import path from 'path';
-import dotenv from 'dotenv';
+const { Client } = require('pg');
+const fs = require('fs');
+const path = require('path');
+const dotenv = require('dotenv');
 
 dotenv.config();
 
 const MIGRATIONS_DIR = path.join(__dirname, '..', 'db', 'migrations');
 
-async function migrate(): Promise<void> {
+async function migrate() {
   const client = new Client({ connectionString: process.env.DATABASE_URL });
   await client.connect();
 
@@ -42,7 +47,7 @@ async function migrate(): Promise<void> {
   for (const file of files) {
     const version = file.replace('.sql', '');
 
-    const { rows } = await client.query<{ version: string }>(
+    const { rows } = await client.query(
       'SELECT version FROM schema_migrations WHERE version = $1',
       [version],
     );
