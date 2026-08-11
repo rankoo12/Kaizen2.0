@@ -100,6 +100,12 @@ export type CrawlReport = {
     endedEarly: 'session_lost' | null;
     blockedReason: 'login_failed' | 'login_challenge' | 'login_budget_exhausted' | null;
     blockedDetail: string | null;
+    /**
+     * Every requires_auth mark on this suite is a conservative default rather
+     * than an observation, because no public crawl has ever run for it. One
+     * public analyze corrects the whole partition (spec §5.3).
+     */
+    publicPartitionUnverified?: boolean;
   };
 };
 

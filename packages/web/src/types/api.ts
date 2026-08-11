@@ -92,6 +92,13 @@ export type GenerationReport = {
     endedEarly: 'session_lost' | null;
     blockedReason: 'login_failed' | 'login_challenge' | 'login_budget_exhausted' | null;
     blockedDetail: string | null;
+    /**
+     * True when no public crawl has ever run for this suite, so every
+     * requires_auth mark is a conservative default. Render as guidance
+     * ("run a public analysis to tell public pages from private ones"),
+     * never as a failure.
+     */
+    publicPartitionUnverified?: boolean;
   };
   /** Per-phase spend, read from billing_events so it agrees with the invoice. */
   tokenUsage?: Record<string, number>;

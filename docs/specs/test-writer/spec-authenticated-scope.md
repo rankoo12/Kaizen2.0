@@ -9,7 +9,7 @@ applied before implementation.
 
 Not yet done: the §11 consent UX (analyze-sheet card, login-test picker and its
 empty state, progress/blocked/report faces) and the §14 live dogfood run against
-Kaizen's own app. Three decisions still await the product owner — §16.
+Kaizen's own app. The three deferred decisions are RESOLVED — §16.
 
 Deviations found while building, each recorded at its section: the L5 resolver
 prompt is redacted for credential steps but `compileStep` deliberately is not
@@ -1292,19 +1292,54 @@ login):
    user-authored case can navigate a worker anywhere. P3 fixes the seam it
    introduces; a follow-up should apply the same guard to the run worker.
 
-## 16. Open questions for the product owner
+## 16. Decisions taken (2026-08-07)
 
-Three decisions this spec takes a defensible default on, flagged rather than
-buried:
+The three questions this spec deferred, now resolved by the product owner.
 
-1. **Admin-or-owner gate vs the dogfood setup** (§8.3) — if the demo tenant's
-   users are plain members, the acceptance run needs a role bump or the gate
-   needs a documented dev-mode exception. Default taken: keep the gate.
-2. **Report/media audience for authenticated runs** (§11) — v1 discloses that
-   viewers and read-only API keys can see behind-login screenshots and page
-   content. The alternative is restricting access for those runs. Default
-   taken: disclose.
-3. **Public-first recommendation vs an unauthenticated probe pass** (§5.3) —
-   the crisp public/private partition currently costs a second analyze job.
-   Default taken: recommend a public analyze first; revisit in P3.5 if users
-   find the over-marking noticeable.
+### 16.1 Keep the admin-or-owner gate (§8.3)
+
+Signing into a customer's system is the largest grant in the product and
+belongs with member management. **The gate stands; the dogfood adapts.** If the
+demo tenant's users are plain members, the acceptance run uses the workspace
+OWNER — every workspace has one by construction, so no fixture is blocked and
+no dev-mode exception is needed. Bending a security boundary to fit a test
+fixture is the wrong direction: the fixture is the cheap thing to change.
+
+### 16.2 Disclose the audience; do not restrict it (§11)
+
+Recorded reasoning, because the intuitive answer is the opposite one and the
+build changed the facts: the two highest-PII classes are **already suppressed
+at source**. Tier A pages are never captured at all, and Tier B screenshots are
+off by default under authenticated scope (§5.2). What remains readable through
+`/media` and the run report is ordinary signed-in application pages.
+
+Restricting those reads would mean a `run → case → generation_job` scope join
+on two hot read paths, to protect the residue left after the real mitigation
+already happened upstream — where it is stronger, because a screenshot never
+taken cannot leak at all. So v1 discloses the audience plainly in the consent
+copy and does not change access control mid-phase.
+
+Revisit belongs to **P6 (data governance)**, which already owns screenshot
+retention and the per-suite "no screenshots" toggle — the natural home for a
+per-artifact visibility model, rather than a special case bolted onto P3.
+
+### 16.3 Public-analyze-first; no unauthenticated probe pass (§5.3)
+
+The over-marking this leaves has **no effect on authenticated test quality**:
+`requires_auth` gates planning only in public scope (`test-planner.ts` drops
+`requires_auth` pages when `scope === 'public'`), so an authenticated job never
+reads the marks it just wrote. And it **self-corrects** — a public crawl's
+upsert is authoritative in both directions, so one public analyze repairs the
+whole partition.
+
+A probing pass would therefore spend double the navigations against the rate
+limit and the page budget to fix something that costs nothing and heals itself.
+Rejected on those grounds, not merely deferred.
+
+What the deferral DID leave was a reporting gap: the user could not tell a
+conservative default from an observation. Closed by
+`report.auth.publicPartitionUnverified`, set when the suite has no prior public
+observation, so the report can say "these pages are marked private by default —
+run a public analysis to tell public from private" instead of presenting a
+guess as a finding. Sampled BEFORE the crawl, since an authenticated crawl
+writes those marks itself.

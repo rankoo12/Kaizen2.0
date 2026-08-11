@@ -70,6 +70,8 @@ export type AuthCrawlReport = {
   endedEarly: 'session_lost' | null;
   blockedReason: 'login_failed' | 'login_challenge' | 'login_budget_exhausted' | null;
   blockedDetail: string | null;
+  /** Set by the pipeline, which knows the suite's history (spec §5.3). */
+  publicPartitionUnverified?: boolean;
 };
 
 /** Ceiling on sign-ins per job — see spec §5.1. Crawl + re-login only; proving

@@ -315,6 +315,12 @@ async function runRecon(
       }
     : undefined;
 
+  // Sampled BEFORE the crawl: an authenticated crawl writes requires_auth marks
+  // itself, so asking afterwards would always find one (spec §5.3).
+  const hadPublicObservation = auth
+    ? await deps.repository.hasPublicObservation(payload.tenantId, payload.suiteId)
+    : true;
+
   const report = await deps.crawler.crawl(
     { tenantId: payload.tenantId, jobId: payload.jobId, targetUrl: payload.targetUrl, budgets, auth },
     async (capture: PageCapture, pageIndex: number) => {
@@ -331,6 +337,12 @@ async function runRecon(
       if (pageIndex % 3 === 0) await progress({ phase: 'recon', pagesCrawled: pageIndex + 1 });
     },
   );
+
+  // Say plainly when every private mark is a conservative default rather than
+  // an observation. The remedy is one public analyze, which is authoritative in
+  // both directions — cheaper and more accurate than the probing pass we
+  // deliberately did not build.
+  if (report.auth) report.auth.publicPartitionUnverified = !hadPublicObservation;
 
   const linksInserted = await deps.repository.insertLinks(payload.tenantId, payload.suiteId, edges);
   deps.obs.log('info', 'testwriter.recon_completed', { jobId: payload.jobId, ...report, linksInserted });

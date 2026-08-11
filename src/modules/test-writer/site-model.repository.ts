@@ -221,6 +221,30 @@ export class SiteModelRepository {
     });
   }
 
+  /**
+   * True when this suite has never observed a page as PUBLIC.
+   * Spec: docs/specs/test-writer/spec-authenticated-scope.md §5.3
+   *
+   * An authenticated crawl defaults new pages to `requires_auth = true`, which
+   * errs in the only acceptable direction but cannot distinguish "we watched
+   * this page redirect to login" from "we never checked". When no public crawl
+   * has ever run for the suite, EVERY mark is the conservative default — so the
+   * report says so rather than presenting a guess as a finding. The user's fix
+   * is one public analyze, which is authoritative in both directions and
+   * corrects the whole partition.
+   */
+  async hasPublicObservation(tenantId: string, suiteId: string): Promise<boolean> {
+    return withTenantTransaction(tenantId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT 1 FROM site_pages
+         WHERE tenant_id = $1 AND suite_id = $2 AND requires_auth = false
+         LIMIT 1`,
+        [tenantId, suiteId],
+      );
+      return rows.length > 0;
+    });
+  }
+
   async listClassifiedPages(tenantId: string, suiteId: string): Promise<ClassifiedPage[]> {
     return withTenantTransaction(tenantId, async (client) => {
       const { rows } = await client.query<{
