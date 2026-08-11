@@ -26,6 +26,9 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 COPY --from=builder /app/dist ./dist
 COPY --from=builder /app/db ./db
+# The migration runner (plain JS, production deps only) — Railway's pre-deploy
+# command runs `npm run db:migrate` in this image before each deploy goes live.
+COPY --from=builder /app/scripts ./scripts
 EXPOSE 3000
 USER node
 CMD ["node", "dist/api/server.js"]
