@@ -32,6 +32,14 @@ export type NewCase = {
   origin?: 'user' | 'generated';
   generationJobId?: string | null;
   archetypeKey?: string | null;
+  /**
+   * Evidence level, orthogonal to `status` (migration 035). Set by the Test
+   * Writer as soon as the case exists so a draft is never ambiguous about why
+   * it is a draft; NULL for user-authored cases.
+   */
+  validationState?: string | null;
+  /** Tier-2 expected-fail marker, so RE-runs judge this case correctly too. */
+  expectedOutcome?: 'pass' | 'fail' | null;
 };
 
 export type CreatedCase = {
@@ -63,14 +71,16 @@ export async function createCase(
       // by the Test Writer has a tenant but no user behind it.
       `INSERT INTO test_cases (
          tenant_id, suite_id, name, base_url, created_by,
-         status, origin, generation_job_id, archetype_key
+         status, origin, generation_job_id, archetype_key,
+         validation_state, expected_outcome
        )
-       VALUES ($1, $2, $3, $4, $5, COALESCE($6, 'active'), COALESCE($7, 'user'), $8, $9)
+       VALUES ($1, $2, $3, $4, $5, COALESCE($6, 'active'), COALESCE($7, 'user'), $8, $9, $10, $11)
        RETURNING id, name, base_url, created_at, updated_at`,
       [
         tenantId, input.suiteId, input.name, input.baseUrl, input.createdBy ?? null,
         input.status ?? null, input.origin ?? null,
         input.generationJobId ?? null, input.archetypeKey ?? null,
+        input.validationState ?? null, input.expectedOutcome ?? null,
       ],
     );
     const created = caseRows[0];

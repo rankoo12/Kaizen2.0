@@ -142,6 +142,14 @@ export type CaseSummary = {
   origin?: CaseOrigin;
   /** The run that proved a generated draft — its evidence. */
   validationRunId?: string | null;
+  /**
+   * How good that evidence is. A run id says a run happened; it cannot say the
+   * run needed self-healing, that the oracle's anchor was a guess, or that
+   * sign-in was never confirmed — all of which used to render as "proven".
+   */
+  validationState?:
+    | 'validated' | 'healed' | 'weak_oracle' | 'flaky'
+    | 'unproven_signin' | 'consent_held' | 'unvalidated' | null;
   generationJobId?: string | null;
   archetypeKey?: string | null;
   /** Aggregates over this case's whole run history. Computed per request rather than

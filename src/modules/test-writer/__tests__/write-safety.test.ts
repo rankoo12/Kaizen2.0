@@ -152,3 +152,57 @@ describe('classifyScenarioSafety — authenticated scope', () => {
     expect(decision.verdict).toBe('allowed');
   });
 });
+
+/**
+ * Known-entity binding: an archetype whose premise is "this thing EXISTS"
+ * cannot be satisfied by a value the test invented.
+ * Spec: docs/specs/test-writer/spec-validation-trust.md §7
+ */
+import { checkKnownEntityBinding } from '../write/scenario-writer';
+import type { PlannedScenario } from '../../../types/test-writer';
+
+const knownEntityPlan = {
+  name: 'Search for a known test',
+  source: { kind: 'catalog', archetypeKey: 'search.find-known-entity' },
+} as unknown as PlannedScenario;
+
+describe('checkKnownEntityBinding', () => {
+  it('rejects a seed token bound to a find-known-entity search', () => {
+    // This shipped: it searched for 'Taylor', an entity the app had never heard
+    // of, then asserted that text was shown — which the search box made true.
+    const steps = [
+      { action: 'type', target: { kind: 'element', elementId: 'x' }, value: '{{firstName}}' },
+    ] as unknown as StepIntent[];
+
+    const errors = checkKnownEntityBinding(knownEntityPlan, steps, ['firstName', 'email']);
+    expect(errors.join(' ')).toContain('randomly generated value');
+  });
+
+  it('accepts a literal drawn from crawled content', () => {
+    const steps = [
+      { action: 'type', target: { kind: 'element', elementId: 'x' }, value: 'Checkout smoke test' },
+    ] as unknown as StepIntent[];
+
+    expect(checkKnownEntityBinding(knownEntityPlan, steps, ['firstName'])).toEqual([]);
+  });
+
+  it('leaves other archetypes alone — a seed is correct for a signup', () => {
+    const signup = {
+      name: 'Sign up', source: { kind: 'catalog', archetypeKey: 'auth.signup.happy' },
+    } as unknown as PlannedScenario;
+    const steps = [
+      { action: 'type', target: { kind: 'element', elementId: 'x' }, value: '{{email}}' },
+    ] as unknown as StepIntent[];
+
+    expect(checkKnownEntityBinding(signup, steps, ['email'])).toEqual([]);
+  });
+
+  it('leaves LLM gap-fill scenarios alone — they have no archetype premise', () => {
+    const llmPlan = { name: 'Something', source: { kind: 'llm' } } as unknown as PlannedScenario;
+    const steps = [
+      { action: 'type', target: { kind: 'element', elementId: 'x' }, value: '{{firstName}}' },
+    ] as unknown as StepIntent[];
+
+    expect(checkKnownEntityBinding(llmPlan, steps, ['firstName'])).toEqual([]);
+  });
+});

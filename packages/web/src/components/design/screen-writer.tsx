@@ -28,6 +28,39 @@ function Chip({ text, tone, title }: { text: string; tone?: string; title?: stri
   );
 }
 
+/**
+ * What a draft's evidence actually amounts to, in the reviewer's language.
+ * Every one of these used to render as either "PROVEN — ran green against your
+ * site" or "UNPROVEN — needs consent", and only one of the seven was ever
+ * either of those things.
+ */
+const EVIDENCE = {
+  healed: {
+    chip: 'HEALED',
+    caption: 'Passed only after Kaizen repaired a selector mid-run — worth reading the run before you trust it.',
+  },
+  weak_oracle: {
+    chip: 'WEAK CHECK',
+    caption: 'Ran green, but the model chose which element the final check looks at. Confirm it checks the right thing.',
+  },
+  flaky: {
+    chip: 'FLAKY',
+    caption: 'Failed once and passed on retry. Something here is not stable yet.',
+  },
+  unproven_signin: {
+    chip: 'SIGN-IN UNPROVEN',
+    caption: 'Kaizen could not confirm it was actually signed in during this run, so the result proves nothing either way.',
+  },
+  consent_held: {
+    chip: 'NOT RUN',
+    caption: 'Would create real data, and throwaway data is off for this suite.',
+  },
+  unvalidated: {
+    chip: 'NOT RUN',
+    caption: 'Proposed without a proving run.',
+  },
+} as const;
+
 /** Rejections are shown, never counted silently: refusing to propose a weak test
  *  demonstrates the quality bar better than any accepted one. */
 const REJECTION_COPY: Record<string, string> = {
@@ -296,14 +329,18 @@ function DeliveryFace({ job, drafts, onAcceptAll, onAccept, onDismiss, onOpenRun
 }) {
   const validate = job.report?.validate;
   const rejected: ScenarioRejection[] = job.report?.rejected ?? [];
-  const proven = drafts.filter((d) => d.validationRunId);
-  const unproven = drafts.filter((d) => !d.validationRunId);
+  // "It ran and a run id exists" is not the same as "it was proven". A draft
+  // that only passed after self-healing, whose oracle the LLM anchored, or whose
+  // sign-in was never confirmed all carry a run id — and all three used to be
+  // presented as PROVEN. Only a clean audit on a clean run earns that word.
+  const proven = drafts.filter((d) => d.validationState === 'validated');
+  const unproven = drafts.filter((d) => d.validationState !== 'validated');
 
   return (
     <div style={{ display: 'grid', gap: 14 }}>
       <div className="card" style={{ display: 'flex', flexWrap: 'wrap' }}>
         <Stat label="PROVEN" value={proven.length} sub="green runs" tone="var(--pass)" />
-        <Stat label="UNPROVEN" value={unproven.length} sub="needs consent" tone={unproven.length ? 'var(--warn)' : undefined} />
+        <Stat label="NEEDS REVIEW" value={unproven.length} sub="see why on each" tone={unproven.length ? 'var(--warn)' : undefined} />
         <Stat label="REJECTED" value={rejected.length} sub="with reasons" />
         <Stat label="PROPOSED" value={validate?.proposed ?? drafts.length} sub="in this delivery" />
       </div>
@@ -311,7 +348,7 @@ function DeliveryFace({ job, drafts, onAcceptAll, onAccept, onDismiss, onOpenRun
       {proven.length > 0 && (
         <div className="card" style={{ padding: '13px 16px', display: 'flex', alignItems: 'center', gap: 12 }}>
           <div style={{ flex: 1, fontSize: 12.5, color: 'var(--text-2)' }}>
-            Every proven test below ran green against your site.
+            Every test below ran green against your site and its final check held up to inspection.
           </div>
           <button className="btn lg pri" onClick={onAcceptAll} disabled={busy}>
             <I.check size={13} />Add all {proven.length} to the suite
@@ -352,24 +389,28 @@ function DeliveryFace({ job, drafts, onAcceptAll, onAccept, onDismiss, onOpenRun
         <div>
           <div className="label" style={{ marginBottom: 8, color: 'var(--warn)' }}>Needs a decision</div>
           <div className="list">
-            {unproven.map((d) => (
-              <div key={d.id} className="row" style={{ padding: '11px 14px' }}>
-                <I.sparkle size={13} style={{ color: 'var(--warn)', flex: 'none' }} />
-                <div style={{ flex: 1, minWidth: 0 }}>
-                  <div className="row-t">{d.name}</div>
-                  <div className="row-s">
-                    Would create real data, and throwaway data is off for this suite.
+            {unproven.map((d) => {
+              const evidence = EVIDENCE[d.validationState as keyof typeof EVIDENCE] ?? EVIDENCE.unvalidated;
+              return (
+                <div key={d.id} className="row" style={{ padding: '11px 14px' }}>
+                  <I.sparkle size={13} style={{ color: 'var(--warn)', flex: 'none' }} />
+                  <div style={{ flex: 1, minWidth: 0 }}>
+                    <div className="row-t">{d.name}</div>
+                    <div className="row-s">{evidence.caption}</div>
+                  </div>
+                  <Chip text={evidence.chip} tone="var(--warn)" />
+                  <div style={{ display: 'flex', gap: 4, flex: 'none' }}>
+                    {d.validationRunId && (
+                      <button className="btn" onClick={() => onOpenRun(d.id, d.validationRunId!)}>See it run</button>
+                    )}
+                    <button className="btn" onClick={() => onAccept(d.id)} disabled={busy}>Accept anyway</button>
+                    <button className="btn icon ghost" title="Dismiss" onClick={() => onDismiss(d.id)}>
+                      <I.x size={13} />
+                    </button>
                   </div>
                 </div>
-                <Chip text="UNPROVEN" tone="var(--warn)" />
-                <div style={{ display: 'flex', gap: 4, flex: 'none' }}>
-                  <button className="btn" onClick={() => onAccept(d.id)} disabled={busy}>Accept unproven</button>
-                  <button className="btn icon ghost" title="Dismiss" onClick={() => onDismiss(d.id)}>
-                    <I.x size={13} />
-                  </button>
-                </div>
-              </div>
-            ))}
+              );
+            })}
           </div>
         </div>
       )}
@@ -566,10 +607,10 @@ export function WriterScreen({ suiteId, jobId: initialJobId, suiteName, onBack, 
 
   async function acceptAll() {
     setBusy(true);
-    const proven = drafts.filter((d) => d.validationRunId);
+    const proven = drafts.filter((d) => d.validationState === 'validated');
     const results = await Promise.all(proven.map((d) => setCaseStatus(d.id, 'active')));
     const ok = results.filter(Boolean).length;
-    setDrafts((cur) => cur.filter((d) => !d.validationRunId));
+    setDrafts((cur) => cur.filter((d) => d.validationState !== 'validated'));
     showToast?.(`${ok} ${ok === 1 ? 'test' : 'tests'} added to ${suiteName}`, 'success');
     onCasesChanged?.();
     setBusy(false);

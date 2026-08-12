@@ -3,6 +3,7 @@ import type { TestWriterJobPayload } from '../../queue';
 import type { IObservability } from '../observability/interfaces';
 import type { ITestWriterGateway } from '../llm-gateway/testwriter.interfaces';
 import type { PlannedScenario, ScenarioRejection, TenantBrief } from '../../types/test-writer';
+import type { StepAST } from '../../types';
 import type { CrawlReport, PageCapture } from './interfaces';
 import { DEFAULT_BUDGETS, HARD_MAX_PAGES } from './interfaces';
 import { ReconCrawler } from './recon/crawler';
@@ -426,7 +427,14 @@ async function runGenerationPhases(
   }
 
   // ── DEDUP (kind-aware, against each other and the suite's existing cases)
-  const existing = await loadExistingCaseSteps(payload.tenantId, payload.suiteId);
+  // Loaded before dedup rather than at VALIDATE, because dedup needs to know
+  // which leading steps are sign-in boilerplate in order to ignore them.
+  const loginPrefix = job.scope === 'authenticated' && job.login_case_id
+    ? await loadLoginSteps(payload.tenantId, job.login_case_id, deps)
+    : undefined;
+  const existing = await loadExistingCaseSteps(
+    payload.tenantId, payload.suiteId, (loginPrefix ?? []).map((s) => s.rawText),
+  );
   const dedup = dedupeScenarios(
     written.map((w) => ({
       planRef: w.plan.name, kind: w.kind, name: w.name, steps: w.steps.map((s) => s.text),
@@ -486,9 +494,14 @@ async function runGenerationPhases(
     validate: payload.options.validate,
     // Authenticated drafts are self-contained: the sign-in steps ride along so
     // each proving run signs in for itself, from a cold browser (spec §6.2, §7).
-    loginPrefix: job.scope === 'authenticated' && job.login_case_id
-      ? await loadLoginSteps(payload.tenantId, job.login_case_id, deps)
-      : undefined,
+    loginPrefix,
+    // Whether the recipe's own final assertion can actually witness a session.
+    // Fail-closed on the LABEL, not the work: a recipe that verifies something
+    // visible to signed-out visitors still runs, but nothing it carries may be
+    // called proven (spec-validation-trust §5).
+    signinAssertionProves: loginPrefix
+      ? await signinAssertionIsPrivate(payload.tenantId, payload.suiteId, loginPrefix, deps)
+      : true,
   });
 
   const report = {
@@ -578,8 +591,42 @@ async function loadExistingCaseNames(tenantId: string, suiteId: string): Promise
   return rows.map((r) => r.name);
 }
 
+/**
+ * Can the login recipe's final assertion tell "signed in" from "still on the
+ * login page"? Only if the thing it names lives behind the wall.
+ *
+ * Unknowable answers are treated as "no": a recipe asserting a url or a title,
+ * or naming an element the crawl never catalogued, may be perfectly good — but
+ * we cannot say so, and claiming a proof we cannot support is the failure this
+ * whole spec exists to stop. Spec: spec-validation-trust.md §5
+ */
+async function signinAssertionIsPrivate(
+  tenantId: string,
+  suiteId: string,
+  prefix: Array<{ rawText: string; ast: StepAST }>,
+  deps: TestWriterPipelineDeps,
+): Promise<boolean> {
+  const terminal = [...prefix].reverse()
+    .find((s) => s.ast.action.startsWith('assert_'));
+  const description = terminal?.ast.targetDescription ?? terminal?.ast.value ?? '';
+  // Element descriptions carry the accessible name in quotes ('the "Sign out"
+  // button', `the text 'Tests'`); anything else gives us no name to look up.
+  const quoted = /["'“”‘’]([^"'“”‘’]{2,60})["'“”‘’]/.exec(description);
+  if (!quoted) return false;
+  return deps.repository.hasSignedInOnlyElement(tenantId, suiteId, quoted[1]).catch(() => false);
+}
+
 async function loadExistingCaseSteps(
   tenantId: string, suiteId: string,
+  /**
+   * The sign-in steps this job prepends to every draft. Existing authenticated
+   * cases carry the same prefix baked in, but CANDIDATES are fingerprinted
+   * body-only — so a byte-identical scenario scored 0.6 against its own twin
+   * and both shipped (observed: two identical drafts eight minutes apart). Strip
+   * the prefix so like is compared with like.
+   * Spec: docs/specs/test-writer/spec-validation-trust.md §10
+   */
+  loginPrefixTexts: string[] = [],
 ): Promise<Array<{ kind: string; steps: string[]; name: string }>> {
   const { rows } = await getPool().query<{ name: string; steps: string[] }>(
     `SELECT tc.name, ARRAY_AGG(ts.raw_text ORDER BY tcs.position) AS steps
@@ -590,10 +637,16 @@ async function loadExistingCaseSteps(
      GROUP BY tc.id, tc.name`,
     [tenantId, suiteId],
   );
+  const stripPrefix = (steps: string[]): string[] =>
+    loginPrefixTexts.length > 0
+      && steps.length > loginPrefixTexts.length
+      && loginPrefixTexts.every((text, i) => steps[i] === text)
+      ? steps.slice(loginPrefixTexts.length)
+      : steps;
   // Existing cases carry no kind marker; compare them against both kinds.
   return rows.flatMap((r) => [
-    { kind: 'positive', steps: r.steps, name: r.name },
-    { kind: 'negative', steps: r.steps, name: r.name },
+    { kind: 'positive', steps: stripPrefix(r.steps), name: r.name },
+    { kind: 'negative', steps: stripPrefix(r.steps), name: r.name },
   ]);
 }
 

@@ -40,6 +40,15 @@ export type RunJobPayload = {
    * Spec: docs/specs/test-writer/spec-authenticated-scope.md §4.1, §12 threat 3
    */
   behindAuth?: boolean;
+  /**
+   * What queued this run. Only 'testwriter' changes behaviour: a proving run
+   * must not teach the tenant's selector cache where an ASSERTION found its
+   * anchor, because a wrong anchor cached at full confidence becomes the answer
+   * every later run replays — which is how `role=button[name="File"]` became the
+   * stored meaning of "the no-results message". Absent for ordinary runs.
+   * Spec: docs/specs/test-writer/spec-validation-trust.md §9
+   */
+  triggeredBy?: 'testwriter';
 };
 
 /**

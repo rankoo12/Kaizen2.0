@@ -245,6 +245,31 @@ export class SiteModelRepository {
     });
   }
 
+  /**
+   * Does an element with this accessible name exist ONLY behind the login wall?
+   *
+   * This is what makes a sign-in assertion load-bearing. "verify the text
+   * 'Tests' is visible" proves nothing if 'Tests' is also on the marketing page
+   * — and in the live failure it resolved to the search box while the run was
+   * still sitting on the login screen. An element the crawl saw on a
+   * requires_auth page and nowhere public is evidence that a session exists.
+   * Spec: docs/specs/test-writer/spec-validation-trust.md §5
+   */
+  async hasSignedInOnlyElement(tenantId: string, suiteId: string, name: string): Promise<boolean> {
+    const needle = name.trim().toLowerCase();
+    if (!needle) return false;
+    return withTenantTransaction(tenantId, async (client) => {
+      const { rows } = await client.query<{ private_only: boolean }>(
+        `SELECT bool_and(sp.requires_auth) AS private_only
+         FROM page_elements pe
+         JOIN site_pages sp ON sp.id = pe.page_id
+         WHERE pe.tenant_id = $1 AND sp.suite_id = $2 AND lower(trim(pe.name)) = $3`,
+        [tenantId, suiteId, needle],
+      );
+      return rows[0]?.private_only === true;
+    });
+  }
+
   async listClassifiedPages(tenantId: string, suiteId: string): Promise<ClassifiedPage[]> {
     return withTenantTransaction(tenantId, async (client) => {
       const { rows } = await client.query<{

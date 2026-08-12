@@ -58,3 +58,54 @@ describe('shouldResolveFresh', () => {
     }
   });
 });
+
+/**
+ * Proving-run isolation and assertion healing.
+ * Spec: docs/specs/test-writer/spec-validation-trust.md §9
+ */
+import { healCertifiesAssertion } from '../assertion-cache-policy';
+
+describe('shouldResolveFresh — proving runs', () => {
+  it('never lets a proving run answer an assertion from the cache', () => {
+    // A proving run exists to be judged. Answering its oracle from cache — and
+    // worse, WRITING that answer back — is how role=button[name="File"] became
+    // the stored meaning of "the no-results message" at confidence 1.0.
+    for (const action of STATE_ASSERTIONS) {
+      expect(shouldResolveFresh(action, false, true)).toBe(true);
+    }
+  });
+
+  it('leaves ordinary runs on the cached path', () => {
+    for (const action of STATE_ASSERTIONS) {
+      expect(shouldResolveFresh(action, false, false)).toBe(false);
+    }
+  });
+
+  it('does not touch non-assertion steps even in a proving run', () => {
+    expect(shouldResolveFresh('click', false, true)).toBe(false);
+    expect(shouldResolveFresh('type', false, true)).toBe(false);
+  });
+});
+
+describe('healCertifiesAssertion', () => {
+  it('refuses to certify an assertion that healed by re-resolving its target', () => {
+    // Observed live: an assertion healed from the login page's email field onto
+    // the Search textbox and counted as satisfied — which is how "the user is
+    // signed in" could be verified while still sitting on the login page.
+    for (const strategy of ['ResolveAndRetryStrategy', 'ElementSimilarityStrategy']) {
+      expect(healCertifiesAssertion('assert_visible', strategy)).toBe(false);
+    }
+  });
+
+  it('still accepts a heal that only waited or retried the same element', () => {
+    expect(healCertifiesAssertion('assert_visible', 'AdaptiveWaitStrategy')).toBe(true);
+    expect(healCertifiesAssertion('assert_visible', 'FallbackSelectorStrategy')).toBe(true);
+  });
+
+  it('leaves ACTION steps free to heal however they need to', () => {
+    // A click healing onto a moved button did what the test meant to do; only
+    // assertions are claims about what is true.
+    expect(healCertifiesAssertion('click', 'ResolveAndRetryStrategy')).toBe(true);
+    expect(healCertifiesAssertion('type', 'ElementSimilarityStrategy')).toBe(true);
+  });
+});
