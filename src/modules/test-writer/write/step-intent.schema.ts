@@ -238,7 +238,87 @@ export function runSchemaGate(
     errors.push('scenario does not end with an assertion — it would prove nothing');
   }
 
+  errors.push(...findUnfalsifiableOracles(steps));
+
   return errors.length > 0 ? { ok: false, errors } : { ok: true, steps };
+}
+
+/**
+ * Oracles that are true by construction — rejected at authoring time.
+ * Spec: docs/specs/test-writer/spec-validation-trust.md §4
+ *
+ * These three shapes all validated GREEN against the live product and proved
+ * nothing. They are cheap to describe and impossible for a run to disprove,
+ * which is exactly why the gate has to be the thing that stops them: no amount
+ * of executing an unfalsifiable assertion turns it into evidence.
+ */
+function findUnfalsifiableOracles(steps: StepIntent[]): string[] {
+  const errors: string[] = [];
+  const typed: Array<{ index: number; value: string; elementId: string | null }> = [];
+  let inForceUrl: string | null = null;
+
+  steps.forEach((step, index) => {
+    if (step.action === 'navigate') {
+      inForceUrl = step.url;
+      return;
+    }
+    if (step.action === 'type' || step.action === 'select') {
+      const target = 'target' in step ? step.target : undefined;
+      typed.push({
+        index,
+        value: step.value,
+        elementId: target?.kind === 'element' ? target.elementId : null,
+      });
+      return;
+    }
+    if (!isAssertion(step.action)) return;
+
+    const target = 'target' in step ? step.target : undefined;
+    const value = 'value' in step ? step.value : undefined;
+
+    // (1) Typed-value assert — asserting text this scenario just typed. The
+    //     engine scans input values, so unless the assertion reads a DIFFERENT
+    //     element it can only ever confirm the typing worked.
+    if (typeof value === 'string' && (step.action === 'assert_text' || step.action === 'assert_visible')) {
+      const echoed = typed.find((t) => t.value.trim().toLowerCase() === value.trim().toLowerCase());
+      const readsElsewhere =
+        target?.kind === 'element' && echoed?.elementId != null && target.elementId !== echoed.elementId;
+      if (echoed && !readsElsewhere) {
+        errors.push(
+          `step ${index + 1}: asserts "${value}", the same text step ${echoed.index + 1} typed — ` +
+          'assert the effect of the input (a result, a message, a count), not the input itself',
+        );
+      }
+    }
+
+    // (2) Disjunction oracle — "the results or no-results header" holds in
+    //     every possible state of the page, including the broken ones.
+    if (target?.kind === 'description' && /\b(?:or|either)\b/i.test(target.description)) {
+      errors.push(
+        `step ${index + 1}: "${target.description}" accepts either outcome, so it holds however the ` +
+        'app behaves — name the single state this scenario expects',
+      );
+    }
+
+    // (3) Tautological assert_url — the URL was already what it asserts,
+    //     because this scenario navigated there and nothing since could move it.
+    //     Only judged when a navigate established the URL; with an unknown
+    //     starting URL there is nothing to compare against.
+    if (step.action === 'assert_url' && inForceUrl && typeof value === 'string') {
+      const movedSince = steps.slice(0, index).some((s, i) =>
+        i > steps.slice(0, index).map((x) => x.action).lastIndexOf('navigate')
+        && (s.action === 'click' || s.action === 'click_random' || s.action === 'press_key'
+          || s.action === 'go_back' || s.action === 'go_forward' || s.action === 'double_click'));
+      if (!movedSince && inForceUrl.toLowerCase().includes(value.trim().toLowerCase())) {
+        errors.push(
+          `step ${index + 1}: the url already contained "${value}" when this scenario navigated to ` +
+          `${inForceUrl} and nothing since could have changed it — assert a url the scenario reaches`,
+        );
+      }
+    }
+  });
+
+  return errors;
 }
 
 /** Negative tests legitimately type malformed values ("not-an-email"). */

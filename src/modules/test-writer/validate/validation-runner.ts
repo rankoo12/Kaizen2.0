@@ -8,6 +8,7 @@ import type { IObservability } from '../../observability/interfaces';
 import type { OracleHarvest, ScenarioRejection } from '../../../types/test-writer';
 import type { WrittenScenario } from '../write/scenario-writer';
 import { seedSelectors } from './selector-seeder';
+import { auditRunOracles, type AuditObservation } from './oracle-audit';
 
 /**
  * VALIDATE — never propose an unproven test.
@@ -30,6 +31,8 @@ export type ValidationOutcome = {
   proposed: Array<{ caseId: string; name: string; runId: string | null; validated: boolean; healed: boolean }>;
   rejected: ScenarioRejection[];
   harvest: Record<string, OracleHarvest>;
+  /** Non-fatal oracle-audit notes per scenario (weak anchors, sign-in doubts). */
+  auditFindings: Record<string, string[]>;
 };
 
 export class ValidationRunner {
@@ -54,7 +57,7 @@ export class ValidationRunner {
      */
     loginPrefix?: Array<{ rawText: string; ast: StepAST }>;
   }): Promise<ValidationOutcome> {
-    const outcome: ValidationOutcome = { proposed: [], rejected: [], harvest: {} };
+    const outcome: ValidationOutcome = { proposed: [], rejected: [], harvest: {}, auditFindings: {} };
     if (params.scenarios.length === 0) return outcome;
 
     let cursor = 0;
@@ -189,15 +192,46 @@ export class ValidationRunner {
     if (harvest) outcome.harvest[scenario.name] = harvest;
 
     if (verdict.accepted) {
+      // A green run proves the resolver found SOMETHING for every step and
+      // nothing threw. Before calling that proof, check what the assertions
+      // actually resolved to — this is the gate that four live false-greens
+      // sailed through. Spec: spec-validation-trust.md §2.
+      const audit = auditRunOracles(
+        [...prefix.map((s) => s.ast), ...scenario.steps.map((s) => s.ast)],
+        await this.observeRun(runId),
+        prefix.length,
+      );
+      if (!audit.ok) {
+        await pool.query(
+          `UPDATE test_cases SET status = 'rejected', validation_run_id = $2 WHERE id = $1`,
+          [created.id, runId],
+        );
+        outcome.rejected.push({
+          name: scenario.name, stage: 'validation', runId,
+          reason: `${audit.rule}: ${audit.reason}`,
+        });
+        this.obs.increment('testwriter.oracle_audit_reject', { rule: String(audit.rule) });
+        return;
+      }
+
+      const validationState = audit.unprovenSignin ? 'unproven_signin'
+        : status === 'healed' ? 'healed'
+          : audit.weakOracle ? 'weak_oracle'
+            : 'validated';
+
       await pool.query(
-        `UPDATE test_cases SET status = 'draft', validation_run_id = $2 WHERE id = $1`,
-        [created.id, runId],
+        `UPDATE test_cases SET status = 'draft', validation_run_id = $2, validation_state = $3 WHERE id = $1`,
+        [created.id, runId, validationState],
       );
       outcome.proposed.push({
         caseId: created.id, name: scenario.name, runId,
-        validated: true, healed: status === 'healed',
+        // Only a clean audit on a clean run is "validated" to the caller; the
+        // report keeps the finer grade on the case row.
+        validated: validationState === 'validated',
+        healed: status === 'healed',
       });
-      this.obs.increment('testwriter.scenario_validated');
+      if (audit.findings.length > 0) outcome.auditFindings[scenario.name] = audit.findings;
+      this.obs.increment('testwriter.scenario_validated', { state: validationState });
     } else {
       await pool.query(
         `UPDATE test_cases SET status = 'rejected', validation_run_id = $2 WHERE id = $1`,
@@ -266,6 +300,33 @@ export class ValidationRunner {
    * text. Rows predating that column are NULL and simply do not match, which
    * degrades to the ordinary rejected path — the conservative direction.
    */
+  /**
+   * What the run actually did, per step — the other half of the oracle audit.
+   * `healed` is true when the step needed a healing strategy to succeed, which
+   * for a sign-in step means the run may never have signed in (§5).
+   */
+  private async observeRun(runId: string): Promise<AuditObservation[]> {
+    const { rows } = await getPool().query<{
+      step_index: number | null;
+      selector_used: string | null;
+      resolution_source: string | null;
+      healed: boolean;
+    }>(
+      `SELECT step_index, selector_used, resolution_source,
+              (status = 'healed' OR healing_event_id IS NOT NULL) AS healed
+       FROM step_results
+       WHERE run_id = $1 AND step_index IS NOT NULL
+       ORDER BY step_index ASC`,
+      [runId],
+    );
+    return rows.map((r) => ({
+      stepIndex: r.step_index as number,
+      selectorUsed: r.selector_used,
+      resolutionSource: r.resolution_source,
+      healed: r.healed,
+    }));
+  }
+
   private async failedWithinFirstSteps(runId: string, prefixLength: number): Promise<boolean> {
     const { rows } = await getPool().query<{ step_index: number | null }>(
       `SELECT step_index FROM step_results

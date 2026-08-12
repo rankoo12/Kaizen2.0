@@ -38,6 +38,16 @@ export function lintScenario(steps: StepIntent[], kind: 'positive' | 'negative')
   //    hops are all navigate-driven and were being condemned wholesale).
   //    The vacuous case this still catches is an assertion about the page the
   //    scenario was already sitting on.
+  //
+  //    NOTE (2026-08-12): spec-validation-trust.md §4.4 asks for this scan to
+  //    start after the LAST navigate. Implementing that verbatim re-condemns
+  //    the navigation-driven tests the rule above was corrected for — proven by
+  //    lints.test.ts's 404 case — and it would not have caught any of the four
+  //    live false-greens, which all ran real actions (type + press_key) after
+  //    their navigate. Telling "asserting the destination" apart from
+  //    "asserting what was already on it" needs to know which elements the
+  //    crawl observed on that page, which this function is not given. Left as
+  //    the live-validated behaviour pending that decision.
   if (isAssertion(last.action)) {
     const priorActing = steps.slice(0, lastIndex).some((s) => STATE_CHANGING.has(s.action));
     if (!priorActing) {
