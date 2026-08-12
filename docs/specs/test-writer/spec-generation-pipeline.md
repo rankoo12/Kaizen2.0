@@ -182,9 +182,26 @@ schema; ≤ 10 steps/scenario cap; steering notes from plan approval (delimited)
 
 ## 4. Gate stack (cheapest first; each catches what only it can)
 
+> **Hardened 2026-08-12 — `spec-validation-trust.md`.** The 2026-08-12 quality
+> audit found that this gate stack, as built, **selects FOR unfalsifiable
+> tests**: all 4 validated-green drafts had oracles that cannot fail, while the
+> one sharp oracle failed honestly and was rejected. The D1 judge dimension ran
+> and correctly rejected 8 siblings, but is structurally blind to the two
+> mechanisms that produced the false greens — self-caused truths (asserting text
+> the test itself typed) and runtime resolver infidelity (the oracle the judge
+> approves is not the one that executes; it resolves to a different element).
+> `spec-validation-trust.md` adds the deterministic backstops the audit showed
+> are required: new **schema-gate lints** (§4.2 there — typed-value assert,
+> or/either disjunction, tautological `assert_url`), a **post-run oracle audit**
+> and **executed vacuity probe** before promotion (the judge is not the last
+> word), and **assert-step cache/heal exclusions**. Read that spec alongside this
+> section; the items below are the original design, now insufficient alone.
+
 1. **Schema/reference gate** (free): unknown `elementId`, > 10 steps, missing terminal
    assertion, literal credentials where a `{{seed}}` token is required, description
-   variant outside its two exemptions.
+   variant outside its two exemptions. **(Extended by spec-validation-trust §4:
+   typed-value self-echo, `or`/`either` disjunction oracles, tautological
+   `assert_url`.)**
 2. **Graduated safety filter** (free, on intents — action + element accessible name).
    NOT recon's lexicon verbatim (it blocks checkout/save/confirm — the highest-value
    journeys — and its role-based rule would block "check the terms box"). Three-way
@@ -211,6 +228,15 @@ schema; ≤ 10 steps/scenario cap; steering notes from plan approval (delimited)
    (byte-identical thanks to canonical rendering) + embedding cosine > 0.92 — compared
    WITHIN kind (or excluding oracle steps), else happy/negative pairs sharing 80% of
    steps get collapsed.
+   > **Diverged from spec + prefix-diluted (2026-08-12).** As built, dedup uses
+   > **lexical Jaccard**, not the embedding cosine described here — the embedding
+   > columns were never populated anywhere (silent divergence; the embeddings
+   > decision is now recorded in `spec-comprehension-knowledge-model.md`).
+   > Separately, existing cases are fingerprinted WITH the login prefix while
+   > candidates are body-only, so identical authenticated bodies score 0.6 < 0.9
+   > and accumulate (two byte-identical drafts observed 8 min apart).
+   > `spec-validation-trust.md` §10: strip the login prefix before fingerprinting
+   > and add plan-time behavioral dedup on `(archetype_key, targetPages)`.
 6. **Rubric judge** (`judgeScenarios`, ONE batched mini call per job): 4 dimensions —
    the inversion + lints made the rest structurally guaranteed:
    - D1 **meaningful oracle** (HARD) — the pre-state test: "would every assertion
@@ -275,8 +301,21 @@ At draft-creation time, for every step whose intent cited an element:
 Cache honesty is preserved by construction: a seeded selector is still validated
 by real execution. If the page drifted between crawl and run, the step fails,
 heals, and the cache self-corrects — exactly as for any other cached selector.
-Assertions keep using the cache-free resolver chain by design (mostly moot:
-generated oracles favour `assert_text`/`assert_url`, which resolve no element).
+
+> **Amended 2026-08-12 (spec-validation-trust.md §9).** The line that used to
+> stand here — "assertions keep using the cache-free resolver chain by design
+> (mostly moot…)" — was **stale and wrong in a load-bearing way**. In practice
+> assertion resolutions WERE being cached (verified: `selector_cache` held a
+> wrong `button "File"` anchor at confidence 1.0, replayed by later runs) and
+> WERE heal-eligible (an assertion healed from the login email field onto the
+> search box and counted satisfied). The binding rule is now in
+> spec-validation-trust.md §9: in Test-Writer runs, **assert-step resolutions
+> are never written to `selector_cache`, and assert steps are ineligible for
+> ResolveAndRetry healing**; in customer runs, a heal that resolves a *different*
+> element for an assertion auto-fails it rather than certifying it. The "mostly
+> moot" claim was also false — the false-green oracles resolved concrete
+> elements (`assert_visible`/`assert_text` on a described target), which is
+> exactly the path that cached the wrong anchor.
 
 Effect: the proving run — previously the pipeline's largest token line, since it
 resolves cold — resolves from cache at ~0 tokens, and the LLM's element-finding

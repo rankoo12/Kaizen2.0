@@ -105,7 +105,7 @@ login case up front — a job that cannot log in should never be enqueued:
 |---|---|---|
 | Case exists in the tenant | 400 `LOGIN_CASE_NOT_FOUND` | tenant isolation; also catches typos |
 | `status = 'active'` | 400 `LOGIN_CASE_NOT_ACTIVE` | drafts/validating/rejected/archived cases are unproven or retired — a login recipe must be a case the tenant trusts |
-| Case `base_url` origin === `targetUrl` origin (**via `resolveCanonicalOrigin()`**, see below) | 400 `LOGIN_CASE_ORIGIN_MISMATCH` | a login flow for another site cannot authenticate this one; the crawler is same-origin by invariant, and cookies wouldn't apply |
+| Case `base_url` origin === `targetUrl` origin (**via `resolveCanonicalOrigin()`**, see below) | 400 `LOGIN_CASE_ORIGIN_MISMATCH` | a login flow for another site cannot authenticate this one; the crawler is same-origin by invariant, and cookies wouldn't apply. **Amended 2026-08-12 (`spec-app-entity.md`): string equality upgrades to same-APP membership via `resolveApp()` — strictly tighter for unrelated origins, while finally admitting the preview-deploy case (a login case on `app.x.com` authenticating a crawl of `pr-42.preview.x.com` when both are owner-configured origins of one app)** |
 | **No `navigate` step in the recipe points off-origin** | 400 `LOGIN_CASE_NAVIGATES_OFF_ORIGIN` | see below — `base_url` is metadata, the steps are what execute |
 | No step's `raw_text` contains a `{{token}}` colliding with the seed-variable names (`firstName`, `lastName`, `email`, `password`, `phone`, `company`, `username` — `generateFormData()`, src/modules/test-data/generate.ts) | 400 `LOGIN_CASE_USES_SEED_TOKENS` | validation runs inject random per-run values for exactly these tokens (`RunJobPayload.seedVariables`); a login recipe typing `{{password}}` would silently sign in with a random string and fail every proving run |
 
@@ -1015,6 +1015,14 @@ would misrepresent its weight:
     the alternative is to gate report/media access for runs whose case links
     to a `scope='authenticated'` job at `member`+ — a decision recorded here
     as **open**, with disclosure as the v1 answer.
+    **Amended 2026-08-12 (`spec-app-entity.md` §4):** once knowledge is
+    app-keyed (migration 036), the copy adds one sentence: *"What Kaizen
+    learns while signed in enriches this workspace's shared model of this
+    app, and other suites in this workspace that test the same app will
+    reuse it."* Consent itself stays strictly per-job — reuse of knowledge
+    never implies reuse of consent — and a workspace owner can delete the
+    signed-in knowledge for an app at any time
+    (`POST /apps/:appId/purge-authenticated-knowledge`).
   - For non-admin members the card renders disabled with "Only a workspace
     admin can enable signed-in exploration."
 - The sheet's submit body gains `scope`, `loginCaseId`, `authConsent` (it
@@ -1316,6 +1324,24 @@ worker**, saved as a draft carrying the login prefix —
 That closes the two clauses the first pass could not reach: **drafts carry the
 login prefix** and **validate green**. Step 4 targets the exact element the
 grounding cap had been truncating, which is the causal evidence.
+
+> **⚠ Retrospective correction (2026-08-12).** This example is a **false
+> positive** and must not be treated as a success template. The 2026-08-12
+> quality audit proved that steps 6 and 7 here are vacuous oracles: step 6
+> ("verify the results **or** no-results header is visible") is true by
+> construction — a disjunction over two complementary states always holds — and
+> in the live run its target resolved to the always-visible File menubar button,
+> not to any search result. "Validated green" certified only that the resolver
+> found *some* element and nothing threw; it did **not** prove the search
+> feature works. This is exactly the class of defect `spec-validation-trust.md`
+> exists to close: the disjunction is now rejected at the schema gate (§4.2),
+> the self-referential resolution is caught by the post-run oracle audit (§2),
+> and the sign-in premise (step 2 resolving to the search box, not a
+> signed-in-only element) is caught by §5. The engineering narrative above —
+> the grounding-cap fix that made step 4 reachable — remains valid; only the
+> claim that the resulting test is *proven* is retracted. When
+> spec-validation-trust lands, replace this whole example with one whose oracle
+> is discriminating (a sharp assertion on a specific expected result element).
 
 **One change reverted after measurement.** Mirroring the worker's cache-skipping
 assertion resolver inside auth-session looked obviously right and broke the login

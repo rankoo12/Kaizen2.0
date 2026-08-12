@@ -54,6 +54,12 @@ Writer's own `BrowserPool`:
 The crawl is resumable and idempotent per `(tenant_id, suite_id,
 url_normalized)` — re-crawling upserts and refreshes `content_hash`.
 
+> **Amended 2026-08-12**: after migration 036 (`spec-app-entity.md`) the
+> idempotency key is `(tenant_id, app_id, url_normalized) WHERE is_canonical` —
+> the suite no longer partitions knowledge, so two suites crawling the same app
+> upsert the same rows. The crawler itself is unchanged (same-origin BFS, writes
+> literal landed URLs); only the repository's conflict target moves.
+
 ## 3. Per-page capture
 
 - **Element survey**: new `survey(page): Promise<CandidateNode[]>` method on

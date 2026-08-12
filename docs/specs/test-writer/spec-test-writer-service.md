@@ -173,6 +173,14 @@ Validation rule: `scope === 'authenticated'` requires `loginCaseId` AND
 Site-model tables (`site_pages`, `page_elements`, `page_links`, `app_briefs`)
 are migration `029_site_model.sql` — see spec-comprehension-knowledge-model.md.
 
+> **Re-keyed 2026-08-12 (`spec-app-entity.md`, migration 036).** Site knowledge
+> moves from `(tenant_id, suite_id)` to `(tenant_id, app_id)` — an `apps` row
+> owns its origins (`app_origins`), suites carry a sticky `app_id`, and
+> `generation_jobs` records the job's `app_id` row-authoritatively. Tests,
+> drafts, jobs, `tenant_brief`, and consent flags remain suite-owned. 036 also
+> retrofits `FORCE ROW LEVEL SECURITY` onto all tenant tables (RLS is currently
+> inert under the table-owner runtime role).
+
 ## 7. Shared helper extraction
 
 The case-creation SQL inside `POST /suites/:suiteId/cases`
