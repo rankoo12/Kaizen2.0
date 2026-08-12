@@ -46,7 +46,7 @@ import { pickRandomCandidate, resolveCardTitle, seededIndex } from '../modules/e
 import { findRepeatedTargets } from '../modules/element-resolver/random-target';
 import { resolveCountSelector } from '../modules/element-resolver/countable';
 import { interpolateStep } from './run-context';
-import { shouldResolveFresh } from './assertion-cache-policy';
+import { shouldResolveFresh, healCertifiesAssertion } from './assertion-cache-policy';
 import { RunLogger } from './run-logger';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
 import { PageChallengeDetector } from '../modules/execution-engine/challenge-detector';
@@ -275,7 +275,7 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
     loopResult = await runStepLoop(runId, compiledSteps, {
       isCancelled,
       executeStep: (step, stepIndex, previousAfterPng, runContext) =>
-        executeStep(step, tabs.current, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext, runLog, attempt, (p) => { tabs.current = p; }, payload.behindAuth === true),
+        executeStep(step, tabs.current, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext, runLog, attempt, (p) => { tabs.current = p; }, payload.behindAuth === true, payload.triggeredBy === 'testwriter'),
       recordSkippedSteps: (steps, startIndex, reason) =>
         recordSkippedSteps(tenantId, runId, steps, startIndex, reason, stepIds, attempt),
       onStepFailed: (stepIndex, step) => {
@@ -469,6 +469,13 @@ async function executeStep(
    * still fills. Spec: spec-authenticated-scope.md §4.1.
    */
   behindAuth: boolean = false,
+  /**
+   * This run is proving a generated draft. Assertions then resolve cache-free
+   * (so a proving run never teaches the cache where an oracle's anchor lives)
+   * and may not be certified by a heal that re-resolved the target.
+   * Spec: spec-validation-trust.md §9.
+   */
+  isProvingRun: boolean = false,
 ): Promise<{ status: 'passed' | 'failed'; healed: boolean; afterPng: Buffer | null }> {
   // Resolve {{variable}} tokens captured by earlier steps before doing anything
   // else, so resolution, execution, and persistence all see the concrete values.
@@ -666,7 +673,7 @@ async function executeStep(
     // interpolateStep returns the SAME object when no {{token}} was present, so this
     // comparison is exact and free.
     const targetIsRunVarying = step.targetDescription !== rawStep.targetDescription;
-    const useNoCache = shouldResolveFresh(step.action, targetIsRunVarying);
+    const useNoCache = shouldResolveFresh(step.action, targetIsRunVarying, isProvingRun);
     try {
       selectorSet = needsElement
         ? await (useNoCache ? assertionResolver : resolver).resolve(step, resolutionContext)
@@ -854,6 +861,27 @@ async function executeStep(
   runLog?.log('heal', `step ${String(stepIndex + 1).padStart(2, '0')} failed (${failureClass}) — attempting heal`, { stepIndex, level: 'warn', data: { failureClass } });
 
   const healingResult = await healingEngine.heal(classifiedFailure, { tenantId, runId, page });
+
+  // An assertion that healed by RE-RESOLVING its target verified an element the
+  // test never named — the resolver picked it only after the named one was not
+  // found. Certifying that as a pass is how a run still sitting on the login
+  // page could satisfy "verify the user is signed in". The heal is recorded
+  // either way; what changes is that it no longer counts as proof.
+  // Spec: docs/specs/test-writer/spec-validation-trust.md §9
+  if (healingResult.succeeded && !healCertifiesAssertion(step.action, healingResult.strategyUsed)) {
+    obs.increment('worker.assertion_heal_rejected', { strategy: healingResult.strategyUsed ?? 'unknown' });
+    if (stepResultId) {
+      await getPool().query(
+        `UPDATE step_results SET selector_used = $1, error_type = 'AssertionHealedOntoDifferentElement' WHERE id = $2`,
+        [healingResult.newSelector, stepResultId],
+      ).catch((e: any) => obs.log('warn', 'worker.healed_update_failed', { error: e.message }));
+    }
+    runLog?.log('heal',
+      `heal found a different element for an assertion (${healingResult.strategyUsed}) — not treated as verified`,
+      { stepIndex, level: 'error', data: { strategy: healingResult.strategyUsed, newSelector: healingResult.newSelector } });
+    await runLog?.flush();
+    return { status: 'failed', healed: false, afterPng };
+  }
 
   if (healingResult.succeeded) {
     obs.increment('worker.step_healed', { failureClass, strategy: healingResult.strategyUsed });

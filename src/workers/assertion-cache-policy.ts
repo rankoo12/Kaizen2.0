@@ -40,7 +40,45 @@ export const NO_CACHE_ASSERTIONS = new Set([
  * @param action              the compiled step action
  * @param targetIsRunVarying  whether interpolation changed the step's targetDescription
  */
-export function shouldResolveFresh(action: string, targetIsRunVarying: boolean): boolean {
+export function shouldResolveFresh(
+  action: string,
+  targetIsRunVarying: boolean,
+  /**
+   * True for Test Writer proving runs. Every assertion then resolves through the
+   * no-cache chain, which also means `cacheWrites: false` — so a proving run can
+   * never TEACH the tenant's cache where an assertion's anchor lives.
+   *
+   * The failure this prevents is not hypothetical: an assertion described as
+   * "the no-results message" resolved to the always-visible File menubar button,
+   * that pick was written to selector_cache at confidence 1.0, and every
+   * subsequent run replayed it from cache — the wrong answer, promoted to
+   * remembered fact, cheaper each time. A proving run exists to be judged, not
+   * to be believed. Spec: spec-validation-trust.md §9
+   */
+  isProvingRun = false,
+): boolean {
   if (!NO_CACHE_ASSERTIONS.has(action)) return false;
-  return targetIsRunVarying || action === 'assert_not_visible';
+  return isProvingRun || targetIsRunVarying || action === 'assert_not_visible';
+}
+
+/**
+ * May this healed step still count as passed?
+ *
+ * Healing an ASSERTION is categorically different from healing an action. When a
+ * click heals onto a moved button, the test did what it meant to do. When an
+ * assertion heals, the verification landed on an element the resolver picked
+ * AFTER the original target was not found — so the step now verifies something
+ * the test never named. Observed live: an assertion healed from the login page's
+ * email field onto the Search textbox and was recorded as satisfied, which is
+ * how "the user is signed in" could be certified from the login page.
+ *
+ * Strategies that re-resolve the target find a DIFFERENT element; strategies
+ * that wait or retry the same selector do not, and remain legitimate.
+ * Spec: docs/specs/test-writer/spec-validation-trust.md §9
+ */
+const RE_RESOLVING_STRATEGIES = new Set(['ResolveAndRetryStrategy', 'ElementSimilarityStrategy']);
+
+export function healCertifiesAssertion(action: string, strategyUsed: string | null | undefined): boolean {
+  if (!NO_CACHE_ASSERTIONS.has(action)) return true;
+  return !RE_RESOLVING_STRATEGIES.has(strategyUsed ?? '');
 }

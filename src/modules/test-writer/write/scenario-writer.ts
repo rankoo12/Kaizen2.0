@@ -81,6 +81,41 @@ export function collectSelectorSeeds(
   return seeds;
 }
 
+/**
+ * Archetypes whose whole premise is an entity the app already holds. A seed
+ * token is the one thing that cannot satisfy them: it invents a value, so the
+ * test proves only that searching for something absent behaves like searching
+ * for something absent — while its oracle ("the text is shown") is satisfied by
+ * the search box the test typed into.
+ * Spec: docs/specs/test-writer/spec-validation-trust.md §7
+ */
+const KNOWN_ENTITY_ARCHETYPES = new Set([
+  'search.find-known-entity',
+  'search.result-opens-detail',
+]);
+
+export function checkKnownEntityBinding(
+  plan: PlannedScenario,
+  steps: StepIntent[],
+  seedTokens: string[],
+): string[] {
+  if (plan.source.kind !== 'catalog' || !KNOWN_ENTITY_ARCHETYPES.has(plan.source.archetypeKey)) return [];
+
+  const errors: string[] = [];
+  steps.forEach((step, index) => {
+    if (step.action !== 'type' || typeof step.value !== 'string') return;
+    const token = /\{\{(\w+)\}\}/.exec(step.value);
+    if (token && seedTokens.includes(token[1])) {
+      errors.push(
+        `step ${index + 1}: "${step.value}" is a randomly generated value, but this scenario is ` +
+        'about finding an entity that already exists. Use a literal name taken from the page ' +
+        'content you were given (a product, test, or item the crawl actually saw).',
+      );
+    }
+  });
+  return errors;
+}
+
 export class ScenarioWriter {
   constructor(
     private readonly gateway: ITestWriterGateway,
@@ -128,6 +163,18 @@ export class ScenarioWriter {
       if (!gate.ok) {
         repairErrors = gate.errors;
         this.obs.increment('testwriter.write_schema_reject', { attempt: String(attempt) });
+        continue;
+      }
+
+      // An archetype whose premise is "an entity that provably EXISTS" cannot be
+      // satisfied by a random seed. Bound to {{firstName}} it searched for
+      // 'Taylor' — a name the app had never heard of — and then asserted that
+      // text was shown, which the search box itself made true. The query has to
+      // be a literal the crawl actually saw.
+      const entityErrors = checkKnownEntityBinding(plan, gate.steps, params.seedTokens);
+      if (entityErrors.length > 0) {
+        repairErrors = entityErrors;
+        this.obs.increment('testwriter.write_known_entity_reject', { attempt: String(attempt) });
         continue;
       }
 

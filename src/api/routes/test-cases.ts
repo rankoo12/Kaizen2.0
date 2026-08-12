@@ -252,7 +252,7 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
         created_at: Date; updated_at: Date;
         status: string; origin: string;
         validation_run_id: string | null; generation_job_id: string | null;
-        archetype_key: string | null;
+        archetype_key: string | null; validation_state: string | null;
         last_run_id: string | null; last_run_status: string | null; last_run_completed_at: Date | null;
         last_run_duration_ms: number | null; last_run_total_tokens: number | null;
         author_id: string | null; author_name: string | null; author_email: string | null;
@@ -267,6 +267,7 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
                 -- Draft lifecycle (migration 028/032): without these the web cannot
                 -- tell a Kaizen-written draft from a test the user owns.
                 tc.status, tc.origin, tc.validation_run_id, tc.generation_job_id, tc.archetype_key,
+                tc.validation_state,
                 st.runs, st.passed, st.healed, st.failed, st.avg_duration_ms,
                 ch.lookups, ch.cached,
                 ft.tokens        AS first_run_tokens,
@@ -926,7 +927,7 @@ function mapCaseSummary(row: {
   created_at: Date; updated_at: Date;
   status?: string; origin?: string;
   validation_run_id?: string | null; generation_job_id?: string | null;
-  archetype_key?: string | null;
+  archetype_key?: string | null; validation_state?: string | null;
   last_run_id: string | null; last_run_status: string | null;
   last_run_completed_at: Date | null;
   last_run_duration_ms: number | null;
@@ -954,6 +955,9 @@ function mapCaseSummary(row: {
     status:    row.status ?? 'active',
     origin:    row.origin ?? 'user',
     validationRunId:  row.validation_run_id ?? null,
+    // The EVIDENCE behind a draft, which validationRunId alone cannot express:
+    // a healed run and a clean one both have an id (migration 035).
+    validationState:  row.validation_state ?? null,
     generationJobId:  row.generation_job_id ?? null,
     archetypeKey:     row.archetype_key ?? null,
     // null for cases written before migration 030 and for anything created through an

@@ -25,6 +25,16 @@ const POLL_INTERVAL_MS = 2_000;
 const RUN_TIMEOUT_MS = 5 * 60_000;
 const CONCURRENCY = 2;
 
+/**
+ * The failure classes that mean THE APP REFUSED, as opposed to the test falling
+ * over on its way to finding out. Only these can confirm a Tier-2 negative:
+ * LOGIC_FAILURE is "the element was there and the expectation did not hold",
+ * while ELEMENT_REMOVED / OBSCURED / PAGE_NOT_LOADED / TIMING all describe a
+ * test that never got far enough to observe the app's answer.
+ * Spec: docs/specs/test-writer/spec-validation-trust.md §7
+ */
+const ASSERTION_FAILURE_CLASSES = new Set(['LOGIC_FAILURE']);
+
 type TerminalStatus = 'passed' | 'failed' | 'healed' | 'cancelled';
 
 export type ValidationOutcome = {
@@ -56,6 +66,13 @@ export class ValidationRunner {
      * Spec: docs/specs/test-writer/spec-authenticated-scope.md §6.2, §7
      */
     loginPrefix?: Array<{ rawText: string; ast: StepAST }>;
+    /**
+     * False when the login recipe's own final assertion cannot distinguish a
+     * signed-in page from the login page. Every draft from this job is then
+     * proposed but never labelled proven — the scenario may be fine, we simply
+     * have no evidence the session existed. Spec: spec-validation-trust.md §5.
+     */
+    signinAssertionProves?: boolean;
   }): Promise<ValidationOutcome> {
     const outcome: ValidationOutcome = { proposed: [], rejected: [], harvest: {}, auditFindings: {} };
     if (params.scenarios.length === 0) return outcome;
@@ -117,6 +134,11 @@ export class ValidationRunner {
       origin: 'generated',
       generationJobId: params.jobId,
       archetypeKey: scenario.plan.source.kind === 'catalog' ? scenario.plan.source.archetypeKey : null,
+      // Say WHY it is a draft from the moment it exists, rather than leaving
+      // "consent withheld" and "never run" indistinguishable until someone
+      // reads the job report.
+      validationState: willRun ? null : (consentBlocked ? 'consent_held' : 'unvalidated'),
+      expectedOutcome: scenario.expectation.outcome,
     });
 
     if (!created) {
@@ -142,27 +164,56 @@ export class ValidationRunner {
     if (seeded > 0) this.obs.increment('testwriter.selectors_preseeded', { count: String(seeded) });
 
     const pool = getPool();
-    const { rows } = await pool.query<{ id: string }>(
-      `INSERT INTO runs (tenant_id, suite_id, case_id, triggered_by, status, environment_url)
-       VALUES ($1, $2, $3, 'testwriter', 'queued', $4)
-       RETURNING id`,
-      [params.tenantId, params.suiteId, created.id, params.baseUrl],
-    );
-    const runId = rows[0].id;
+    // One draw of the seed variables for the whole validation, retries included:
+    // "proven" has to mean proven with values we can name, and a second draw on
+    // retry would make the recorded seed a lie about what actually ran.
+    const seedVariables = generateFormData();
 
-    await this.runQueue.add('run', {
-      runId,
-      tenantId: params.tenantId,
-      compiledSteps: [...prefix.map((s) => s.ast), ...scenario.steps.map((s) => s.ast)],
-      stepIds: created.steps.map((s) => s.id),
-      baseUrl: params.baseUrl,
-      seedVariables: generateFormData(),
-      // Nothing this run learns behind the login wall may leave the tenant: no
-      // shared-pool contribution, no global archetype learning (spec §4.1).
-      behindAuth: prefix.length > 0,
-    });
+    const execute = async (): Promise<{ runId: string; status: TerminalStatus | 'timeout' }> => {
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO runs (tenant_id, suite_id, case_id, triggered_by, status, environment_url)
+         VALUES ($1, $2, $3, 'testwriter', 'queued', $4)
+         RETURNING id`,
+        [params.tenantId, params.suiteId, created.id, params.baseUrl],
+      );
+      const id = rows[0].id;
 
-    const status = await this.pollToTerminal(runId);
+      await this.runQueue.add('run', {
+        runId: id,
+        tenantId: params.tenantId,
+        compiledSteps: [...prefix.map((s) => s.ast), ...scenario.steps.map((s) => s.ast)],
+        stepIds: created.steps.map((s) => s.id),
+        baseUrl: params.baseUrl,
+        seedVariables,
+        // Nothing this run learns behind the login wall may leave the tenant: no
+        // shared-pool contribution, no global archetype learning (spec §4.1).
+        behindAuth: prefix.length > 0,
+        // A proving run must not teach the cache where an ORACLE's anchor lives,
+        // and may not be certified by an assertion heal (§9).
+        triggeredBy: 'testwriter',
+      });
+
+      return { runId: id, status: await this.pollToTerminal(id) };
+    };
+
+    let { runId, status } = await execute();
+
+    // Flake policy. One failure is not evidence of a bad test any more than one
+    // pass is evidence of a good one — a slow page or a cold cache fails a
+    // perfectly sound scenario, and rejecting it permanently on that basis
+    // throws away real work. Retried exactly once, and a scenario that needed
+    // the retry is proposed as `flaky` rather than quietly as proven.
+    let flaky = false;
+    const expectsPass = scenario.expectation.outcome === 'pass';
+    if (expectsPass && (status === 'failed' || status === 'timeout')) {
+      const retry = await execute();
+      if (retry.status === 'passed' || retry.status === 'healed') {
+        flaky = true;
+        this.obs.increment('testwriter.validation_flaky');
+      }
+      runId = retry.runId;
+      status = retry.status;
+    }
 
     // A run that died IN THE SIGN-IN PREFIX says nothing about the generated
     // test. Recording it as `rejected` would blame the scenario for an app-side
@@ -171,7 +222,10 @@ export class ValidationRunner {
     if (prefix.length > 0 && status !== 'passed' && status !== 'healed') {
       const failedInPrefix = await this.failedWithinFirstSteps(runId, prefix.length);
       if (failedInPrefix) {
-        await pool.query(`UPDATE test_cases SET status = 'draft' WHERE id = $1`, [created.id]);
+        await pool.query(
+          `UPDATE test_cases SET status = 'draft', validation_state = 'unproven_signin' WHERE id = $1`,
+          [created.id],
+        );
         outcome.proposed.push({
           caseId: created.id, name: scenario.name, runId, validated: false, healed: false,
         });
@@ -184,7 +238,7 @@ export class ValidationRunner {
       }
     }
 
-    const verdict = this.judgeRun(scenario, status);
+    const verdict = await this.judgeRun(scenario, status, runId, prefix.length);
 
     // Harvest whatever the run observed after its last state change, so the
     // reviewer can harden a generic discover oracle into a specific assertion.
@@ -214,14 +268,19 @@ export class ValidationRunner {
         return;
       }
 
-      const validationState = audit.unprovenSignin ? 'unproven_signin'
+      const signinUnproven = audit.unprovenSignin
+        || (prefix.length > 0 && params.signinAssertionProves === false);
+      const validationState = signinUnproven ? 'unproven_signin'
         : status === 'healed' ? 'healed'
-          : audit.weakOracle ? 'weak_oracle'
-            : 'validated';
+          : flaky ? 'flaky'
+            : audit.weakOracle ? 'weak_oracle'
+              : 'validated';
 
       await pool.query(
-        `UPDATE test_cases SET status = 'draft', validation_run_id = $2, validation_state = $3 WHERE id = $1`,
-        [created.id, runId, validationState],
+        `UPDATE test_cases SET status = 'draft', validation_run_id = $2, validation_state = $3,
+                validation_seed = $4
+         WHERE id = $1`,
+        [created.id, runId, validationState, JSON.stringify(seedVariables)],
       );
       outcome.proposed.push({
         caseId: created.id, name: scenario.name, runId,
@@ -244,11 +303,13 @@ export class ValidationRunner {
     }
   }
 
-  /** Tier-1 vs Tier-2 semantics (spec §3.1). */
-  private judgeRun(
+  /** Tier-1 vs Tier-2 semantics (spec §3.1, hardened by spec-validation-trust §7). */
+  private async judgeRun(
     scenario: WrittenScenario,
     status: TerminalStatus | 'timeout',
-  ): { accepted: boolean; reason: string } {
+    runId: string,
+    prefixLength: number,
+  ): Promise<{ accepted: boolean; reason: string }> {
     if (status === 'timeout') return { accepted: false, reason: 'validation run timed out' };
     if (status === 'cancelled') return { accepted: false, reason: 'validation run was cancelled' };
 
@@ -258,13 +319,57 @@ export class ValidationRunner {
       return { accepted: false, reason: 'the generated test failed against the live site' };
     }
 
-    // Tier-2 expected-fail: valid only when it failed where it was supposed to.
-    // Anything else (element not found, timeout) means the TEST is broken, not
-    // that the app resisted — those are rejected, not celebrated.
+    // Tier-2 expected-fail. Accepting any failure at all was the bug: a negative
+    // test whose FIRST step could not resolve its element "confirmed" a
+    // rejection the app never performed, and shipped as proof the app defends
+    // itself. The failure has to land where the scenario said it would, and be
+    // the app refusing — not the test falling over on the way there.
     if (status !== 'failed') {
       return { accepted: false, reason: `expected a failure at step ${scenario.expectation.failStepIndex} but the run ${status}` };
     }
-    return { accepted: true, reason: 'expected-fail confirmed' };
+
+    const first = await this.firstFailure(runId);
+    if (!first) {
+      return { accepted: false, reason: 'the run failed but recorded no failing step, so the expected failure cannot be confirmed' };
+    }
+
+    // failStepIndex is BODY-relative; step_results counts the sign-in prefix.
+    const expectedIndex = prefixLength + scenario.expectation.failStepIndex;
+    if (first.stepIndex !== expectedIndex) {
+      return {
+        accepted: false,
+        reason: `expected the failure at step ${expectedIndex + 1} but the run first failed at step ${first.stepIndex + 1}`,
+      };
+    }
+
+    // An assertion that failed is the app declining. A selector that could not
+    // be found, a timeout, a navigation error — those are the test breaking, and
+    // they prove nothing about the app's behaviour.
+    if (!ASSERTION_FAILURE_CLASSES.has(first.failureClass ?? '') && !first.errorType?.startsWith('Assertion')) {
+      return {
+        accepted: false,
+        reason: `the run failed at the expected step but for a ${first.failureClass ?? first.errorType ?? 'non-assertion'} reason — the test broke rather than the app refusing`,
+      };
+    }
+
+    return { accepted: true, reason: 'expected-fail confirmed at the expected step' };
+  }
+
+  /** The run's first failing step, with enough detail to tell WHY it failed. */
+  private async firstFailure(
+    runId: string,
+  ): Promise<{ stepIndex: number; failureClass: string | null; errorType: string | null } | null> {
+    const { rows } = await getPool().query<{
+      step_index: number | null; failure_class: string | null; error_type: string | null;
+    }>(
+      `SELECT step_index, failure_class, error_type FROM step_results
+       WHERE run_id = $1 AND status = 'failed' AND step_index IS NOT NULL
+       ORDER BY step_index ASC LIMIT 1`,
+      [runId],
+    );
+    const row = rows[0];
+    if (!row || typeof row.step_index !== 'number') return null;
+    return { stepIndex: row.step_index, failureClass: row.failure_class, errorType: row.error_type };
   }
 
   private async pollToTerminal(runId: string): Promise<TerminalStatus | 'timeout'> {
