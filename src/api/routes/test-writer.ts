@@ -433,6 +433,84 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
+  // ── GET /suites/:suiteId/coverage ──────────────────────────────────────────
+  // What Kaizen knows exists, against what this suite actually touches.
+  // Designed in the master plan, never built — so the only answer a customer
+  // could get about coverage came from a tenant brief that no suite has ever
+  // had. Read-only: one LEFT JOIN over data already present.
+  // Spec: docs/specs/test-writer/spec-findings-and-coverage.md §4
+  app.get('/suites/:suiteId/coverage', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { suiteId } = request.params as { suiteId: string };
+    const { tenantId } = request;
+
+    const result = await withTenantTransaction(tenantId, async (client) => {
+      const { rows: suites } = await client.query(
+        `SELECT id FROM test_suites WHERE id = $1 AND tenant_id = $2`, [suiteId, tenantId],
+      );
+      if (suites.length === 0) return null;
+
+      // A page counts as tested when an ACTIVE case in this suite names its URL
+      // in a step. Deliberately literal: a page is covered because a test goes
+      // there, not because a model thought the two sounded related.
+      const { rows: pages } = await client.query<{
+        url_normalized: string; purpose_tag: string | null; requires_auth: boolean; case_count: string;
+      }>(
+        `SELECT sp.url_normalized, sp.purpose_tag, sp.requires_auth,
+                count(DISTINCT tc.id)::text AS case_count
+         FROM site_pages sp
+         LEFT JOIN test_case_steps tcs
+           ON tcs.tenant_id = sp.tenant_id AND tcs.is_active = true
+         LEFT JOIN test_steps ts
+           ON ts.id = tcs.step_id AND position(sp.url_normalized in ts.raw_text) > 0
+         LEFT JOIN test_cases tc
+           ON tc.id = tcs.case_id AND tc.suite_id = $2 AND tc.status = 'active' AND ts.id IS NOT NULL
+         WHERE sp.tenant_id = $1 AND sp.suite_id = $2
+         GROUP BY sp.url_normalized, sp.purpose_tag, sp.requires_auth
+         ORDER BY sp.url_normalized`,
+        [tenantId, suiteId],
+      );
+
+      // Was the model built from a crawl that actually saw the app? A one-page
+      // crawl of an SPA behind robots.txt must never render as "100% covered" —
+      // the honest answer to "what is my coverage" is sometimes "unknown".
+      const { rows: lastJob } = await client.query<{ blocked: boolean; pages_blocked: number }>(
+        `SELECT (status = 'blocked') AS blocked,
+                COALESCE((report->'recon'->>'pagesBlocked')::int, 0) AS pages_blocked
+         FROM generation_jobs
+         WHERE tenant_id = $1 AND suite_id = $2
+         ORDER BY created_at DESC LIMIT 1`,
+        [tenantId, suiteId],
+      );
+      return { pages, lastJob: lastJob[0] ?? null };
+    });
+
+    if (!result) return reply.status(404).send({ error: 'SUITE_NOT_FOUND' });
+
+    const pages = result.pages.map((p) => ({
+      url: p.url_normalized,
+      purposeTag: p.purpose_tag,
+      requiresAuth: p.requires_auth,
+      caseCount: Number(p.case_count),
+      tested: Number(p.case_count) > 0,
+    }));
+    const tested = pages.filter((p) => p.tested).length;
+    const thin = pages.length <= 2 || result.lastJob?.blocked === true
+      || (result.lastJob?.pages_blocked ?? 0) > 0;
+
+    return reply.send({
+      coverage: {
+        pages,
+        summary: { total: pages.length, tested, untested: pages.length - tested },
+        // 'unknown' is a real answer, not a degraded one: it says the map itself
+        // is incomplete, so any percentage drawn from it would mislead.
+        coverageConfidence: thin ? 'unknown' : 'observed',
+        confidenceReason: thin
+          ? `Only ${pages.length} page${pages.length === 1 ? '' : 's'} could be reached, so this is not a complete picture of the app.`
+          : null,
+      },
+    });
+  });
+
   // ── GET /suites/:suiteId/jobs ──────────────────────────────────────────────
   app.get('/suites/:suiteId/jobs', { preHandler: [requireAuth] }, async (request, reply) => {
     const { suiteId } = request.params as { suiteId: string };

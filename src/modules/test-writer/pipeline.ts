@@ -4,6 +4,8 @@ import type { IObservability } from '../observability/interfaces';
 import type { ITestWriterGateway } from '../llm-gateway/testwriter.interfaces';
 import type { PlannedScenario, ScenarioRejection, TenantBrief } from '../../types/test-writer';
 import type { StepAST } from '../../types';
+import { reconFindings, rankFindings } from './findings';
+import type { Finding } from '../../types/test-writer';
 import type { CrawlReport, PageCapture } from './interfaces';
 import { DEFAULT_BUDGETS, HARD_MAX_PAGES } from './interfaces';
 import { ReconCrawler } from './recon/crawler';
@@ -162,13 +164,23 @@ export async function runTestWriterJob(
     // Sign-in failures are their own outcome, distinct from "everything was
     // blocked": the message names the failing step so the tenant can fix the
     // recipe rather than wonder why nothing happened.
+    // A job that ends here has no tests to show, which is precisely when the
+    // customer most needs to hear what Kaizen DID see. Spec: findings §0.
+    const earlyFindings = async (): Promise<Finding[]> => rankFindings(
+      await reconFindings(
+        payload.tenantId, payload.suiteId,
+        recon.errorPages ?? [],
+        recon.auth?.publicPartitionUnverified === true,
+      ).catch(() => []),
+    );
+
     if (recon.auth?.blockedReason) {
-      await finishJob(payload.jobId, 'blocked', { recon },
+      await finishJob(payload.jobId, 'blocked', { recon, findings: await earlyFindings() },
         authBlockedMessage(recon.auth.blockedReason, recon.auth.blockedDetail));
       return;
     }
     if (recon.pagesCrawled === 0) {
-      await finishJob(payload.jobId, 'blocked', { recon },
+      await finishJob(payload.jobId, 'blocked', { recon, findings: await earlyFindings() },
         'All reachable pages were blocked (challenge/robots).');
       return;
     }
@@ -200,6 +212,7 @@ export async function runTestWriterJob(
 
     const report = {
       recon,
+      findings: await earlyFindings(),
       comprehend: {
         pagesClassified: classification.classified,
         pagesReusedFromCache: classification.skipped,
@@ -504,8 +517,23 @@ async function runGenerationPhases(
       : true,
   });
 
+  // What Kaizen noticed that is not a test. Assembled last so it can draw on
+  // everything the job saw — the crawl's error pages, the site model's unnamed
+  // controls, and whatever validation learned about the app.
+  // Spec: docs/specs/test-writer/spec-findings-and-coverage.md
+  const recon = (job.report as { recon?: { errorPages?: Array<{ url: string; status: number | null; reason: string }>; auth?: { publicPartitionUnverified?: boolean } } } | null)?.recon;
+  const findings = rankFindings([
+    ...await reconFindings(
+      payload.tenantId, payload.suiteId,
+      recon?.errorPages ?? [],
+      recon?.auth?.publicPartitionUnverified === true,
+    ).catch(() => []),
+    ...validation.findings,
+  ]);
+
   const report = {
     ...(job.report ?? {}),
+    findings,
     write: {
       attempted: approved.length,
       written: written.length,

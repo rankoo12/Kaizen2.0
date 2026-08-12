@@ -100,6 +100,7 @@ export class ReconCrawler {
       probesPerformed: 0,
       authScope: authed ? 'authenticated' : 'public',
       urlsSkippedByBudget: 0,
+      errorPages: [],
     };
     const auth: AuthCrawlReport | null = authed
       ? {
@@ -119,7 +120,10 @@ export class ReconCrawler {
 
     const startedAt = Date.now();
     const visited = new Set<string>();
-    const queue: Array<{ url: string; depth: number }> = [{ url: rootNormalized, depth: 0 }];
+    // `from` makes a broken page actionable: "your pricing page links to a page
+    // that 404s" is a bug report; "some url 404s" is a shrug.
+    const queue: Array<{ url: string; depth: number; from: string | null }> =
+      [{ url: rootNormalized, depth: 0, from: null }];
     let pageIndex = 0;
     let lastNavAt = 0;
 
@@ -187,7 +191,7 @@ export class ReconCrawler {
         // entry point, and it costs one page of budget.
         const landed = normalizeUrl(page.url());
         if (landed && landed !== rootNormalized && isSameOrigin(landed, rootOrigin)) {
-          queue.push({ url: landed, depth: 0 });
+          queue.push({ url: landed, depth: 0, from: null });
         }
       }
 
@@ -198,7 +202,7 @@ export class ReconCrawler {
           break;
         }
 
-        const { url, depth } = queue.shift()!;
+        const { url, depth, from } = queue.shift()!;
         if (visited.has(url)) continue;
         visited.add(url);
 
@@ -226,12 +230,25 @@ export class ReconCrawler {
         lastNavAt = Date.now();
 
         try {
-          await page.goto(url, { timeout: budgets.pageTimeoutMs, waitUntil: 'domcontentloaded' });
-        } catch (err) {
-          obs.log('warn', 'testwriter.crawl_goto_failed', {
-            url, error: err instanceof Error ? err.message : String(err),
+          // The response status is the only place a 4xx/5xx is observable —
+          // page.goto() resolves happily on a 500, so a server error looked
+          // exactly like a healthy page to every previous version of this crawl.
+          const response = await page.goto(url, {
+            timeout: budgets.pageTimeoutMs, waitUntil: 'domcontentloaded',
           });
+          const status: number | null = typeof response?.status === 'function' ? response.status() : null;
+          if (status !== null && status >= 400) {
+            report.errorPages.push({ url, status, reason: `HTTP ${status}`, linkedFrom: from });
+            obs.increment('testwriter.crawl_error_page', { status: String(status) });
+          }
+        } catch (err) {
+          const reason = err instanceof Error ? err.message : String(err);
+          obs.log('warn', 'testwriter.crawl_goto_failed', { url, error: reason });
           obs.increment('testwriter.crawl_goto_failed');
+          // A page that would not load is something the customer wants to know
+          // about. Skipping it is right for the crawl; saying nothing about it
+          // is what made a broken site indistinguishable from a small one.
+          report.errorPages.push({ url, status: null, reason, linkedFrom: from });
           continue;
         }
         await page.waitForLoadState('networkidle', { timeout: 5_000 }).catch(() => {});
@@ -392,7 +409,7 @@ export class ReconCrawler {
               obs.increment('testwriter.session_ending_url_blocked');
               continue;
             }
-            queue.push({ url: link.toUrlNormalized, depth: depth + 1 });
+            queue.push({ url: link.toUrlNormalized, depth: depth + 1, from: landed });
           }
         }
       }

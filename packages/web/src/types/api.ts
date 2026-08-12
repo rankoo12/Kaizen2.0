@@ -104,6 +104,23 @@ export type GenerationReport = {
   tokenUsage?: Record<string, number>;
   rejected?: ScenarioRejection[];
   harvest?: Record<string, { finalUrl: string; heading: string | null; alertText: string | null }>;
+  /**
+   * What Kaizen noticed that is not a test — broken pages, unlabelled controls,
+   * a sound test that failed against the app. Present even on jobs that
+   * proposed nothing, which is exactly when it matters.
+   */
+  findings?: Finding[];
+};
+
+export type Finding = {
+  kind:
+    | 'crawl_error_page' | 'empty_accessible_name' | 'possible_app_defect'
+    | 'unverified_auth_partition' | 'console_or_network_errors' | 'broken_link';
+  severity: 'info' | 'low' | 'medium' | 'high';
+  title: string;
+  detail: string;
+  evidence: { url?: string; elementRef?: string; runId?: string; caseId?: string; repro?: string[] };
+  source: 'recon' | 'comprehend' | 'validate';
 };
 
 export type GenerationJob = {
