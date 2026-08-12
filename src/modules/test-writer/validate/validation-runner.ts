@@ -8,7 +8,7 @@ import type { IObservability } from '../../observability/interfaces';
 import type { OracleHarvest, ScenarioRejection } from '../../../types/test-writer';
 import type { WrittenScenario } from '../write/scenario-writer';
 import { seedSelectors } from './selector-seeder';
-import { auditRunOracles, type AuditObservation } from './oracle-audit';
+import { auditRunOracles, planVacuityProbe, type AuditObservation } from './oracle-audit';
 
 /**
  * VALIDATE — never propose an unproven test.
@@ -268,6 +268,25 @@ export class ValidationRunner {
         return;
       }
 
+      // The audit reads what the run recorded; the probe asks the page itself.
+      // An oracle can be perfectly faithful — the right element, the right
+      // words — and still be true before the scenario did anything. Running the
+      // assertion with the ACTIONS REMOVED is the only way to find that out.
+      const vacuous = await this.probeIsVacuous(scenario, params, prefix, created.steps);
+      if (vacuous) {
+        await pool.query(
+          `UPDATE test_cases SET status = 'rejected', validation_run_id = $2 WHERE id = $1`,
+          [created.id, runId],
+        );
+        outcome.rejected.push({
+          name: scenario.name, stage: 'validation', runId,
+          reason: 'oracle_vacuous_executed: the final check already passed without the scenario\'s '
+            + 'actions — it would stay green if the feature broke',
+        });
+        this.obs.increment('testwriter.oracle_vacuous_executed');
+        return;
+      }
+
       const signinUnproven = audit.unprovenSignin
         || (prefix.length > 0 && params.signinAssertionProves === false);
       const validationState = signinUnproven ? 'unproven_signin'
@@ -353,6 +372,77 @@ export class ValidationRunner {
     }
 
     return { accepted: true, reason: 'expected-fail confirmed at the expected step' };
+  }
+
+  /**
+   * Run the scenario with its ACTIONS REMOVED and see whether the oracle still
+   * holds. Spec: docs/specs/test-writer/spec-validation-trust.md §3
+   *
+   * The probe keeps the sign-in prefix and the navigations — everything that
+   * establishes WHERE the assertion looks — and drops every click, keystroke and
+   * keypress, so it is read-only by construction and safe on any target, consent
+   * or no consent. If the terminal assertion passes anyway, the scenario's
+   * actions were never load-bearing: the test would stay green with the feature
+   * removed, which is the definition of proving nothing.
+   *
+   * A probe that errors returns "not vacuous" — an inconclusive probe must never
+   * be the reason a real test is thrown away.
+   */
+  private async probeIsVacuous(
+    scenario: WrittenScenario,
+    params: Parameters<ValidationRunner['validateAll']>[0],
+    prefix: Array<{ rawText: string; ast: StepAST }>,
+    createdSteps: Array<{ id: string }>,
+  ): Promise<boolean> {
+    const plan = planVacuityProbe(scenario.steps.map((s) => s.ast.action));
+    if (!plan) return false;
+    const { keptBodyIndexes: bodyKept, terminalIndex } = plan;
+    const terminal = scenario.steps[terminalIndex];
+
+    const compiledSteps = [
+      ...prefix.map((s) => s.ast),
+      ...bodyKept.map((i) => scenario.steps[i].ast),
+      terminal.ast,
+    ];
+    const stepIds = [
+      ...prefix.map((_, i) => createdSteps[i]?.id),
+      ...bodyKept.map((i) => createdSteps[prefix.length + i]?.id),
+      createdSteps[prefix.length + terminalIndex]?.id,
+    ].filter((id): id is string => typeof id === 'string');
+
+    try {
+      const pool = getPool();
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO runs (tenant_id, suite_id, case_id, triggered_by, status, environment_url)
+         VALUES ($1, $2, NULL, 'testwriter', 'queued', $3)
+         RETURNING id`,
+        [params.tenantId, params.suiteId, params.baseUrl],
+      );
+      const probeRunId = rows[0].id;
+
+      await this.runQueue.add('run', {
+        runId: probeRunId,
+        tenantId: params.tenantId,
+        compiledSteps,
+        stepIds,
+        baseUrl: params.baseUrl,
+        seedVariables: generateFormData(),
+        behindAuth: prefix.length > 0,
+        triggeredBy: 'testwriter',
+      });
+
+      const status = await this.pollToTerminal(probeRunId);
+      this.obs.increment('testwriter.vacuity_probe', { status });
+      // Passing WITHOUT the actions is the indictment. Failing is what a
+      // discriminating oracle is supposed to do here.
+      return status === 'passed' || status === 'healed';
+    } catch (err) {
+      this.obs.log('warn', 'testwriter.vacuity_probe_failed', {
+        scenario: scenario.name,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
   }
 
   /** The run's first failing step, with enough detail to tell WHY it failed. */
@@ -445,27 +535,35 @@ export class ValidationRunner {
 
   private async harvestRunState(runId: string): Promise<OracleHarvest | null> {
     const pool = getPool();
-    const { rows } = await pool.query<{ message: string | null; data: Record<string, unknown> | null }>(
-      `SELECT message, data FROM run_events
-       WHERE run_id = $1 AND phase IN ('assert', 'execute')
-       ORDER BY seq DESC LIMIT 20`,
+    // The worker now records the page's closing state directly (§8). Before it
+    // did, this method scavenged the event log for a url and an error-ish
+    // message and almost always found neither — report.harvest was an empty
+    // object in every job the product has ever run, so the "reviewer hardens
+    // the oracle" rung of the ladder had nothing to stand on.
+    const { rows } = await pool.query<{ data: Record<string, unknown> | null }>(
+      `SELECT data FROM run_events
+       WHERE run_id = $1 AND phase = 'capture' AND message = 'final page state'
+       ORDER BY seq DESC LIMIT 1`,
       [runId],
     );
-    if (rows.length === 0) return null;
+    const data = rows[0]?.data;
+    if (!data) return null;
 
-    const findString = (key: string): string | null => {
-      for (const row of rows) {
-        const value = row.data?.[key];
-        if (typeof value === 'string' && value.trim()) return value.trim().slice(0, 300);
-      }
-      return null;
+    const str = (key: string): string | null => {
+      const value = data[key];
+      return typeof value === 'string' && value.trim() ? value.trim().slice(0, 300) : null;
+    };
+    const num = (key: string): number => {
+      const value = data[key];
+      return typeof value === 'number' ? value : 0;
     };
 
-    const finalUrl = findString('url') ?? findString('currentUrl');
-    const alertText = rows.find((r) => r.message && /error|invalid|required|success/i.test(r.message))
-      ?.message?.slice(0, 300) ?? null;
-
-    if (!finalUrl && !alertText) return null;
-    return { finalUrl: finalUrl ?? '', heading: null, alertText };
+    return {
+      finalUrl: str('finalUrl') ?? '',
+      heading: str('h1'),
+      alertText: str('alertText'),
+      consoleErrorCount: num('consoleErrorCount'),
+      httpErrorCount: num('httpErrorCount'),
+    };
   }
 }

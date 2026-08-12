@@ -240,6 +240,14 @@ export type OracleHarvest = {
   finalUrl: string;
   heading: string | null;
   alertText: string | null;
+  /**
+   * What the page was complaining about underneath a green run. A test can pass
+   * every step while the console throws and requests 500 — evidence a QA
+   * engineer would report and the pipeline used to discard.
+   * Spec: docs/specs/test-writer/spec-validation-trust.md §8
+   */
+  consoleErrorCount?: number;
+  httpErrorCount?: number;
 };
 
 export type ScenarioRejection = {

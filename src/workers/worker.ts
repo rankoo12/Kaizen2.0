@@ -258,8 +258,29 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
   // each so it's active no matter which tab a step later switches to.
   context.on('page', attachDialogHandler);
 
+  // Side-channel evidence. A run that passes every step can still be sitting on
+  // a page whose console is full of errors and whose XHRs are 500ing — a QA
+  // engineer would report that, and until now the browser knew it and nobody
+  // asked. Counted at the context so later tabs are included too.
+  // Spec: docs/specs/test-writer/spec-validation-trust.md §8
+  const sideChannel = { consoleErrors: 0, httpErrors: 0 };
+  context.on('page', (p: Page) => {
+    p.on('console', (msg: { type(): string }) => {
+      if (msg.type() === 'error') sideChannel.consoleErrors++;
+    });
+    p.on('response', (res: { status(): number }) => {
+      if (res.status() >= 400) sideChannel.httpErrors++;
+    });
+  });
+
   const page = await context.newPage();
   attachDialogHandler(page);
+  page.on('console', (msg: { type(): string }) => {
+    if (msg.type() === 'error') sideChannel.consoleErrors++;
+  });
+  page.on('response', (res: { status(): number }) => {
+    if (res.status() >= 400) sideChannel.httpErrors++;
+  });
 
   // The "current tab" the step loop operates on. A switch_tab step repoints
   // `tabs.current`; because the executeStep closure reads it fresh each call,
@@ -295,6 +316,17 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
       },
     }, payload.seedVariables);
   } finally {
+    // Everything the run leaves behind, captured once while the page is still
+    // open. Three consumers depend on it and none could exist without it: the
+    // vacuity probe needs to know what the page looked like at the end, the
+    // oracle harvest has produced an empty object in every job ever run because
+    // the worker recorded nothing to harvest, and the findings channel needs the
+    // console/network evidence that a green run can otherwise hide.
+    // Spec: docs/specs/test-writer/spec-validation-trust.md §8
+    await captureFinalState(tabs.current, runLog, sideChannel).catch((e: any) =>
+      obs.log('warn', 'worker.final_state_capture_failed', { runId, error: e?.message }));
+    await runLog.flush().catch(() => { /* the run's outcome does not depend on this */ });
+
     // Close only this run's context — the pooled browser stays up for other
     // runs; release() lets the pool recycle it once idle and past budget.
     await context.close();
@@ -313,6 +345,44 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
   obs.increment('worker.run_completed', { status: finalStatus });
   logger.info({ event: 'run_completed', runId, status: finalStatus });
   span.end();
+}
+
+/**
+ * What the page looked like when the run stopped touching it.
+ *
+ * Deliberately read from the LIVE page rather than reconstructed from step
+ * results: the whole point is to record what a human would have seen, including
+ * the things no step asserted. Best-effort by design — a closed or crashed page
+ * yields nothing and the run's own verdict is unaffected.
+ */
+async function captureFinalState(
+  page: Page,
+  runLog: RunLogger,
+  sideChannel: { consoleErrors: number; httpErrors: number },
+): Promise<void> {
+  const observed = await (page as any).evaluate(() => {
+    const text = (el: Element | null): string | null => {
+      const s = (el as HTMLElement | null)?.innerText?.replace(/\s+/g, ' ').trim();
+      return s ? s.slice(0, 300) : null;
+    };
+    // An alert region is where an app says what just happened — the success
+    // banner or the validation error a discover oracle was meant to name.
+    const alert = document.querySelector('[role="alert"], .alert, [aria-live="assertive"]');
+    return {
+      finalUrl: location.href,
+      h1: text(document.querySelector('h1')),
+      alertText: text(alert),
+    };
+  }).catch(() => null);
+
+  if (!observed) return;
+  runLog.log('capture', 'final page state', {
+    data: {
+      ...observed,
+      consoleErrorCount: sideChannel.consoleErrors,
+      httpErrorCount: sideChannel.httpErrors,
+    },
+  });
 }
 
 /**

@@ -204,3 +204,39 @@ describe('selector helpers', () => {
     expect([...tokenize('button File')].sort()).toEqual(['button', 'file']);
   });
 });
+
+/**
+ * The vacuity probe's step selection: keep what POSITIONS the assertion, drop
+ * what PERFORMS the scenario.
+ * Spec: docs/specs/test-writer/spec-validation-trust.md §3
+ */
+import { planVacuityProbe } from '../validate/oracle-audit';
+
+describe('planVacuityProbe', () => {
+  it('keeps navigations and drops the actions, for the shape that shipped', () => {
+    // navigate → type → press Enter → assert. Remove the typing and the Enter:
+    // if "the no-results message" is still visible on a page nobody searched,
+    // the test never tested search.
+    const plan = planVacuityProbe(['navigate', 'type', 'press_key', 'assert_visible']);
+
+    expect(plan).not.toBeNull();
+    expect(plan!.keptBodyIndexes).toEqual([0]);
+    expect(plan!.terminalIndex).toBe(3);
+  });
+
+  it('keeps every navigation in a multi-page journey', () => {
+    const plan = planVacuityProbe(['navigate', 'click', 'navigate', 'type', 'assert_text']);
+    expect(plan!.keptBodyIndexes).toEqual([0, 2]);
+  });
+
+  it('refuses to probe a scenario that has nothing to drop', () => {
+    // navigate → assert is already its own counterfactual; re-running it proves
+    // nothing and would reject every legitimate 404 or auth-gate test.
+    expect(planVacuityProbe(['navigate', 'assert_visible'])).toBeNull();
+  });
+
+  it('refuses to probe a scenario that does not end on an assertion', () => {
+    expect(planVacuityProbe(['navigate', 'click'])).toBeNull();
+    expect(planVacuityProbe([])).toBeNull();
+  });
+});
