@@ -454,6 +454,21 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
       case 'type':
         if (!step.value) throw new Error('type action requires StepAST.value');
         await page.fill(selector, step.value, { timeout: ACTION_TIMEOUT_MS });
+        // Mark what WE put there. assert_text deliberately reads form-control
+        // values (so "verify the field contains X" works), which means a later
+        // "verify X is shown" can be satisfied by the very box this step just
+        // filled — an assertion that cannot fail. The stamp lets the text scan
+        // tell the app's output apart from the test's own input. It lives on the
+        // page, so it is scoped to this run by construction and is wiped by any
+        // navigation — at which point the value is the app's doing, not ours.
+        // Spec: docs/specs/test-writer/spec-validation-trust.md §4
+        try {
+          await page.$eval(
+            selector,
+            (el: Element, v: string) => el.setAttribute('data-kaizen-typed', v),
+            step.value,
+          );
+        } catch { /* best-effort: never fail a good step over the stamp */ }
         break;
 
       case 'clear':
@@ -655,7 +670,14 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
               const s = el as HTMLSelectElement;
               v = (s.options[s.selectedIndex] && s.options[s.selectedIndex].text) || s.value;
             }
-            if (v != null && lc(v).includes(search)) return { selector: selFor(el), text: tidy(v).slice(0, 200) };
+            if (v == null || !lc(v).includes(search)) continue;
+            // Skip a field still holding what THIS run typed into it: finding
+            // the search term inside the search box proves the typing worked,
+            // not that the app did anything with it. Keep scanning — if the
+            // value also appears in real rendered output, that match is found
+            // below and the assertion passes on honest evidence.
+            if (lc(el.getAttribute('data-kaizen-typed') ?? '') === lc(v)) continue;
+            return { selector: selFor(el), text: tidy(v).slice(0, 200) };
           }
           // 2) VISIBLE text only. `textContent` includes <script>/<style> source and
           //    display:none content — matching there is a false positive (e.g. the

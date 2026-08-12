@@ -226,3 +226,77 @@ describe('runSchemaGate — value and shape rules', () => {
     expect(result.ok).toBe(false);
   });
 });
+
+/**
+ * Unfalsifiable oracles — the three shapes that validated GREEN against the
+ * live product and proved nothing.
+ * Spec: docs/specs/test-writer/spec-validation-trust.md §4
+ */
+describe('runSchemaGate — unfalsifiable oracles', () => {
+  it('rejects asserting the same text the scenario typed (case 73cc9af4)', () => {
+    const result = runSchemaGate([
+      { action: 'navigate', url: 'https://app.test/tests' },
+      { action: 'type', target: { kind: 'element', elementId: ELEMENT_A }, value: '{{firstName}}' },
+      { action: 'press_key', value: 'Enter' },
+      { action: 'assert_text', value: '{{firstName}}' },
+    ], valid, 10, new Map(), ['firstName']);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.join(' ')).toContain('the same text step 2 typed');
+  });
+
+  it('allows asserting a typed value when it is read from a different element', () => {
+    const result = runSchemaGate([
+      { action: 'navigate', url: 'https://app.test/new' },
+      { action: 'type', target: { kind: 'element', elementId: ELEMENT_A }, value: '{{firstName}}' },
+      { action: 'click', target: { kind: 'element', elementId: ELEMENT_B } },
+      { action: 'assert_text', target: { kind: 'element', elementId: ELEMENT_B }, value: '{{firstName}}' },
+    ], valid, 10, new Map(), ['firstName']);
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('rejects a disjunction oracle that holds however the app behaves (case 2977cb62)', () => {
+    const result = runSchemaGate([
+      { action: 'navigate', url: 'https://app.test/tests' },
+      { action: 'type', target: { kind: 'element', elementId: ELEMENT_A }, value: 'zzqx' },
+      { action: 'press_key', value: 'Enter' },
+      { action: 'assert_visible', target: { kind: 'description', description: 'the results or no-results header' } },
+    ], valid, 10);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.join(' ')).toContain('accepts either outcome');
+  });
+
+  it('rejects an assert_url the scenario had already satisfied by navigating there', () => {
+    const result = runSchemaGate([
+      { action: 'navigate', url: 'https://app.test/tests' },
+      { action: 'type', target: { kind: 'element', elementId: ELEMENT_A }, value: 'zzqx' },
+      { action: 'assert_url', value: 'tests' },
+    ], valid, 10);
+
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.join(' ')).toContain('already contained');
+  });
+
+  it('allows assert_url when a click could have moved the page since navigating', () => {
+    const result = runSchemaGate([
+      { action: 'navigate', url: 'https://app.test/tests' },
+      { action: 'click', target: { kind: 'element', elementId: ELEMENT_B } },
+      { action: 'assert_url', value: 'tests' },
+    ], valid, 10);
+
+    expect(result.ok).toBe(true);
+  });
+
+  it('allows assert_url for a destination the scenario has not reached yet', () => {
+    const result = runSchemaGate([
+      { action: 'navigate', url: 'https://app.test/login' },
+      { action: 'type', target: { kind: 'element', elementId: ELEMENT_A }, value: '{{email}}' },
+      { action: 'click', target: { kind: 'element', elementId: ELEMENT_B } },
+      { action: 'assert_url', value: '/dashboard' },
+    ], valid, 10, new Map(), ['email']);
+
+    expect(result.ok).toBe(true);
+  });
+});

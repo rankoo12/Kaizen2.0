@@ -392,3 +392,48 @@ separate deploy units later.
   will now appear where literals used to, so a changelog line is probably warranted.
   **No live stack from me** — I started `kaizen20-postgres-1` and `kaizen20-redis-1` (they were
   down) to apply the migration, and started no API, worker, or second consumer on `kaizen-runs`.
+- 2026-08-12 · Test-Writer Claude → all: **Claiming migration numbers 035–037 (+038
+  optional)**, in shipping order:
+  - **035_validation_trust.sql** — case-level columns only (`test_cases.validation_state`,
+    `expected_outcome`, `validation_seed`). Ships first; additive.
+  - **036_app_entity.sql** — `apps` + `app_origins` tables, `app_id`/`origin`/`captured_scope`
+    columns on site-knowledge tables, backfill, and **`FORCE ROW LEVEL SECURITY` retrofitted
+    onto ALL tenant tables** (see warning below).
+  - **037_app_entity_cutover.sql** — drops the legacy `(tenant, suite, url)` unique on
+    `site_pages` after live verification; **038** (optional) purges folded shadow rows.
+  If you need a number, next free is 039. (Heads-up: the assessment docs under
+  `docs/assessments/` refer to app-entity as "migration 035" — the specs and this note are
+  authoritative; it renumbered to 036/037 because validation-trust ships first.)
+  **⚠ FORCE RLS warning for every workstream**: today RLS is inert — the runtime role
+  (`kaizen`) OWNS the tables and Postgres exempts owners unless `FORCE ROW LEVEL SECURITY` is
+  set (verified live: `relforcerowsecurity = f` everywhere). 036 turns it on for real. Any
+  query that touches a tenant table through a bare `getPool()` connection **without**
+  `withTenantTransaction` (no `app.current_tenant_id` set) will start returning zero rows
+  instead of leaking — correct, but breaking if you relied on it. I'm converting my one known
+  offender (`checkLoginCase` in `src/api/routes/test-writer.ts`); audit yours before 036 lands.
+  Context: three specs authored today under `docs/specs/test-writer/` —
+  `spec-validation-trust.md` (oracle integrity: the 8 verified false-green defects),
+  `spec-findings-and-coverage.md` (findings channel + coverage endpoint), and
+  `spec-app-entity.md` (knowledge re-keyed to (tenant, app)). Full assessment:
+  `docs/assessments/2026-08-12-testwriter-full-assessment.md`.
+- 2026-08-12 · Test-Writer Claude → all: **Migration `035_validation_trust.sql` applied to the
+  shared dev Postgres**, on branch `fix/test-writer/validation-trust` (off main). Purely
+  additive and safe under a live stack: three nullable columns on `test_cases`
+  (`validation_state`, `expected_outcome`, `validation_seed`), one partial index, and a
+  backfill that only touches `origin = 'generated'` rows. No constraint on existing columns,
+  nothing dropped, no enum changed — old code ignores all three. **Prod needs 035 before the
+  next deploy of this branch, migration BEFORE code** (ValidationRunner writes
+  `validation_state` on promotion).
+  **Shared files I touched** (merge-relevant, all narrow):
+  `src/modules/execution-engine/playwright.execution-engine.ts` — the `type` action now stamps
+  `data-kaizen-typed` on the field it filled, and `assert_text`'s form-control scan skips a
+  field still holding exactly what this run typed into it. This changes ENGINE behaviour for
+  every run, not just generated ones: an assertion that was previously satisfied by reading
+  back the test's own input now falls through to the visible-text scan and fails if the value
+  is not genuinely rendered. That is the intended fix (a "verify X is shown" that only ever
+  found X in the box it typed X into proved nothing), but if you have a test relying on
+  "verify the field contains X" immediately after typing X, it will now fail — use
+  `assert_attribute value=X`, or assert before the field is re-read.
+  No other shared files: everything else is under `src/modules/test-writer/`.
+  **No live stack from me** — Postgres and Redis were already up; I started no API, worker, or
+  second consumer on `kaizen-runs`.

@@ -87,8 +87,15 @@ recorded in the job report; the LLM proposes, the graph disposes. This is the
 false-pass firewall applied to knowledge: Kaizen never "knows" a journey the
 crawler didn't actually observe.
 
-Stored in `app_briefs` (suite-scoped, versioned — each recon produces a new
-version; the latest is current, history kept for diffing).
+Stored in `app_briefs` (versioned — each recon produces a new version; the
+latest is current, history kept for diffing).
+
+> **Re-keying (2026-08-12, `spec-app-entity.md`).** `app_briefs` and the site
+> model are moving from **suite-scoped to app-scoped, suite-linked**: knowledge
+> keys on `(tenant_id, app_id)`, a suite carries a sticky `app_id`, and briefs
+> version per app so a second suite pointed at the same app reuses the whole
+> chain. "suite-scoped" language throughout this spec is superseded by that
+> spec; the brief's content and versioning semantics are unchanged.
 
 ## 4. Path templating (v1.5, noted now)
 
@@ -167,6 +174,25 @@ CREATE TABLE app_briefs (
 All tables: RLS `tenant_isolation` policy (`app.current_tenant_id` pattern),
 `(tenant_id, suite_id)` indexes, HNSW `vector_cosine_ops` indexes on the
 embedding columns (matching migrations 003/004 style).
+
+> **Embeddings status + RLS correction (2026-08-12).**
+> - **The `embedding vector(1536)` columns on `site_pages` and `page_elements`
+>   are never populated** — the 2026-08-12 audit found zero embedding writes
+>   anywhere in the Test Writer, and dedup silently fell back to lexical Jaccard
+>   rather than the spec'd embedding cosine (see `spec-generation-pipeline.md`
+>   §4.5). **Decision: keep the columns as dead schema, out of the hot path**,
+>   pending the deferred archetype-fleet work (`catalog-v1.md`) that would give
+>   similarity search a real consumer. Do not wire embedding generation now, and
+>   do not treat the HNSW index as load-bearing — nothing reads it. Anyone adding
+>   similarity queries must first populate the columns and record the decision to
+>   turn them on.
+> - **RLS is currently INERT.** The runtime role owns these tables and Postgres
+>   exempts table owners from RLS unless `FORCE ROW LEVEL SECURITY` is set —
+>   verified live (`relforcerowsecurity = f` on every tenant table). Isolation
+>   holds today only because queries carry explicit `tenant_id` predicates.
+>   `spec-app-entity.md` (migration 036) adds `FORCE ROW LEVEL SECURITY` to make
+>   the policy real; the `(tenant_id, suite_id)` keying it also describes becomes
+>   `(tenant_id, app_id)`.
 
 **Isolation invariant**: no code writes these tables without `tenant_id`; no
 Test Writer code path writes `selector_cache` shared rows. See

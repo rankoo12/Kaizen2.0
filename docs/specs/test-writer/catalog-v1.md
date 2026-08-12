@@ -5,7 +5,20 @@ Status: v1 — 30 curated entries. Injected into `planScenarios` as a static
 prompt block (generation-pipeline spec §2). The `scenario_archetypes` table +
 binder + telemetry are deferred; this document is the source of truth until then.
 Curation owner: founder + core team. Every entry must be expressible in the
-`StepIntent` union and executable by the current engine (no `assert_count`).
+`StepIntent` union and executable by the current engine.
+
+> **Deferral expired (2026-08-12).** This header used to exclude `assert_count`
+> "until the engine implements it" — **the engine has implemented it**
+> (`types/index.ts` StepAction union, `worker.ts` routing,
+> `playwright.execution-engine.ts`; the WRITE schema already whitelists the
+> action). The only remaining gap is WRITE-side: the `StepIntent` union variant,
+> canonical templates, and pre/post count capture (assessment step 8 —
+> `docs/assessments/2026-08-12-testwriter-full-assessment.md`). Count-based
+> entries (cart badge N→N+1, list length after create/delete) are the sharpest
+> oracle family for CRUD/list flows — the audit found every generated oracle
+> degenerating to visibility, which is exactly the shape that anchored on the
+> wrong element. Author count-based entries alongside the planned SaaS/CRUD
+> archetype family once the WRITE union lands; do NOT rebuild the engine half.
 
 ## 1. Entry format
 
