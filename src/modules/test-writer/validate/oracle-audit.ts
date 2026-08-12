@@ -92,6 +92,32 @@ function shareToken(a: Set<string>, b: Set<string>): boolean {
   return false;
 }
 
+/**
+ * Which body steps a vacuity probe keeps: everything that POSITIONS the
+ * assertion, nothing that PERFORMS the scenario.
+ * Spec: docs/specs/test-writer/spec-validation-trust.md §3
+ *
+ * Returns null when the scenario cannot be probed — no terminal assertion, or
+ * nothing droppable, in which case there is no counterfactual to run.
+ *
+ * Dropping every click, keystroke and drag is also what makes the probe safe to
+ * run without consent: what remains cannot submit a form or create a record.
+ */
+export function planVacuityProbe(
+  actions: string[],
+): { keptBodyIndexes: number[]; terminalIndex: number } | null {
+  const terminalIndex = actions.length - 1;
+  if (terminalIndex < 0 || !actions[terminalIndex].startsWith('assert_')) return null;
+
+  const keptBodyIndexes: number[] = [];
+  for (let i = 0; i < terminalIndex; i++) {
+    if (actions[i] === 'navigate') keptBodyIndexes.push(i);
+  }
+  // Nothing was dropped, so the "probe" is just the scenario again.
+  if (keptBodyIndexes.length === terminalIndex) return null;
+  return { keptBodyIndexes, terminalIndex };
+}
+
 /** Compare an assertion's claim against the element it actually resolved to. */
 function isUnfaithful(targetDescription: string, selector: string): boolean {
   const identity = parseSelectorIdentity(selector);
