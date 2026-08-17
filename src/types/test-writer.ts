@@ -217,6 +217,19 @@ export type WriteInput = {
    * derived deterministically from `grounding`. Spec: spec-judge-repair-loop.md §2.4
    */
   groundingNotes?: string[];
+  /**
+   * Which model answers. First drafts are mini; every repair attempt (schema
+   * round 2, judge rewrite) is frontier — the second draft is the last one.
+   * Spec: spec-judge-repair-loop.md §2.3
+   */
+  tier?: 'mini' | 'frontier';
+  /**
+   * The quality judge's failed dimensions, when this is a REWRITE of a scenario
+   * it did not pass. Rendered with `previousSteps` so the model edits the
+   * oracle rather than reinventing the scenario. Spec §2.2
+   */
+  judgeFeedback?: string[];
+  previousSteps?: string[];
 };
 
 // ─── JUDGE ───────────────────────────────────────────────────────────────────

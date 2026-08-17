@@ -83,6 +83,25 @@ describe('ScenarioWriter', () => {
     ]);
   });
 
+  // Spec: spec-judge-repair-loop.md §2.3 — the first draft is mini, every repair is frontier.
+  it('drafts on mini and repairs on frontier; a judge rewrite is frontier from the first attempt', async () => {
+    const generate = jest.fn(async (_input: WriteInput): Promise<unknown> => ({
+      name: 'x', kind: 'positive', rationale: 'r',
+      steps: [{ action: 'type', target: { kind: 'element', elementId: CART_LINK.id }, value: 'shoes' }],
+    }));
+    await writerWith(generate).write({ ...baseParams, grounding: [CART_LINK] });
+    expect(generate.mock.calls.map(([i]) => i.tier)).toEqual(['mini', 'frontier']);
+
+    generate.mockClear();
+    await writerWith(generate).write({
+      ...baseParams, grounding: [CART_LINK],
+      judgeFeedback: ['meaningful_oracle: asserts the url'], previousSteps: ['click the "Cart" link', 'verify the url contains "cart"'],
+    });
+    expect(generate.mock.calls.map(([i]) => i.tier)).toEqual(['frontier', 'frontier']);
+    expect(generate.mock.calls[0][0].judgeFeedback).toEqual(['meaningful_oracle: asserts the url']);
+    expect(generate.mock.calls[0][0].previousSteps).toHaveLength(2);
+  });
+
   it('keeps the rendered steps on a safety rejection', async () => {
     const PAY = element('55555555-5555-4555-8555-555555555555', 'button', 'Pay now');
     const generate = jest.fn(async (): Promise<unknown> => ({

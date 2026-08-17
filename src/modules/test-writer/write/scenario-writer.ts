@@ -170,6 +170,13 @@ export class ScenarioWriter {
     maxSteps: number;
     /** Widens the hard-block lexicon and re-reads synthetic consent (spec §6.5). */
     scope?: 'public' | 'authenticated';
+    /**
+     * Set when this is a REWRITE after the quality judge: the judge's failed
+     * dimensions and the steps it read. Every attempt of a rewrite runs on the
+     * frontier tier. Spec: spec-judge-repair-loop.md §2.2
+     */
+    judgeFeedback?: string[];
+    previousSteps?: string[];
   }): Promise<WriteOutcome> {
     const { plan } = params;
     const archetype = plan.source.kind === 'catalog' ? getArchetype(plan.source.archetypeKey) : null;
@@ -182,8 +189,14 @@ export class ScenarioWriter {
     let lastSteps: string[] = [];
     const notes = groundingNotes(params.grounding);
 
+    const isRewrite = (params.judgeFeedback?.length ?? 0) > 0;
+
     // One generation attempt + one repair round (spec §4).
     for (let attempt = 0; attempt < 2; attempt++) {
+      // The first draft is cheap; the second draft is the expensive one, because
+      // it is the last. A mini model that failed a repair instruction once does
+      // the same thing again (spec-judge-repair-loop.md §1.4, §2.3).
+      const tier: 'mini' | 'frontier' = attempt > 0 || isRewrite ? 'frontier' : 'mini';
       const generated = await this.gateway.generateScenario({
         plan,
         grounding: params.grounding,
@@ -195,6 +208,9 @@ export class ScenarioWriter {
         maxSteps: params.maxSteps,
         repairErrors,
         groundingNotes: notes,
+        tier,
+        judgeFeedback: params.judgeFeedback,
+        previousSteps: params.previousSteps,
       }, params.tenantId);
 
       const gate = runSchemaGate(
