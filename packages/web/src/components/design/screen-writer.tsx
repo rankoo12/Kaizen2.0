@@ -342,38 +342,86 @@ const SEVERITY_TONE: Record<Finding['severity'], string> = {
  * shrug, while the pipeline privately held a 500ing page, five unlabelled
  * buttons and an unverified login boundary. A QA engineer has a good day on a
  * day like that — they hand you the list.
+ * Spec: docs/specs/test-writer/spec-findings-and-coverage.md §3, §3.1
  */
+
+/** Grouped so a twelve-finding job reads as a triage list rather than a wall.
+ *  Findings arrive ranked; this makes the ranking visible. */
+const SEVERITY_GROUPS: Array<{ keys: Finding['severity'][]; label: string }> = [
+  { keys: ['high'], label: 'Worth looking at now' },
+  { keys: ['medium'], label: 'Worth looking at' },
+  { keys: ['low', 'info'], label: 'Noticed in passing' },
+];
+
+function FindingRow({ f, onOpenRun }: {
+  f: Finding; onOpenRun: (caseId: string, runId: string) => void;
+}) {
+  // Where it is, in plain text. For crawl errors, broken links and unlabelled
+  // controls there is no run to open, so the URL IS the actionable part — and
+  // these used to render with their location silently dropped. Never a link:
+  // a hostile page chooses the strings we crawl, and a finding must not become
+  // a way to route a click somewhere Kaizen picked up off the floor.
+  const where = f.evidence.url ?? null;
+  const what = f.evidence.elementRef ?? null;
+  return (
+    <div className="row" style={{ padding: '11px 14px', alignItems: 'flex-start' }}>
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div className="row-t">{f.title}</div>
+        <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5, marginTop: 3 }}>
+          {f.detail}
+        </div>
+        {(where || what) && (
+          <div className="num" style={{ fontSize: 11, color: 'var(--text-3)', marginTop: 4,
+            overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+            {where}{where && what ? ' · ' : ''}{what}
+          </div>
+        )}
+        {f.evidence.repro && f.evidence.repro.length > 0 && (
+          <Disclose title="Steps to reproduce">
+            <ol style={{ margin: 0, paddingLeft: 18, fontSize: 11.5, color: 'var(--text-2)', lineHeight: 1.7 }}>
+              {f.evidence.repro.map((step, j) => <li key={j}>{step}</li>)}
+            </ol>
+          </Disclose>
+        )}
+      </div>
+      <Chip text={f.severity.toUpperCase()} tone={SEVERITY_TONE[f.severity]} />
+      {f.evidence.runId && (
+        <button className="btn" style={{ flex: 'none' }}
+          onClick={() => onOpenRun(f.evidence.caseId ?? '', f.evidence.runId!)}>See it run</button>
+      )}
+    </div>
+  );
+}
+
 function FindingsSection({ findings, onOpenRun }: {
   findings: Finding[];
   onOpenRun: (caseId: string, runId: string) => void;
 }) {
   if (findings.length === 0) return null;
+  const groups = SEVERITY_GROUPS
+    .map((g) => ({ ...g, items: findings.filter((f) => g.keys.includes(f.severity)) }))
+    .filter((g) => g.items.length > 0);
+
   return (
     <div>
       <div className="label" style={{ marginBottom: 8 }}>
         What Kaizen found — {findings.length} {findings.length === 1 ? 'thing' : 'things'} worth your attention
       </div>
-      <div className="list">
-        {findings.map((f, i) => (
-          <div key={`${f.kind}-${i}`} className="row" style={{ padding: '11px 14px', alignItems: 'flex-start' }}>
-            <div style={{ flex: 1, minWidth: 0 }}>
-              <div className="row-t">{f.title}</div>
-              <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5, marginTop: 3 }}>
-                {f.detail}
+      <div style={{ display: 'grid', gap: 10 }}>
+        {groups.map((g) => (
+          <div key={g.label}>
+            {/* The band is dropped when there is only one, so a single finding
+                does not arrive under a heading that implies a list. */}
+            {groups.length > 1 && (
+              <div className="label" style={{ fontSize: 10, color: 'var(--text-3)', marginBottom: 4 }}>
+                {g.label}
               </div>
-              {f.evidence.repro && f.evidence.repro.length > 0 && (
-                <Disclose title="Steps to reproduce">
-                  <ol style={{ margin: 0, paddingLeft: 18, fontSize: 11.5, color: 'var(--text-2)', lineHeight: 1.7 }}>
-                    {f.evidence.repro.map((step, j) => <li key={j}>{step}</li>)}
-                  </ol>
-                </Disclose>
-              )}
-            </div>
-            <Chip text={f.severity.toUpperCase()} tone={SEVERITY_TONE[f.severity]} />
-            {f.evidence.runId && (
-              <button className="btn" style={{ flex: 'none' }}
-                onClick={() => onOpenRun(f.evidence.caseId ?? '', f.evidence.runId!)}>See it run</button>
             )}
+            <div className="list">
+              {g.items.map((f, i) => (
+                <FindingRow key={`${f.kind}-${i}`} f={f} onOpenRun={onOpenRun} />
+              ))}
+            </div>
           </div>
         ))}
       </div>
