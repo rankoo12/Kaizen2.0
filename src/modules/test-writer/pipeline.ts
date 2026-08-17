@@ -195,6 +195,12 @@ export async function runTestWriterJob(
     );
 
     // ── PLAN ────────────────────────────────────────────────────────────────
+    // Announced, not silent. PLAN is the longest single stretch before the
+    // user's turn, and without this the rail sat on UNDERSTAND throughout —
+    // leaving the one segment immediately before the checkpoint as the only one
+    // that never lit, which teaches the user the rail is decorative.
+    await progress({ phase: 'plan', pagesCrawled: recon.pagesCrawled });
+
     const pages = await deps.repository.listClassifiedPages(payload.tenantId, payload.suiteId);
     const consent = await loadSuiteConsent(payload.tenantId, payload.suiteId);
     const existingCaseNames = await loadExistingCaseNames(payload.tenantId, payload.suiteId);

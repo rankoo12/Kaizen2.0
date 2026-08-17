@@ -351,9 +351,27 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
+    // What the human declined, kept alongside what the machine dropped.
+    // Without this the only trace of a review is the shorter list that came out
+    // of it: a scenario a person looked at and rejected became indistinguishable
+    // from one that was never planned. Same shape as report.plan.dropped so both
+    // render through one component, and reason-bearing so a future "why" has
+    // somewhere to go without a shape change.
+    // Spec: docs/specs/tests-ux/spec-testwriter-ux.md §11.6-c
+    const declined = [...plannedNames]
+      .filter((name) => !approved.includes(name))
+      .map((name) => ({ name, reason: 'user_deselected' }));
+
     await getPool().query(
-      `UPDATE generation_jobs SET plan_approved_at = now(), plan_notes = $2 WHERE id = $1`,
-      [jobId, parsed.data.notes ?? null],
+      `UPDATE generation_jobs
+          SET plan_approved_at = now(),
+              plan_notes = $2,
+              report = COALESCE(report, '{}'::jsonb)
+                       || jsonb_build_object('plan',
+                            COALESCE(report->'plan', '{}'::jsonb)
+                            || jsonb_build_object('declined', $3::jsonb))
+        WHERE id = $1`,
+      [jobId, parsed.data.notes ?? null, JSON.stringify(declined)],
     );
 
     await queue.add('testwriter', {

@@ -120,8 +120,10 @@ export function MenuBar({ menus, status }: any) {
   );
 }
 
-export function Sidebar({ active, onNav, counts, onSettings, onLights, onToggle, suites = [], user }: any) {
+export function Sidebar({ active, onNav, counts, onSettings, onLights, onToggle, suites = [], user, activeJobs = [], onOpenJob }: any) {
   const [suitesOpen, setSuitesOpen] = uS(true);
+  /** Suites with a live analysis, so a row can carry a dot without a second scan. */
+  const liveSuites = new Set(activeJobs.map((j: any) => j.suiteId));
   return (
     <div className="sidebar">
       <div style={{ display: 'flex', alignItems: 'center' }}>
@@ -161,6 +163,9 @@ export function Sidebar({ active, onNav, counts, onSettings, onLights, onToggle,
                     style={{ paddingLeft: 26 }}>
                     <SIco size={14} />
                     <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>{s.name}</span>
+                    {liveSuites.has(s.id) && (
+                      <span className="live-dot" title="Kaizen is working on this suite" />
+                    )}
                     <span className="side-count">{s.count}</span>
                   </button>
                 );
@@ -170,6 +175,32 @@ export function Sidebar({ active, onNav, counts, onSettings, onLights, onToggle,
         })}
       </div>
       <div style={{ flex: 1 }} />
+      {/* The QA engineer's activity, always in view. The writer screen tells the
+          user they can walk away; this is what they come back to. */}
+      {activeJobs.length > 0 && (
+        <div className="rise" style={{ margin: '0 8px 8px', padding: '7px 9px', borderRadius: 8, background: 'var(--fill)' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: 6, marginBottom: 5 }}>
+            <I.sparkle size={11} style={{ color: 'var(--accent)' }} />
+            <span className="label" style={{ fontSize: 10 }}>QA engineer</span>
+          </div>
+          {activeJobs.map((j: any) => (
+            <button key={j.jobId} onClick={() => onOpenJob?.(j.suiteId, j.jobId)}
+              style={{ display: 'flex', alignItems: 'center', gap: 6, width: '100%', background: 'none',
+                border: 'none', padding: '3px 0', cursor: 'pointer', textAlign: 'left', font: 'inherit' }}>
+              <span className={j.status === 'awaiting_plan_approval' ? 'live-dot waiting' : 'live-dot'} />
+              <span style={{ flex: 1, minWidth: 0, fontSize: 11.5, color: 'var(--text-2)',
+                overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
+                {j.suiteName}
+              </span>
+              <span style={{ fontSize: 10.5, color: j.status === 'awaiting_plan_approval' ? 'var(--accent)' : 'var(--text-3)' }}>
+                {j.status === 'awaiting_plan_approval' ? 'your turn'
+                  : j.status === 'queued' ? 'queued'
+                    : j.pagesCrawled ? `${j.pagesCrawled} pages` : 'exploring'}
+              </span>
+            </button>
+          ))}
+        </div>
+      )}
       <button className="side-item" onClick={onSettings} aria-current={active === 'settings'}>
         <I.settings size={16} />Settings
       </button>
@@ -248,10 +279,16 @@ export function Toast({ toast }: any) {
   if (!toast) return null;
   const tone = ({ success: 'var(--pass)', error: 'var(--fail)', heal: 'var(--heal)', info: 'var(--accent)' } as any)[toast.kind] || 'var(--accent)';
   const Ico = I[toast.icon || (toast.kind === 'heal' ? 'heal' : toast.kind === 'error' ? 'x' : 'check')];
+  const body = <><span style={{ color: tone, display: 'grid' }}><Ico size={14} /></span>{toast.message}</>;
+  // A toast that announces "your plan is ready" should also be the way to it.
+  // Rendered as a button only when it leads somewhere, so a plain notice keeps
+  // its non-interactive semantics.
+  if (!toast.onClick) return <div className="toast" key={toast.k}>{body}</div>;
   return (
-    <div className="toast" key={toast.k}>
-      <span style={{ color: tone, display: 'grid' }}><Ico size={14} /></span>{toast.message}
-    </div>
+    <button className="toast" key={toast.k} onClick={toast.onClick}
+      style={{ cursor: 'pointer', textAlign: 'left', font: 'inherit' }}>
+      {body}
+    </button>
   );
 }
 
