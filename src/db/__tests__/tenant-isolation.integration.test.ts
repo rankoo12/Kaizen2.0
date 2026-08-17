@@ -33,6 +33,21 @@ const FORCED_TABLES = [
   'site_pages', 'page_elements', 'page_links', 'app_briefs', 'generation_jobs',
 ] as const;
 
+/**
+ * Fixtures, role management and teardown run on an ADMIN connection, never on
+ * the pool. Once the application connects as the unprivileged role — which is
+ * the point of all this — it can neither CREATE ROLE nor insert a fixture row
+ * without a tenant set, so a test that used the app's own pool for setup would
+ * fail for reasons that have nothing to do with what it is testing.
+ */
+async function connectAsAdmin(): Promise<Client> {
+  const client = new Client({
+    connectionString: process.env.DATABASE_ADMIN_URL ?? process.env.DATABASE_URL,
+  });
+  await client.connect();
+  return client;
+}
+
 /** A connection with ordinary privileges — no ownership, no superuser. */
 async function connectAsProbe(): Promise<Client> {
   const url = new URL(process.env.DATABASE_URL as string);
@@ -50,9 +65,14 @@ async function connectAsProbe(): Promise<Client> {
 describe('tenant isolation is enforced by the database, not by query discipline', () => {
   let suiteA: string;
   let suiteB: string;
+  let admin: Client;
 
   beforeAll(async () => {
-    const pool = getPool();
+    admin = await connectAsAdmin();
+    const pool = admin;
+    // Setting this makes the fixtures work whether the admin connection bypasses
+    // RLS (superuser) or is merely the owner of FORCEd tables.
+    await admin.query(`SELECT set_config('app.current_tenant_id', $1, false)`, [TENANT_A]);
     for (const [id, slug] of [[TENANT_A, 'iso-a'], [TENANT_B, 'iso-b']] as const) {
       await pool.query(
         `INSERT INTO tenants (id, name, display_name, slug, plan_tier)
@@ -74,7 +94,8 @@ describe('tenant isolation is enforced by the database, not by query discipline'
       [TENANT_A, suiteA, 'https://iso-a.test/'],
       [TENANT_B, suiteB, 'https://iso-b.test/'],
     ] as const) {
-      await pool.query(
+      await admin.query(`SELECT set_config('app.current_tenant_id', $1, false)`, [tenant]);
+      await admin.query(
         `INSERT INTO site_pages (tenant_id, suite_id, url_normalized, content_hash)
          VALUES ($1, $2, $3, 'iso-hash') ON CONFLICT DO NOTHING`,
         [tenant, suite, url],
@@ -89,8 +110,9 @@ describe('tenant isolation is enforced by the database, not by query discipline'
   });
 
   afterAll(async () => {
-    const pool = getPool();
+    const pool = admin;
     for (const t of [TENANT_A, TENANT_B]) {
+      await admin.query(`SELECT set_config('app.current_tenant_id', $1, false)`, [t]);
       await pool.query(`DELETE FROM site_pages WHERE tenant_id = $1`, [t]);
       await pool.query(`DELETE FROM test_suites WHERE tenant_id = $1`, [t]);
       await pool.query(`DELETE FROM tenants WHERE id = $1`, [t]);
@@ -98,13 +120,14 @@ describe('tenant isolation is enforced by the database, not by query discipline'
     await pool.query(`REVOKE ALL ON ALL TABLES IN SCHEMA public FROM ${PROBE_ROLE}`).catch(() => {});
     await pool.query(`REVOKE USAGE ON SCHEMA public FROM ${PROBE_ROLE}`).catch(() => {});
     await pool.query(`DROP ROLE IF EXISTS ${PROBE_ROLE}`).catch(() => {});
+    await admin.end();
     await closePool();
   });
 
   it('has FORCE enabled on every table migration 036 claims', async () => {
     // Without FORCE, a table's owner is exempt from its own policies — the
     // policy reads as protection while doing nothing at all.
-    const { rows } = await getPool().query<{ relname: string; forced: boolean }>(
+    const { rows } = await admin.query<{ relname: string; forced: boolean }>(
       `SELECT relname, relforcerowsecurity AS forced
          FROM pg_class WHERE relname = ANY($1::text[])`,
       [[...FORCED_TABLES]],
@@ -150,7 +173,8 @@ describe('tenant isolation is enforced by the database, not by query discipline'
         [TENANT_B, suiteB],
       )).rejects.toThrow(/row-level security/i);
 
-      const { rows } = await getPool().query(
+      await admin.query(`SELECT set_config('app.current_tenant_id', $1, false)`, [TENANT_B]);
+      const { rows } = await admin.query(
         `SELECT 1 FROM site_pages WHERE url_normalized = 'https://smuggled.test/'`);
       expect(rows).toHaveLength(0);
     });

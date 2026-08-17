@@ -22,7 +22,13 @@ dotenv.config();
 const MIGRATIONS_DIR = path.join(__dirname, '..', 'db', 'migrations');
 
 async function migrate() {
-  const client = new Client({ connectionString: process.env.DATABASE_URL });
+  // Migrations need DDL rights; the application deliberately does not have them
+  // once it connects as the unprivileged runtime role. DATABASE_URL is the
+  // fallback so existing single-role deployments are unaffected — setting
+  // DATABASE_ADMIN_URL is what opts a deployment into the split.
+  // See docs/runbooks/unprivileged-runtime-role.md
+  const adminUrl = process.env.DATABASE_ADMIN_URL || process.env.DATABASE_URL;
+  const client = new Client({ connectionString: adminUrl });
   await client.connect();
 
   // Ensure the tracking table exists (outside a transaction — idempotent).
