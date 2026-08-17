@@ -19,6 +19,8 @@ import type { IObservability } from '../../modules/observability/interfaces';
 jest.mock('../../db/pool', () => ({
   getPool: jest.fn().mockReturnValue({ query: jest.fn() }),
 }));
+// Tenant helpers route to the pool mock above — see src/db/__mocks__/transaction.ts
+jest.mock('../../db/transaction');
 
 import { getPool } from '../../db/pool';
 
@@ -75,7 +77,7 @@ describe('Worker feedback loop — recordFailure propagation', () => {
 
     // Act: simulate what the worker does after a step fails.
     // The worker now awaits this call instead of fire-and-forget.
-    await composite.recordFailure('hash1', 'site.com', 'role=button[name="Login"]');
+    await composite.recordFailure('hash1', 'site.com', 'role=button[name="Login"]', 'tenant-1');
 
     // Assert: Postgres was queried (SELECT + UPDATE)
     expect(mockQuery).toHaveBeenCalledTimes(2);
@@ -90,7 +92,7 @@ describe('Worker feedback loop — recordFailure propagation', () => {
       .mockResolvedValueOnce({ rows: [{ outcome_window: [true, false] }] })  // SELECT
       .mockResolvedValueOnce({ rows: [] });                                    // UPDATE
 
-    await composite.recordSuccess('hash1', 'site.com', 'role=button[name="Login"]');
+    await composite.recordSuccess('hash1', 'site.com', 'role=button[name="Login"]', 'tenant-1');
 
     // Should have queried for the outcome window and then updated it
     expect(mockQuery).toHaveBeenCalledTimes(2);
@@ -103,7 +105,7 @@ describe('Worker feedback loop — recordFailure propagation', () => {
 
     // Should not throw — errors are caught inside the resolver
     await expect(
-      composite.recordFailure('hash1', 'site.com', '#btn'),
+      composite.recordFailure('hash1', 'site.com', '#btn', 'tenant-1'),
     ).resolves.toBeUndefined();
 
     // The observability layer should have logged the failure
@@ -132,7 +134,7 @@ describe('Worker feedback loop — recordFailure propagation', () => {
       return 1;
     });
 
-    await llmResolver.recordFailure('hash1', 'site.com', '#btn');
+    await llmResolver.recordFailure('hash1', 'site.com', '#btn', 'tenant-1');
 
     // Postgres SELECT and UPDATE must happen before Redis invalidation
     expect(callOrder.indexOf('redis_scan')).toBeGreaterThan(callOrder.indexOf('postgres'));

@@ -1,5 +1,5 @@
 import type { FastifyInstance } from 'fastify';
-import { getPool } from '../../db/pool';
+import { tenantPool } from '../../db/transaction';
 import { requireAuth } from '../middleware/auth';
 
 /**
@@ -24,7 +24,7 @@ export async function brainRoutes(app: FastifyInstance): Promise<void> {
     const limit = Math.min(500, Math.max(1, parseInt(query.limit ?? '200', 10)));
     const { tenantId } = request;
 
-    const pool = getPool();
+    const pool = tenantPool(tenantId);
     const { rows } = await pool.query(
       `WITH tenant_domains AS (
          SELECT DISTINCT domain FROM selector_cache WHERE tenant_id = $1

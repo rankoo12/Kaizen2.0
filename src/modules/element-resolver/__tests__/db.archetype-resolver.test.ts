@@ -5,6 +5,8 @@ import type { CandidateNode } from '../../../types';
 jest.mock('../../../db/pool', () => ({
   getPool: jest.fn().mockReturnValue({ query: jest.fn() }),
 }));
+// Tenant helpers route to the pool mock above — see src/db/__mocks__/transaction.ts
+jest.mock('../../../db/transaction');
 
 import { getPool } from '../../../db/pool';
 

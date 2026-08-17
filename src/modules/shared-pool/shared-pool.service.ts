@@ -9,7 +9,7 @@
 import type { Redis } from 'ioredis';
 import type { IObservability } from '../observability/interfaces';
 import type { ISharedPoolService, ContributeParams } from './interfaces';
-import { getPool } from '../../db/pool';
+import { tenantQuery } from '../../db/transaction';
 import { toVectorSQL } from '../../utils/vector';
 
 const QUALITY_THRESHOLD = 0.8;  // minimum confidence_score to contribute to shared pool
@@ -22,6 +22,13 @@ export class SharedPoolService implements ISharedPoolService {
   ) {}
 
   async contribute(params: ContributeParams): Promise<void> {
+    // Every statement here runs AS the contributing tenant. The rows it writes
+    // carry tenant_id = NULL (that is what makes them shared), and the 037
+    // policy's WITH CHECK admits exactly that shape — a NULL-tenant, is_shared
+    // row — for any tenant. So the tenant scope is not what authorises the
+    // write; it is what lets the write happen at all under an unprivileged
+    // runtime, where a statement with no tenant set is not a broader statement
+    // but a rejected one.
     // 1. Opt-in gate
     const optedIn = await this.isOptedIn(params.tenantId);
     if (!optedIn) return;
@@ -32,7 +39,8 @@ export class SharedPoolService implements ISharedPoolService {
 
     try {
       // 3. Check if a shared entry already exists for this (content_hash, domain)
-      const { rows: existing } = await getPool().query<{ id: string; attribution: any }>(
+      const { rows: existing } = await tenantQuery<{ id: string; attribution: any }>(
+        params.tenantId,
         `SELECT id, attribution FROM selector_cache
          WHERE content_hash = $1 AND domain = $2 AND is_shared = true AND tenant_id IS NULL
          LIMIT 1`,
@@ -48,7 +56,8 @@ export class SharedPoolService implements ISharedPoolService {
         // Avoid duplicate contributor entries
         if (!contributors.some((c) => c.tenantId === params.tenantId)) {
           contributors.push({ tenantId: params.tenantId, contributedAt: new Date().toISOString() });
-          await getPool().query(
+          await tenantQuery(
+            params.tenantId,
             `UPDATE selector_cache SET attribution = $1, updated_at = now() WHERE id = $2`,
             [JSON.stringify({ ...current, contributors }), existing[0].id],
           );
@@ -62,7 +71,8 @@ export class SharedPoolService implements ISharedPoolService {
         contributors: [{ tenantId: params.tenantId, contributedAt: new Date().toISOString() }],
       };
 
-      await getPool().query(
+      await tenantQuery(
+        params.tenantId,
         `INSERT INTO selector_cache
            (tenant_id, content_hash, domain, selectors, step_embedding, element_embedding,
             confidence_score, is_shared, attribution)
@@ -97,7 +107,8 @@ export class SharedPoolService implements ISharedPoolService {
     }
 
     try {
-      const { rows } = await getPool().query<{ global_brain_opt_in: boolean }>(
+      const { rows } = await tenantQuery<{ global_brain_opt_in: boolean }>(
+        tenantId,
         `SELECT global_brain_opt_in FROM tenants WHERE id = $1`,
         [tenantId],
       );
@@ -118,7 +129,8 @@ export class SharedPoolService implements ISharedPoolService {
   }
 
   async setOptIn(tenantId: string, value: boolean): Promise<void> {
-    await getPool().query(
+    await tenantQuery(
+      tenantId,
       `UPDATE tenants SET global_brain_opt_in = $1 WHERE id = $2`,
       [value, tenantId],
     );

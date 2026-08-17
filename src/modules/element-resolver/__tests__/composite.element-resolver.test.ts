@@ -87,18 +87,21 @@ describe('CompositeElementResolver', () => {
     expect(mockLLM.resolve).toHaveBeenCalledTimes(1);
   });
 
+  // The fourth argument is the tenant, threaded through so the LLM resolver can
+  // update its outcome window under row-level security. The composite forwards
+  // whatever it was given — here nothing — rather than inventing one.
   it('recordSuccess delegates to all resolvers', async () => {
     await composite.recordSuccess('hash', 'example.com', '#btn');
 
-    expect(mockCached.recordSuccess).toHaveBeenCalledWith('hash', 'example.com', '#btn');
-    expect(mockLLM.recordSuccess).toHaveBeenCalledWith('hash', 'example.com', '#btn');
+    expect(mockCached.recordSuccess).toHaveBeenCalledWith('hash', 'example.com', '#btn', undefined);
+    expect(mockLLM.recordSuccess).toHaveBeenCalledWith('hash', 'example.com', '#btn', undefined);
   });
 
   it('recordFailure delegates to all resolvers', async () => {
     await composite.recordFailure('hash', 'example.com', '#btn');
 
-    expect(mockCached.recordFailure).toHaveBeenCalledWith('hash', 'example.com', '#btn');
-    expect(mockLLM.recordFailure).toHaveBeenCalledWith('hash', 'example.com', '#btn');
+    expect(mockCached.recordFailure).toHaveBeenCalledWith('hash', 'example.com', '#btn', undefined);
+    expect(mockLLM.recordFailure).toHaveBeenCalledWith('hash', 'example.com', '#btn', undefined);
   });
 
   it('returns empty selectors and emits full_miss when all resolvers miss', async () => {

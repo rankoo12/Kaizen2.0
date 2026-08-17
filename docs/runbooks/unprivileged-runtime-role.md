@@ -1,9 +1,13 @@
 # Runbook — moving the runtime off the superuser
 
 Created: 2026-08-17
-Status: **role provisioning built and proven; both design blockers fixed (037
-shared brain, 038 API-key lookup). The connection-string switch is BLOCKED only
-on the ~57 mechanical query conversions in §3(a). Do not flip it yet.**
+Status: **READY TO SWITCH.** Role provisioning built and proven; both design
+blockers fixed (037 shared brain, 038 API-key lookup); the query conversion in
+§3(a) is complete and the full application has been run and exercised as the
+unprivileged role — reads, writes, JWT auth, API-key auth, the shared brain.
+The isolation suite is 7/7. What remains is operational (§4 steps 4–8), which is
+deliberately not done by a PR: provisioning the role in each environment and
+flipping `DATABASE_URL` is a deploy decision with a one-setting rollback.
 Spec: `docs/specs/test-writer/spec-app-entity.md` §5 (Decision 5, corrected)
 
 ---
@@ -73,8 +77,17 @@ work: **`FORCE` is only about the table's owner. For any non-owner role, plain
 
 Three distinct pieces of work follow. **(b) and (c) are done; only (a) — the mechanical conversion — remains.**
 
-**a. ~57 bare-pool queries, across 19 files, must move inside a tenant
-transaction.** Counted by file:
+**a. ~~~57 bare-pool queries, across 19 files, must move inside a tenant
+transaction.~~ DONE.** Every query against an RLS-enabled table now runs via
+`tenantQuery` / `tenantPool` / `withTenantTransaction`. What was deliberately
+left on the bare pool: `element_archetypes` and `archetype_failures` (global,
+no RLS by design), `tenants` / `users` / `memberships` (no RLS), and the two
+`api_key_*` SECURITY DEFINER calls in the auth middleware (which must run before
+a tenant is known — that is their purpose). Verified with the app running as
+`kaizen_app`: `/suites`, `/cases`, `/runs`, `/runs/:id`, `/runs/:id/report`,
+`/brain/selectors`, `/tenants/:id/usage` all 200; a suite + case create round-trips;
+API-key auth resolves via the definer function and a bogus key is a clean 401;
+the resolver's L4 query shape sees all 117 shared rows. Original count, by file:
 
 | area | files | queries |
 |---|---|---|
@@ -140,8 +153,7 @@ Sequencing matters more than any individual step here: getting it wrong locks
 the product out of its own database.
 
 1. ~~Fix (b) and (c)~~ — both shipped (migrations 037, 038).
-2. Convert the ~57 queries (a), in tranches by area, each independently
-   shippable and each verifiable by running the affected surface.
+2. ~~Convert the ~57 queries (a)~~ — done, in this branch.
 3. `FORCE` the remaining tenant tables (they are already ENABLEd, so this only
    matters if the runtime is ever also the owner — keep it for defence in depth).
 4. Provision the role in **every** environment first — dev compose, CI, staging,

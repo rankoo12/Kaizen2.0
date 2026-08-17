@@ -10,6 +10,7 @@
  */
 
 import { getPool } from '../../db/pool';
+import { tenantQuery } from '../../db/transaction';
 import type { IObservability } from '../observability/interfaces';
 import type { CandidateNode } from '../../types';
 import type {
@@ -233,7 +234,8 @@ export class DBArchetypeResolver implements IArchetypeResolver {
     try {
       // Mirror cached.element-resolver.ts::fetchByHash visibility rules:
       // pinned rows always wins, otherwise require non-trivial confidence.
-      const { rows } = await getPool().query<{ selectors: Array<{ selector: string }> }>(
+      const { rows } = await tenantQuery<{ selectors: Array<{ selector: string }> }>(
+        key.tenantId,
         `SELECT selectors
            FROM selector_cache
           WHERE content_hash = $1

@@ -6,6 +6,8 @@ import type { IObservability } from '../../observability/interfaces';
 jest.mock('../../../db/pool', () => ({
   getPool: jest.fn().mockReturnValue({ query: jest.fn() }),
 }));
+// Tenant helpers route to the pool mock above — see src/db/__mocks__/transaction.ts
+jest.mock('../../../db/transaction');
 
 import { getPool } from '../../../db/pool';
 
@@ -139,7 +141,7 @@ describe('LLMElementResolver — updateOutcomeWindow Redis invalidation', () => 
     mockRedis.scan.mockResolvedValueOnce(['0', ['sel:t1:hash1:example.com']]);
     mockRedis.del.mockResolvedValueOnce(1);
 
-    await resolver.recordFailure('hash1', 'example.com', 'role=button[name="Login"]');
+    await resolver.recordFailure('hash1', 'example.com', 'role=button[name="Login"]', 'tenant-1');
 
     expect(mockRedis.scan).toHaveBeenCalledWith('0', 'MATCH', 'sel:*:hash1:example.com', 'COUNT', '100');
     expect(mockRedis.del).toHaveBeenCalledWith('sel:t1:hash1:example.com');
@@ -153,7 +155,7 @@ describe('LLMElementResolver — updateOutcomeWindow Redis invalidation', () => 
 
     mockRedis.scan.mockResolvedValueOnce(['0', []]);
 
-    await resolver.recordSuccess('hash1', 'example.com', 'role=button[name="Login"]');
+    await resolver.recordSuccess('hash1', 'example.com', 'role=button[name="Login"]', 'tenant-1');
 
     expect(mockRedis.del).not.toHaveBeenCalled();
   });
@@ -174,7 +176,7 @@ describe('LLMElementResolver — updateOutcomeWindow Redis invalidation', () => 
       .mockResolvedValueOnce({ rows: [] });
 
     // Should not throw
-    await resolverNoRedis.recordFailure('hash1', 'example.com', '#btn');
+    await resolverNoRedis.recordFailure('hash1', 'example.com', '#btn', 'tenant-1');
 
     expect(mockRedis.scan).not.toHaveBeenCalled();
   });

@@ -1,7 +1,7 @@
 import Fastify from 'fastify';
 import { testCasesRoutes } from '../test-cases';
 import { getPool } from '../../../db/pool';
-import { withTenantTransaction } from '../../../db/transaction';
+import { withTenantTransaction, tenantQuery, tenantPool } from '../../../db/transaction';
 import { usageThisMonth } from '../../../modules/billing-meter/usage';
 import { LearnedCompiler } from '../../../modules/test-compiler/learned.compiler';
 
@@ -11,8 +11,12 @@ jest.mock('../../../db/pool', () => ({
     query: jest.fn()
   }))
 }));
+// tenantQuery is a thin wrapper over withTenantTransaction; the mock mirrors that
+// relationship so a route that switched to it exercises the same fake client.
 jest.mock('../../../db/transaction', () => ({
-  withTenantTransaction: jest.fn()
+  withTenantTransaction: jest.fn(),
+  tenantQuery: jest.fn(),
+  tenantPool: jest.fn(),
 }));
 
 // Mock Auth Middleware
@@ -61,6 +65,10 @@ describe('testCasesRoutes - Token Limit Enforcement', () => {
     (withTenantTransaction as jest.Mock).mockImplementation(
       async (_tenantId, cb) => cb({ query: mockQuery })
     );
+    (tenantQuery as jest.Mock).mockImplementation(
+      async (_tenantId: string, sql: string, params?: unknown[]) => mockQuery(sql, params),
+    );
+    (tenantPool as jest.Mock).mockImplementation(() => ({ query: mockQuery }));
     // The automocked compiler returns undefined, which used to be harmless because
     // compiledSteps only ever reached the mocked queue. It now also supplies
     // runs.total_steps, so give it the shape the real compiler returns: one compiled

@@ -7,6 +7,8 @@ import type { CandidateNode } from '../../../types';
 jest.mock('../../../db/pool', () => ({
   getPool: jest.fn().mockReturnValue({ query: jest.fn() }),
 }));
+// Tenant helpers route to the pool mock above — see src/db/__mocks__/transaction.ts
+jest.mock('../../../db/transaction');
 
 jest.mock('../redis-cache.utils', () => ({
   ...jest.requireActual('../redis-cache.utils'),
@@ -145,7 +147,7 @@ describe('LLMElementResolver', () => {
       .mockResolvedValueOnce({ rows: [{ outcome_window: [true, true, false] }] })
       .mockResolvedValueOnce({ rows: [] });
 
-    await resolver.recordSuccess('hash', 'example.com', '#btn');
+    await resolver.recordSuccess('hash', 'example.com', '#btn', 'tenant-1');
 
     expect(mockQuery).toHaveBeenCalledTimes(2);
     const updateCall = mockQuery.mock.calls[1];
@@ -159,7 +161,7 @@ describe('LLMElementResolver', () => {
       .mockResolvedValueOnce({ rows: [{ outcome_window: [true, true] }] })
       .mockResolvedValueOnce({ rows: [] });
 
-    await resolver.recordFailure('hash', 'example.com', '#btn');
+    await resolver.recordFailure('hash', 'example.com', '#btn', 'tenant-1');
 
     const updateCall = mockQuery.mock.calls[1];
     const newWindow = JSON.parse(updateCall[1][0]);
@@ -169,7 +171,7 @@ describe('LLMElementResolver', () => {
   it('recordSuccess is a no-op when selector_cache row does not exist', async () => {
     mockQuery.mockResolvedValueOnce({ rows: [] });
 
-    await expect(resolver.recordSuccess('nonexistent', 'example.com', '#btn')).resolves.not.toThrow();
+    await expect(resolver.recordSuccess('nonexistent', 'example.com', '#btn', 'tenant-1')).resolves.not.toThrow();
     expect(mockQuery).toHaveBeenCalledTimes(1);
   });
 
@@ -187,14 +189,14 @@ describe('LLMElementResolver', () => {
       mockQuery
         .mockResolvedValueOnce({ rows: [{ outcome_window: [true] }] })
         .mockResolvedValueOnce({ rows: [] });
-      await r.recordSuccess('hash', 'example.com', '#btn');
+      await r.recordSuccess('hash', 'example.com', '#btn', 'tenant-1');
       expect(invalidateRedisCache).not.toHaveBeenCalled();
 
       // failure path
       mockQuery
         .mockResolvedValueOnce({ rows: [{ outcome_window: [true] }] })
         .mockResolvedValueOnce({ rows: [] });
-      await r.recordFailure('hash', 'example.com', '#btn');
+      await r.recordFailure('hash', 'example.com', '#btn', 'tenant-1');
       expect(invalidateRedisCache).toHaveBeenCalledWith(mockRedis, 'hash', 'example.com');
     });
   });

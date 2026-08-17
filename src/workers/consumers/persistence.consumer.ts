@@ -1,6 +1,6 @@
 import { Worker } from 'bullmq';
 import type { Redis } from 'ioredis';
-import { getPool } from '../../db/pool';
+import { tenantQuery } from '../../db/transaction';
 import type { IObservability } from '../../modules/observability/interfaces';
 import type {
   PersistJobData,
@@ -30,7 +30,8 @@ import { createRedisConnection, PERSIST_QUEUE_NAME } from '../../queue';
  */
 
 async function upsertStepResult(row: StepResultRow): Promise<void> {
-  await getPool().query(
+  await tenantQuery(
+    row.tenantId,
     `INSERT INTO step_results
        (id, tenant_id, run_id, step_id, step_index, content_hash, target_hash, status,
         selector_used, screenshot_key, duration_ms, resolution_source, similarity_score,
@@ -70,7 +71,8 @@ async function insertRunEvents(tenantId: string, runId: string, rows: RunEventRo
       e.data ? JSON.stringify(e.data) : null,
     );
   });
-  await getPool().query(
+  await tenantQuery(
+    tenantId,
     `INSERT INTO run_events
        (tenant_id, run_id, step_index, seq, level, phase, message, data)
      VALUES ${tuples.join(', ')}

@@ -1,5 +1,5 @@
 import type { Queue } from 'bullmq';
-import { getPool } from '../../../db/pool';
+import { tenantPool, tenantQuery } from '../../../db/transaction';
 import { createCase } from '../../../db/case-writer';
 import { generateFormData } from '../../test-data/generate';
 import type { RunJobPayload } from '../../../queue';
@@ -171,7 +171,7 @@ export class ValidationRunner {
     const seeded = await seedSelectors(params.tenantId, params.baseUrl, scenario.selectorSeeds);
     if (seeded > 0) this.obs.increment('testwriter.selectors_preseeded', { count: String(seeded) });
 
-    const pool = getPool();
+    const pool = tenantPool(params.tenantId);
     // One draw of the seed variables for the whole validation, retries included:
     // "proven" has to mean proven with values we can name, and a second draw on
     // retry would make the recorded seed a lie about what actually ran.
@@ -201,7 +201,7 @@ export class ValidationRunner {
         triggeredBy: 'testwriter',
       });
 
-      return { runId: id, status: await this.pollToTerminal(id) };
+      return { runId: id, status: await this.pollToTerminal(params.tenantId, id) };
     };
 
     let { runId, status } = await execute();
@@ -228,7 +228,7 @@ export class ValidationRunner {
     // lockout or an expired account and teach the customer to distrust correct
     // tests, so it is proposed unvalidated with an honest reason instead.
     if (prefix.length > 0 && status !== 'passed' && status !== 'healed') {
-      const failedInPrefix = await this.failedWithinFirstSteps(runId, prefix.length);
+      const failedInPrefix = await this.failedWithinFirstSteps(params.tenantId, runId, prefix.length);
       if (failedInPrefix) {
         await pool.query(
           `UPDATE test_cases SET status = 'draft', validation_state = 'unproven_signin' WHERE id = $1`,
@@ -246,11 +246,11 @@ export class ValidationRunner {
       }
     }
 
-    const verdict = await this.judgeRun(scenario, status, runId, prefix.length);
+    const verdict = await this.judgeRun(params.tenantId, scenario, status, runId, prefix.length);
 
     // Harvest whatever the run observed after its last state change, so the
     // reviewer can harden a generic discover oracle into a specific assertion.
-    const harvest = await this.harvestRunState(runId);
+    const harvest = await this.harvestRunState(params.tenantId, runId);
     if (harvest) outcome.harvest[scenario.name] = harvest;
 
     if (verdict.accepted) {
@@ -260,7 +260,7 @@ export class ValidationRunner {
       // sailed through. Spec: spec-validation-trust.md §2.
       const audit = auditRunOracles(
         [...prefix.map((s) => s.ast), ...scenario.steps.map((s) => s.ast)],
-        await this.observeRun(runId),
+        await this.observeRun(params.tenantId, runId),
         prefix.length,
       );
       if (!audit.ok) {
@@ -346,7 +346,7 @@ export class ValidationRunner {
       // it is the one the customer needs. Without this, a scenario that probes
       // for an injection and goes red BECAUSE THE APP IS VULNERABLE is filed as
       // Kaizen's mistake and deleted.
-      const failure = await this.firstFailure(runId);
+      const failure = await this.firstFailure(params.tenantId, runId);
       if (status === 'failed' && failure
           && ASSERTION_FAILURE_CLASSES.has(failure.failureClass ?? '')) {
         outcome.findings.push(appDefectFinding({
@@ -364,6 +364,7 @@ export class ValidationRunner {
 
   /** Tier-1 vs Tier-2 semantics (spec §3.1, hardened by spec-validation-trust §7). */
   private async judgeRun(
+    tenantId: string,
     scenario: WrittenScenario,
     status: TerminalStatus | 'timeout',
     runId: string,
@@ -387,7 +388,7 @@ export class ValidationRunner {
       return { accepted: false, reason: `expected a failure at step ${scenario.expectation.failStepIndex} but the run ${status}` };
     }
 
-    const first = await this.firstFailure(runId);
+    const first = await this.firstFailure(tenantId, runId);
     if (!first) {
       return { accepted: false, reason: 'the run failed but recorded no failing step, so the expected failure cannot be confirmed' };
     }
@@ -451,7 +452,7 @@ export class ValidationRunner {
     ].filter((id): id is string => typeof id === 'string');
 
     try {
-      const pool = getPool();
+      const pool = tenantPool(params.tenantId);
       const { rows } = await pool.query<{ id: string }>(
         `INSERT INTO runs (tenant_id, suite_id, case_id, triggered_by, status, environment_url)
          VALUES ($1, $2, NULL, 'testwriter', 'queued', $3)
@@ -471,7 +472,7 @@ export class ValidationRunner {
         triggeredBy: 'testwriter',
       });
 
-      const status = await this.pollToTerminal(probeRunId);
+      const status = await this.pollToTerminal(params.tenantId, probeRunId);
       this.obs.increment('testwriter.vacuity_probe', { status });
       // Passing WITHOUT the actions is the indictment. Failing is what a
       // discriminating oracle is supposed to do here.
@@ -487,11 +488,13 @@ export class ValidationRunner {
 
   /** The run's first failing step, with enough detail to tell WHY it failed. */
   private async firstFailure(
+    tenantId: string,
     runId: string,
   ): Promise<{ stepIndex: number; failureClass: string | null; errorType: string | null } | null> {
-    const { rows } = await getPool().query<{
+    const { rows } = await tenantQuery<{
       step_index: number | null; failure_class: string | null; error_type: string | null;
     }>(
+      tenantId,
       `SELECT step_index, failure_class, error_type FROM step_results
        WHERE run_id = $1 AND status = 'failed' AND step_index IS NOT NULL
        ORDER BY step_index ASC LIMIT 1`,
@@ -502,8 +505,8 @@ export class ValidationRunner {
     return { stepIndex: row.step_index, failureClass: row.failure_class, errorType: row.error_type };
   }
 
-  private async pollToTerminal(runId: string): Promise<TerminalStatus | 'timeout'> {
-    const pool = getPool();
+  private async pollToTerminal(tenantId: string, runId: string): Promise<TerminalStatus | 'timeout'> {
+    const pool = tenantPool(tenantId);
     const deadline = Date.now() + RUN_TIMEOUT_MS;
     while (Date.now() < deadline) {
       await new Promise((resolve) => setTimeout(resolve, POLL_INTERVAL_MS));
@@ -540,13 +543,14 @@ export class ValidationRunner {
    * `healed` is true when the step needed a healing strategy to succeed, which
    * for a sign-in step means the run may never have signed in (§5).
    */
-  private async observeRun(runId: string): Promise<AuditObservation[]> {
-    const { rows } = await getPool().query<{
+  private async observeRun(tenantId: string, runId: string): Promise<AuditObservation[]> {
+    const { rows } = await tenantQuery<{
       step_index: number | null;
       selector_used: string | null;
       resolution_source: string | null;
       healed: boolean;
     }>(
+      tenantId,
       `SELECT step_index, selector_used, resolution_source,
               (status = 'healed' OR healing_event_id IS NOT NULL) AS healed
        FROM step_results
@@ -562,8 +566,9 @@ export class ValidationRunner {
     }));
   }
 
-  private async failedWithinFirstSteps(runId: string, prefixLength: number): Promise<boolean> {
-    const { rows } = await getPool().query<{ step_index: number | null }>(
+  private async failedWithinFirstSteps(tenantId: string, runId: string, prefixLength: number): Promise<boolean> {
+    const { rows } = await tenantQuery<{ step_index: number | null }>(
+      tenantId,
       `SELECT step_index FROM step_results
        WHERE run_id = $1 AND status = 'failed' AND step_index IS NOT NULL
        ORDER BY step_index ASC LIMIT 1`,
@@ -573,8 +578,8 @@ export class ValidationRunner {
     return typeof first === 'number' && first < prefixLength;
   }
 
-  private async harvestRunState(runId: string): Promise<OracleHarvest | null> {
-    const pool = getPool();
+  private async harvestRunState(tenantId: string, runId: string): Promise<OracleHarvest | null> {
+    const pool = tenantPool(tenantId);
     // The worker now records the page's closing state directly (§8). Before it
     // did, this method scavenged the event log for a url and an error-ish
     // message and almost always found neither — report.harvest was an empty

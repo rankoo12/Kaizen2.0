@@ -64,7 +64,8 @@ import type { IEventBus, StepResultRow, StepResultStatus } from '../modules/even
 import { markRunAttempt } from '../modules/event-bus/attempt-fence';
 import { startScreenshotConsumer } from './consumers/screenshot.consumer';
 import { startPersistenceConsumer } from './consumers/persistence.consumer';
-import { getPool, closePool } from '../db/pool';
+import { closePool } from '../db/pool';
+import { tenantPool, tenantQuery } from '../db/transaction';
 import { createRedisConnection, RUNS_QUEUE_NAME, SCREENSHOTS_QUEUE_NAME, PERSIST_QUEUE_NAME } from '../queue';
 import type { RunJobPayload } from '../queue';
 import type { StepAST, ClassifiedFailure, SelectorSet, SelectorEntry, RunContext } from '../types';
@@ -163,15 +164,20 @@ const healingEngine = new HealingEngine(
 
 // ─── DB Helpers ───────────────────────────────────────────────────────────────
 
-async function markRunRunning(runId: string): Promise<void> {
-  await getPool().query(
+// Both take the tenant explicitly. The runs table is under row-level security,
+// and under an unprivileged runtime role a write that carries no tenant is not
+// a write that goes to the wrong place — it is a write that does not happen.
+async function markRunRunning(tenantId: string, runId: string): Promise<void> {
+  await tenantQuery(
+    tenantId,
     `UPDATE runs SET status = 'running', started_at = now() WHERE id = $1`,
     [runId],
   );
 }
 
-async function markRunComplete(runId: string, status: 'passed' | 'failed' | 'healed' | 'cancelled'): Promise<void> {
-  await getPool().query(
+async function markRunComplete(tenantId: string, runId: string, status: 'passed' | 'failed' | 'healed' | 'cancelled'): Promise<void> {
+  await tenantQuery(
+    tenantId,
     `UPDATE runs SET status = $1, completed_at = now() WHERE id = $2`,
     [status, runId],
   );
@@ -196,7 +202,7 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
   const stepIds: (string | null)[] = payload.stepIds ?? [];
   const span = obs.startSpan('worker.processRun', { runId, tenantId });
 
-  await markRunRunning(runId);
+  await markRunRunning(tenantId, runId);
 
   // Fence consumers BEFORE the clears below: envelopes published by a
   // superseded attempt that are still in flight would otherwise land after the
@@ -207,12 +213,13 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
   // from the top. Clear any rows a prior attempt persisted so results and the run
   // log aren't duplicated. FK-safe order: healing_events → step_results → run_events.
   // No-op on a first attempt (nothing persisted yet).
-  await getPool().query(
+  const db = tenantPool(tenantId);
+  await db.query(
     `DELETE FROM healing_events WHERE step_result_id IN (SELECT id FROM step_results WHERE run_id = $1)`,
     [runId],
   ).catch(() => {});
-  await getPool().query(`DELETE FROM step_results WHERE run_id = $1`, [runId]).catch(() => {});
-  await getPool().query(`DELETE FROM run_events   WHERE run_id = $1`, [runId]).catch(() => {});
+  await db.query(`DELETE FROM step_results WHERE run_id = $1`, [runId]).catch(() => {});
+  await db.query(`DELETE FROM run_events   WHERE run_id = $1`, [runId]).catch(() => {});
 
   logger.info({ event: 'run_started', runId, tenantId, stepCount: compiledSteps.length });
 
@@ -337,7 +344,7 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
 
   const { runPassed, anyHealed, cancelled } = loopResult;
   const finalStatus = cancelled ? 'cancelled' : runPassed ? (anyHealed ? 'healed' : 'passed') : 'failed';
-  await markRunComplete(runId, finalStatus);
+  await markRunComplete(tenantId, runId, finalStatus);
 
   runLog.log('run', `Run ${finalStatus}`, { level: finalStatus === 'failed' ? 'error' : 'info', data: { status: finalStatus } });
   await runLog.flush();
@@ -420,7 +427,8 @@ async function insertStepResult(
     // Spec: docs/specs/workers/spec-live-run-updates.md §5.1.3
     // captured_name/value record a run-scoped variable captured by this step.
     // Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §3.5
-    const { rows } = await getPool().query<{ id: string }>(
+    const { rows } = await tenantQuery<{ id: string }>(
+      tenantId,
       `INSERT INTO step_results
          (tenant_id, run_id, step_id, step_index, content_hash, target_hash, status, selector_used,
           screenshot_key, duration_ms, resolution_source, similarity_score,
@@ -504,7 +512,8 @@ async function fetchLastGoodScreenshot(
   contentHash: string,
 ): Promise<Buffer | null> {
   try {
-    const { rows } = await getPool().query<{ screenshot_key: string }>(
+    const { rows } = await tenantQuery<{ screenshot_key: string }>(
+      tenantId,
       `SELECT screenshot_key FROM step_results
        WHERE tenant_id = $1 AND content_hash = $2 AND status = 'passed'
          AND screenshot_key IS NOT NULL
@@ -850,7 +859,7 @@ async function executeStep(
     // direct click_random pick whose selector is a transient data-kz-rand marker.
     const cacheable = !isAssertion && step.action !== 'click_random';
     if (result.selectorUsed && cacheable) {
-      await resolver.recordSuccess(step.targetHash, domain, result.selectorUsed).catch((e: any) =>
+      await resolver.recordSuccess(step.targetHash, domain, result.selectorUsed, tenantId).catch((e: any) =>
         obs.log('warn', 'worker.record_success_failed', { error: e.message }),
       );
     }
@@ -894,7 +903,7 @@ async function executeStep(
   }
 
   // ── Failure path: classify → heal ─────────────────────────────────────────
-  await resolver.recordFailure(step.targetHash, domain, selectorSet.selectors[0]?.selector ?? '').catch((e: any) =>
+  await resolver.recordFailure(step.targetHash, domain, selectorSet.selectors[0]?.selector ?? '', tenantId).catch((e: any) =>
     obs.log('warn', 'worker.record_failure_failed', { error: e.message }),
   );
 
@@ -941,7 +950,8 @@ async function executeStep(
   if (healingResult.succeeded && !healCertifiesAssertion(step.action, healingResult.strategyUsed)) {
     obs.increment('worker.assertion_heal_rejected', { strategy: healingResult.strategyUsed ?? 'unknown' });
     if (stepResultId) {
-      await getPool().query(
+      await tenantQuery(
+        tenantId,
         `UPDATE step_results SET selector_used = $1, error_type = 'AssertionHealedOntoDifferentElement' WHERE id = $2`,
         [healingResult.newSelector, stepResultId],
       ).catch((e: any) => obs.log('warn', 'worker.healed_update_failed', { error: e.message }));
@@ -964,7 +974,8 @@ async function executeStep(
     });
     // Update the step_result status to healed
     if (stepResultId) {
-      await getPool().query(
+      await tenantQuery(
+        tenantId,
         `UPDATE step_results SET status = 'healed', selector_used = $1 WHERE id = $2`,
         [healingResult.newSelector, stepResultId],
       ).catch((e: any) => obs.log('warn', 'worker.healed_update_failed', { error: e.message }));
@@ -994,7 +1005,7 @@ const worker = new Worker<RunJobPayload>(
       const isLastAttempt = job.attemptsMade + 1 >= (job.opts.attempts ?? 1);
       logger.error({ event: 'job_error', jobId: job.id, runId: job.data.runId, error: err.message, attempt: job.attemptsMade + 1, willRetry: !isLastAttempt });
       if (isLastAttempt) {
-        await markRunComplete(job.data.runId, 'failed').catch(() => { });
+        await markRunComplete(job.data.tenantId, job.data.runId, 'failed').catch(() => { });
       }
       throw err;
     }

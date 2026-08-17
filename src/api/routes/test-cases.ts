@@ -23,8 +23,7 @@ import { createHash } from 'crypto';
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireAuth } from '../middleware/auth';
-import { withTenantTransaction } from '../../db/transaction';
-import { getPool } from '../../db/pool';
+import { tenantQuery, withTenantTransaction } from '../../db/transaction';
 import { createRunQueue } from '../../queue';
 import { LearnedCompiler } from '../../modules/test-compiler/learned.compiler';
 import { OpenAIGateway } from '../../modules/llm-gateway/openai.gateway';
@@ -930,7 +929,8 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const { rows: budgetRows } = await getPool().query<{ llm_budget_tokens_monthly: string }>(
+    const { rows: budgetRows } = await tenantQuery<{ llm_budget_tokens_monthly: string }>(
+      tenantId,
       `SELECT llm_budget_tokens_monthly FROM tenants WHERE id = $1`,
       [tenantId],
     );
@@ -960,7 +960,8 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
     );
 
     // Create run record and enqueue
-    const { rows } = await getPool().query<{ id: string }>(
+    const { rows } = await tenantQuery<{ id: string }>(
+      tenantId,
       // total_steps: the run's length at the moment it was created. Not derivable
       // later — the case's active steps can change mid-run now that tests are
       // editable. Spec: docs/specs/roadmap/spec-phase-0-plumbing.md §3

@@ -3,7 +3,7 @@ import type { IElementResolver } from './interfaces';
 import type { StepAST, SelectorSet, ResolutionContext, SelectorEntry } from '../../types';
 import type { ILLMGateway } from '../llm-gateway/interfaces';
 import type { IObservability } from '../observability/interfaces';
-import { getPool } from '../../db/pool';
+import { tenantQuery } from '../../db/transaction';
 import { toVectorSQL } from '../../utils/vector';
 import { invalidateRedisCache } from './redis-cache.utils';
 import { semanticGuardPasses } from './cache-semantic-guard';
@@ -132,7 +132,7 @@ export class CachedElementResolver implements IElementResolver {
       const embeddingSQL = toVectorSQL(embedding);
 
       // L3: tenant scope
-      const tenantHit = await this.vectorSearch(embeddingSQL, context.tenantId, context.domain, false);
+      const tenantHit = await this.vectorSearch(embeddingSQL, context.tenantId, context.tenantId, context.domain, false);
       if (tenantHit) {
         const { passed, bestSimilarity } = semanticGuardPasses(
           embedding,
@@ -158,7 +158,7 @@ export class CachedElementResolver implements IElementResolver {
       }
 
       // L4: shared pool
-      const sharedHit = await this.vectorSearch(embeddingSQL, null, context.domain, true);
+      const sharedHit = await this.vectorSearch(embeddingSQL, context.tenantId, null, context.domain, true);
       if (sharedHit) {
         const { passed, bestSimilarity } = semanticGuardPasses(
           embedding,
@@ -297,7 +297,8 @@ export class CachedElementResolver implements IElementResolver {
 
   private async invalidateRow(targetHash: string, domain: string, tenantId: string): Promise<void> {
     try {
-      await getPool().query(
+      await tenantQuery(
+        tenantId,
         `DELETE FROM selector_cache
          WHERE content_hash = $1 AND domain = $2 AND tenant_id = $3
            AND pinned_at IS NULL`,
@@ -316,12 +317,13 @@ export class CachedElementResolver implements IElementResolver {
     tenantId: string,
   ): Promise<CacheRow | null> {
     try {
-      const { rows } = await getPool().query<{
+      const { rows } = await tenantQuery<{
         selectors: SelectorEntry[];
         step_embedding: number[] | string | null;
         element_embedding: number[] | string | null;
         frame_url: string | null;
       }>(
+        tenantId,
         `SELECT selectors, step_embedding, element_embedding, frame_url
          FROM selector_cache
          WHERE content_hash = $1 AND domain = $2 AND tenant_id = $3
@@ -343,14 +345,24 @@ export class CachedElementResolver implements IElementResolver {
     }
   }
 
+  /**
+   * `requesterTenantId` is who is asking; `filterTenantId` is which rows to
+   * match. They differ on the shared-pool search: the filter is null (any
+   * shared row), but the TRANSACTION still has to run as the requesting tenant
+   * — under row-level security a query with no tenant set does not see the
+   * shared pool, it sees nothing at all, and the L4 layer would silently go
+   * dark. Migration 037 made shared rows visible to every tenant; this is what
+   * makes the resolver actually ask as one.
+   */
   private async vectorSearch(
     embeddingSQL: string,
-    tenantId: string | null,
+    requesterTenantId: string,
+    filterTenantId: string | null,
     domain: string,
     shared: boolean,
   ): Promise<(CacheRow & { similarity: number; contentHash: string | null }) | null> {
     try {
-      const { rows } = await getPool().query<{
+      const { rows } = await tenantQuery<{
         selectors: SelectorEntry[];
         similarity: number;
         step_embedding: number[] | string | null;
@@ -358,6 +370,7 @@ export class CachedElementResolver implements IElementResolver {
         content_hash: string | null;
         frame_url: string | null;
       }>(
+        requesterTenantId,
         `SELECT selectors,
                 content_hash,
                 step_embedding,
@@ -373,7 +386,7 @@ export class CachedElementResolver implements IElementResolver {
            AND 1 - (step_embedding <=> $1::vector) > ${COSINE_THRESHOLD}
          ORDER BY step_embedding <=> $1::vector
          LIMIT 1`,
-        [embeddingSQL, domain, tenantId, shared],
+        [embeddingSQL, domain, filterTenantId, shared],
       );
 
       if (rows.length === 0) return null;
