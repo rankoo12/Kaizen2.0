@@ -109,6 +109,15 @@ export function isAssertion(action: string): boolean {
   return ASSERTIONS.has(action);
 }
 
+/** True when the nearest non-assertion step before `index` changes page state. */
+function followsStateChange(steps: StepIntent[], index: number): boolean {
+  for (let i = index - 1; i >= 0; i--) {
+    if (isAssertion(steps[i].action)) continue;
+    return STATE_CHANGING.has(steps[i].action);
+  }
+  return false;
+}
+
 export type SchemaGateResult =
   | { ok: true; steps: StepIntent[] }
   | { ok: false; errors: string[] };
@@ -146,7 +155,7 @@ export function runSchemaGate(
 
   const steps: StepIntent[] = [];
   rawSteps.forEach((raw, index) => {
-    const parsed = StepIntentSchema.safeParse(raw);
+    const parsed = StepIntentSchema.safeParse(recoverTruncatedIds(raw, validElementIds));
     if (!parsed.success) {
       const detail = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
       errors.push(`step ${index + 1}: invalid intent (${detail})`);
@@ -182,13 +191,18 @@ export function runSchemaGate(
       }
       // Description target — allowed only under the two exemptions.
       if (step.action === 'click_random') continue;
-      const previous = steps[index - 1];
-      const isDiscoverOracle =
-        isAssertion(step.action) && previous !== undefined && STATE_CHANGING.has(previous.action);
+      // "Following a state-changing action" means the assertion BLOCK after it:
+      // click Remove → verify the item is gone → verify the empty-cart message.
+      // The second assertion is as much a discover oracle as the first — it
+      // still describes a state only that action can produce. Requiring the
+      // action to be the IMMEDIATELY previous step killed "Remove item from
+      // cart" and "Empty cart prevents checkout" twice each on saucedemo, for
+      // writing two assertions in a row.
+      const isDiscoverOracle = isAssertion(step.action) && followsStateChange(steps, index);
       if (!isDiscoverOracle) {
         errors.push(
           `step ${index + 1}: description target "${target.description}" is only allowed for ` +
-          'click_random or for an assertion directly following a state-changing action',
+          'click_random or for an assertion following a state-changing action',
         );
       }
     }
@@ -319,6 +333,41 @@ function findUnfalsifiableOracles(steps: StepIntent[]): string[] {
   });
 
   return errors;
+}
+
+/**
+ * A model that copies a 36-char id by hand sometimes drops a character
+ * ("251524f-…" for "251524fa-…"). Grounding stays uncompromising — an id that
+ * matches NOTHING is still fatal — but a value that is the unique prefix (≥ 8
+ * chars) of exactly one real id is that id, and failing the whole scenario over
+ * a dropped hex digit spent two writer calls on saucedemo to reject a scenario
+ * whose every other step was grounded.
+ */
+export function recoverTruncatedIds(raw: unknown, validElementIds: Set<string>): unknown {
+  if (!raw || typeof raw !== 'object') return raw;
+  const step = { ...(raw as Record<string, unknown>) };
+  for (const key of ['target', 'destination'] as const) {
+    const t = step[key];
+    if (typeof t === 'string') { step[key] = recoverOne(t, validElementIds); continue; }
+    if (t && typeof t === 'object' && typeof (t as Record<string, unknown>).elementId === 'string') {
+      step[key] = { ...(t as Record<string, unknown>), elementId: recoverOne((t as Record<string, string>).elementId, validElementIds) };
+    }
+  }
+  return step;
+}
+
+function recoverOne(value: string, validElementIds: Set<string>): string {
+  if (UUID_RE.test(value)) return value;
+  const needle = value.trim().toLowerCase().replace(/[…\.]+$/, '');
+  if (needle.length < 8) return value;
+  let hit: string | null = null;
+  for (const id of validElementIds) {
+    if (id.toLowerCase().startsWith(needle)) {
+      if (hit) return value;   // ambiguous — leave it, and let grounding fail it
+      hit = id;
+    }
+  }
+  return hit ?? value;
 }
 
 /** Negative tests legitimately type malformed values ("not-an-email"). */

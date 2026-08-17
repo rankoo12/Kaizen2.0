@@ -90,6 +90,43 @@ describe('runSchemaGate — description-variant exemptions', () => {
     expect(result.ok).toBe(true);
   });
 
+  // saucedemo, 2026-08-17: "click Remove → verify the item is gone → verify the
+  // empty-cart message" died twice because the second assertion's nearest
+  // neighbour was an assertion, not the click. The whole assertion block after
+  // an action follows that action.
+  it('allows a run of discover oracles after one state-changing action', () => {
+    const result = runSchemaGate([
+      { action: 'click', target: { kind: 'element', elementId: ELEMENT_B } },
+      { action: 'assert_not_text', value: '{{selectedItem}}' },
+      { action: 'assert_url', value: 'cart' },
+      { action: 'assert_visible', target: { kind: 'description', description: 'the empty-cart message' } },
+    ], valid, 10);
+    expect(result.ok).toBe(true);
+  });
+
+  it('recovers an elementId the model truncated to a unique prefix, and only then', () => {
+    const ok = runSchemaGate([
+      { action: 'click', target: { kind: 'element', elementId: '11111111-1111-4111' } },
+      { action: 'assert_url', value: '/x' },
+    ], valid, 10);
+    expect(ok.ok).toBe(true);
+    if (ok.ok) expect((ok.steps[0] as { target: { elementId: string } }).target.elementId).toBe(ELEMENT_A);
+
+    // Too short to be a claim about anything.
+    const short = runSchemaGate([
+      { action: 'click', target: { kind: 'element', elementId: '1111' } },
+      { action: 'assert_url', value: '/x' },
+    ], valid, 10);
+    expect(short.ok).toBe(false);
+
+    // Ambiguous between two real ids: leave it, let grounding fail it.
+    const amb = runSchemaGate([
+      { action: 'click', target: { kind: 'element', elementId: 'aaaaaaaa-1' } },
+      { action: 'assert_url', value: '/x' },
+    ], new Set(['aaaaaaaa-1111-4111-8111-111111111111', 'aaaaaaaa-1222-4222-8222-222222222222']), 10);
+    expect(amb.ok).toBe(false);
+  });
+
   it('rejects a description target that does NOT follow a state change', () => {
     const result = runSchemaGate([
       { action: 'navigate', url: 'https://shop.test/' },
