@@ -65,7 +65,7 @@ const EVIDENCE = {
  *  demonstrates the quality bar better than any accepted one. */
 const REJECTION_COPY: Record<string, string> = {
   safety: 'Skipped for safety — it would have activated something that changes real data.',
-  schema: 'Referenced an element the crawl never saw. Rather than guess, Kaizen dropped it.',
+  schema: 'Couldn’t be grounded in what the crawl saw. Rather than guess, Kaizen dropped it.',
   render: 'Couldn’t be expressed as runnable steps.',
   compile: 'Couldn’t be expressed as runnable steps.',
   dedup: 'You already have this covered.',
@@ -637,6 +637,18 @@ function DeliveryFace({ job, drafts, onAcceptAll, onAccept, onDismiss, onOpenRun
                   <div style={{ fontSize: 11.5, color: 'var(--text-2)', lineHeight: 1.5, marginTop: 2 }}>
                     {REJECTION_COPY[r.stage] ?? ''} {r.reason}
                   </div>
+                  {/* The work, not only the verdict: what was written when it was
+                      rejected, so the reason can be checked against the steps. */}
+                  {r.steps && r.steps.length > 0 && (
+                    <details style={{ marginTop: 4 }}>
+                      <summary style={{ fontSize: 11, color: 'var(--text-3)', cursor: 'pointer' }}>
+                        What it wrote ({r.steps.length} {r.steps.length === 1 ? 'step' : 'steps'})
+                      </summary>
+                      <ol style={{ margin: '4px 0 0', paddingLeft: 18, fontSize: 11.5, lineHeight: 1.6, color: 'var(--text-2)' }}>
+                        {r.steps.map((s, k) => <li key={k} className="num">{s}</li>)}
+                      </ol>
+                    </details>
+                  )}
                 </div>
               ))}
             </div>

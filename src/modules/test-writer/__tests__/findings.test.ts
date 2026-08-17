@@ -1,3 +1,4 @@
+jest.mock("../../../db/transaction", () => ({ tenantQuery: jest.fn(async () => ({ rows: [] })) }));
 import {
   sanitizeForDisplay, appDefectFinding, sideChannelFinding, rankFindings,
 } from '../findings';
@@ -110,5 +111,32 @@ describe('rankFindings', () => {
     const findings = [{ severity: 'low' }, { severity: 'high' }] as Finding[];
     rankFindings(findings);
     expect(findings[0].severity).toBe('low');
+  });
+});
+
+// Spec: docs/specs/test-writer/spec-judge-repair-loop.md §2.6
+describe('reconFindings — a 404 that still rendered is not a broken page', () => {
+  const tx = jest.requireMock('../../../db/transaction') as { tenantQuery: jest.Mock };
+
+  it('downgrades a client-error page that came back with real controls, keeps a bare 404 as is', async () => {
+    tx.tenantQuery.mockImplementation(async (_t: string, sql: string) => {
+      if (/FROM site_pages sp/.test(sql)) {
+        return { rows: [{ url_normalized: 'https://shop.test/inventory.html', n: '12' }] };
+      }
+      return { rows: [] }; // unnamed-controls query
+    });
+    const { reconFindings } = await import('../findings');
+    const out = await reconFindings('t1', 's1', [
+      { url: 'https://shop.test/inventory.html', status: 404, reason: 'HTTP 404' },
+      { url: 'https://shop.test/gone', status: 404, reason: 'HTTP 404', linkedFrom: 'https://shop.test/' },
+    ], false);
+
+    const spa = out.find((f) => f.evidence.url === 'https://shop.test/inventory.html');
+    const broken = out.find((f) => f.evidence.url === 'https://shop.test/gone');
+    expect(spa?.severity).toBe('low');
+    expect(spa?.title).toMatch(/still renders/);
+    expect(spa?.detail).toMatch(/12 interactive controls/);
+    expect(broken?.severity).toBe('medium');
+    expect(broken?.title).toBe('A link on your site is broken');
   });
 });

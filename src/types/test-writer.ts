@@ -212,6 +212,11 @@ export type WriteInput = {
   maxSteps: number;
   /** Compile/lint errors from a previous attempt — set on the single repair round. */
   repairErrors?: string[];
+  /**
+   * What the target pages do NOT offer ("there is no typeable field here"),
+   * derived deterministically from `grounding`. Spec: spec-judge-repair-loop.md §2.4
+   */
+  groundingNotes?: string[];
 };
 
 // ─── JUDGE ───────────────────────────────────────────────────────────────────
@@ -299,4 +304,11 @@ export type ScenarioRejection = {
   stage: 'safety' | 'schema' | 'render' | 'compile' | 'dedup' | 'judge' | 'validation' | 'consent';
   reason: string;
   runId?: string;
+  /**
+   * The rendered steps at the moment of rejection, when there were any. A
+   * verdict without the work it judged cannot be checked by anyone — the user
+   * reading "Kaizen shows its work", or us calibrating a gate.
+   * Spec: spec-judge-repair-loop.md §2.5
+   */
+  steps?: string[];
 };

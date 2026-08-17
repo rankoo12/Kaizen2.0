@@ -452,7 +452,12 @@ async function runGenerationPhases(
     });
 
     if (outcome.ok) written.push(outcome.scenario);
-    else rejected.push({ name: plan.name, stage: outcome.failure.stage, reason: outcome.failure.reason });
+    else {
+      rejected.push({
+        name: plan.name, stage: outcome.failure.stage, reason: outcome.failure.reason,
+        ...(outcome.failure.steps?.length ? { steps: outcome.failure.steps } : {}),
+      });
+    }
     await progress({
       phase: 'write', scenariosWritten: written.length, scenariosTotal: approved.length,
     });
@@ -473,8 +478,12 @@ async function runGenerationPhases(
     })),
     existing,
   );
+  const stepsByRef = new Map(written.map((w) => [w.plan.name, w.steps.map((s) => s.text)]));
   for (const drop of dedup.dropped) {
-    rejected.push({ name: drop.name, stage: 'dedup', reason: `duplicate of "${drop.duplicateOf}"` });
+    rejected.push({
+      name: drop.name, stage: 'dedup', reason: `duplicate of "${drop.duplicateOf}"`,
+      steps: stepsByRef.get(drop.planRef),
+    });
   }
   const keptRefs = new Set(dedup.kept.map((k) => k.planRef));
   const deduped = written.filter((w) => keptRefs.has(w.plan.name));
@@ -500,6 +509,7 @@ async function runGenerationPhases(
         rejected.push({
           name: w.name, stage: 'judge',
           reason: failed?.join('; ') || 'rejected by the quality judge',
+          steps: w.steps.map((s) => s.text),
         });
         return false;
       });

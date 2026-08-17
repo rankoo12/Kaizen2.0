@@ -2,9 +2,9 @@
  * Model tiering for the Test Writer pipeline.
  * Spec ref: docs/specs/test-writer/spec-generation-pipeline.md §1.3
  *
- * Judgment is the only thing bought with frontier tokens: exactly two frontier
- * calls per job (App Brief synthesis + scenario planning). Classification,
- * writing and judging run on the mini tier. Both are env-configurable so the
+ * Judgment is the only thing bought with frontier tokens: exactly three frontier
+ * calls per job (App Brief synthesis, scenario planning, the batched scenario
+ * judge). Classification and writing run on the mini tier. Both are env-configurable so the
  * tier can be re-pointed without a code change.
  */
 export type ModelTier = 'mini' | 'frontier';
