@@ -114,6 +114,14 @@ export type PlanInput = {
   syntheticDataConsent: boolean;
   maxScenarios: number;
   /**
+   * Scoped Suggest: the ONE page the plan is about. The rest of the site model
+   * stays in the prompt as context — a scenario about the cart still needs to
+   * know the catalogue exists — but every scenario must target this page.
+   * Absent on a whole-app analyze.
+   * Spec: docs/specs/test-writer/spec-scoped-suggest.md §4
+   */
+  focusUrl?: string;
+  /**
    * Rendered archetype catalog (catalog-v1.md §3) — the static prompt prefix.
    * Supplied by the caller so the gateway never imports a feature module.
    */

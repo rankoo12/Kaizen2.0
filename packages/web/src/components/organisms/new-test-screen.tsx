@@ -272,7 +272,12 @@ export function NewTestScreen() {
                   </span>
                 </div>
                 <div className="flex items-center gap-1">
-                  <GhostMini icon={Sparkles} label="Suggest" disabled />
+                  {/* The "Suggest" button that lived here was dead UI from April.
+                      Scoped suggestion is a real feature now and its entry point is
+                      on the LIVE authoring surface (components/design/screen-author.tsx);
+                      this tree is dormant — the (app) layout renders KaizenApp for every
+                      route. Removed so nobody wires this one by mistake.
+                      Spec: docs/specs/test-writer/spec-scoped-suggest.md §0, §6 */}
                   <GhostMini icon={Copy} label="Import" disabled />
                 </div>
               </div>

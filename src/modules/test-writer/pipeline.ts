@@ -9,6 +9,7 @@ import type { Finding } from '../../types/test-writer';
 import type { CrawlReport, PageCapture } from './interfaces';
 import { DEFAULT_BUDGETS, HARD_MAX_PAGES } from './interfaces';
 import { ReconCrawler } from './recon/crawler';
+import { normalizeUrl } from './recon/url-normalizer';
 import { SiteModelRepository } from './site-model.repository';
 import { PageClassifier } from './comprehend/classifier';
 import { AppBriefSynthesizer } from './comprehend/synthesizer';
@@ -194,6 +195,13 @@ export async function runTestWriterJob(
       payload.tenantId, payload.suiteId, payload.jobId, tenantBrief,
     );
 
+    // A scoped suggestion targets one page, and every scenario must reach it.
+    // Held here rather than derived inside PLAN so the drop reason and the
+    // prompt agree about what "this page" means.
+    const focusUrl = payload.options.focusUrl
+      ? normalizeUrl(payload.options.focusUrl) ?? payload.options.focusUrl
+      : undefined;
+
     // ── PLAN ────────────────────────────────────────────────────────────────
     // Announced, not silent. PLAN is the longest single stretch before the
     // user's turn, and without this the rail sat on UNDERSTAND throughout —
@@ -214,6 +222,7 @@ export async function runTestWriterJob(
       scope: payload.scope,
       syntheticDataConsent: consent,
       maxScenarios: payload.options.maxScenarios,
+      focusUrl,
     });
 
     const report = {

@@ -1,7 +1,12 @@
 # Spec — Scoped Suggest (`POST /suites/:suiteId/suggest`)
 
 Created: 2026-08-17
-Status: Design agreed; implementation not started.
+Updated: 2026-08-17 — implemented.
+Status: **Implemented.** Route, pipeline focus and UI entry point are built and
+unit-tested; the §7 live check was run against a seeded model, not yet against a
+real site. §2.1's single-page re-capture is delivered as `maxPages: 1` on the
+existing crawler rather than a new code path — the BFS already terminates on
+budget, so it is a parameter, not a branch.
 Owner: Test Writer workstream · Mission 1 deliverable 4
 Depends on: `spec-test-writer-service.md` (umbrella §145 declares this route in one
 line and nothing else specifies it), `spec-generation-pipeline.md` (the phases

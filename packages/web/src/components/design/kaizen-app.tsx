@@ -54,6 +54,11 @@ export default function KaizenApp() {
   /** Which Test Writer job the writer screen is showing. */
   const [writerFocus, setWriterFocus] = useState<{ suiteId: string; jobId: string } | null>(null);
   const [analyzeOpen, setAnalyzeOpen] = useState(false);
+  /** 'analyze' explores the whole app; 'suggest' scopes the job to one page. */
+  const [analyzeMode, setAnalyzeMode] = useState<'analyze' | 'suggest'>('analyze');
+  /** The page a scoped suggestion is about, prefilled and locked to the URL the
+   *  user was already authoring against. */
+  const [suggestUrl, setSuggestUrl] = useState<string | null>(null);
   /** The analyze form, parked while the user goes to author a sign-in test. */
   const [analyzeDraft, setAnalyzeDraft] = useState<AnalyzeDraft | null>(null);
   /** Prefill for a brand-new test — currently only the sign-in recipe template. */
@@ -285,6 +290,12 @@ export default function KaizenApp() {
         template={authorTemplate}
         onBack={() => { setEditing(null); returnToAnalyze(); }}
         onSuitesChanged={refetch} showToast={showToast}
+        onSuggest={(suiteId, pageUrl) => {
+          setSuite(suiteId);
+          setSuggestUrl(pageUrl);
+          setAnalyzeMode('suggest');
+          setAnalyzeOpen(true);
+        }}
         onCreated={(caseId, runId) => {
           refetch();
           // Clear the edit target, or the next visit to this screen would re-open the
@@ -390,9 +401,12 @@ export default function KaizenApp() {
       </div>
       {analyzeOpen && (
         <AnalyzeSheet suites={suites} defaultSuiteId={suite}
-          defaultUrl={cases.find((c) => !suite || c.suiteId === suite)?.baseUrl}
-          role={role} draft={analyzeDraft}
-          onClose={() => { setAnalyzeOpen(false); setAnalyzeDraft(null); }}
+          defaultUrl={suggestUrl ?? cases.find((c) => !suite || c.suiteId === suite)?.baseUrl}
+          role={role} draft={analyzeDraft} mode={analyzeMode}
+          onClose={() => {
+            setAnalyzeOpen(false); setAnalyzeDraft(null);
+            setAnalyzeMode('analyze'); setSuggestUrl(null);
+          }}
           showToast={showToast}
           onCreateLoginTest={(draft, template) => {
             // Park the form, not discard it: the user is leaving mid-decision to
@@ -406,8 +420,11 @@ export default function KaizenApp() {
             setScreen('author');
           }}
           onStarted={(suiteId, jobId) => {
+            const scoped = analyzeMode === 'suggest';
             setAnalyzeOpen(false);
             setAnalyzeDraft(null);
+            setAnalyzeMode('analyze');
+            setSuggestUrl(null);
             setWriterFocus({ suiteId, jobId });
             setSuite(suiteId);
             setScreen('writer');
@@ -416,7 +433,9 @@ export default function KaizenApp() {
             // things the next screen promises — would not appear until something
             // unrelated triggered a rescan.
             void scanJobs();
-            showToast('Exploring your app — this keeps running if you leave', 'info');
+            showToast(scoped
+              ? 'Looking at that page — this keeps running if you leave'
+              : 'Exploring your app — this keeps running if you leave', 'info');
           }} />
       )}
     </div>
