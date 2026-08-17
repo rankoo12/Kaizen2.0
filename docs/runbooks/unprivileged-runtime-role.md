@@ -207,11 +207,31 @@ once and reference from all four, so there is one place to rotate the password.
 # 3. Provision, from a one-off shell (railway run) or your machine with the
 #    admin URL:
 DATABASE_ADMIN_URL="$RAILWAY_DB_URL" KAIZEN_APP_DB_ROLE=kaizen_app KAIZEN_APP_DB_PASSWORD='<generated>' npx tsx scripts/provision-app-role.ts
-# 4. Verify before touching anything user-facing:
-DATABASE_URL="postgresql://kaizen_app:<generated>@<host>:<port>/<db>" DATABASE_ADMIN_URL="$RAILWAY_DB_URL" npx jest --config jest.integration.config.ts tenant-isolation      # must be 7/7
+# 4. Verify before touching anything user-facing.
+#    ⚠ NOT from your laptop through the public proxy. Found live 2026-08-17:
+#    Railway's TCP proxy (*.proxy.rlwy.net) accepts the default `postgres`
+#    login and drops any OTHER role's connection before Postgres sees it —
+#    "server closed the connection unexpectedly" / ECONNRESET, with or without
+#    SSL, while the role is perfectly healthy (rolcanlogin t, no limit, no
+#    expiry). So the isolation suite cannot be run against production from
+#    outside; kaizen_app is reachable only on the internal network. Prove the
+#    role from inside instead:
+#      railway link            # choose the Postgres service
+#      railway ssh             # lands in the Postgres container (has psql)
+#      psql -U kaizen_app -d railway -h localhost -c "select current_user"
+#    → prints kaizen_app. That is the acceptance check for the role itself.
+#    The isolation suite's cross-tenant assertions were proven on dev with an
+#    identical role definition; the production check is that the role exists,
+#    is NOSUPERUSER/NOBYPASSRLS (the provision script asserts it), and logs in.
 # 5. Only now: change DATABASE_URL on the same four services to the
-#    kaizen_app URL. Leave DATABASE_ADMIN_URL as the original. Redeploy.
+#    kaizen_app URL — the INTERNAL one (postgres.railway.internal): take the
+#    existing DATABASE_URL and swap `postgres:<pw>` for `kaizen_app:<pw>`,
+#    nothing after the `@` changes. Leave DATABASE_ADMIN_URL as the original.
+#    Flip persistence-db-updates FIRST on its own, watch its logs come up with
+#    no "permission denied" / "current_tenant_id" errors, then the other three.
 #    screenshotter is untouched throughout.
+# 6. Post-flip: open the app — view a suite, open a run, load the Brain page.
+#    All surfaces exercised locally under this role.
 #    Migrations keep working (they use the admin URL); the app runs restricted.
 # Rollback: set DATABASE_URL back to the admin URL. Nothing else changes.
 ```
