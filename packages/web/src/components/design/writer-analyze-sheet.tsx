@@ -115,7 +115,7 @@ function originOf(url: string): string | null {
 
 export function AnalyzeSheet({
   suites: suiteProp, defaultSuiteId, defaultUrl, role, draft, mode = 'analyze',
-  onClose, onStarted, onCreateLoginTest, showToast,
+  onClose, onStarted, onCreateLoginTest, onSuitesChanged, showToast,
 }: {
   suites: DesignSuite[];
   defaultSuiteId?: string | null;
@@ -137,6 +137,9 @@ export function AnalyzeSheet({
   /** Hands the current form back so it can be restored, and asks the shell to
    *  open the authoring screen on a sign-in template. */
   onCreateLoginTest?: (draft: AnalyzeDraft, template: ReturnType<typeof signInTemplate>) => void;
+  /** Tells the shell to re-read the suite list. A suite created in here is a real
+   *  suite for the whole workspace, not a private one for this dialog. */
+  onSuitesChanged?: () => void;
   showToast?: (message: string, kind?: string) => void;
 }) {
   const suggest = mode === 'suggest';
@@ -157,8 +160,10 @@ export function AnalyzeSheet({
   const [creatingSuite, setCreatingSuite] = useState(suiteProp.length === 0);
   const [newSuiteName, setNewSuiteName] = useState('');
   const [extraSuites, setExtraSuites] = useState<{ id: string; name: string }[]>([]);
-  /** Suites created in this dialog appear immediately, without a round trip. */
-  const suites = [...suiteProp, ...extraSuites];
+  /* Suites created in this dialog appear immediately, without waiting for the
+     shell's re-read to land. Once it does the same suite arrives in `suiteProp`,
+     so drop the local copy or the picker lists it twice. */
+  const suites = [...suiteProp, ...extraSuites.filter((e) => !suiteProp.some((s) => s.id === e.id))];
 
   // ── signed-in exploration ──────────────────────────────────────────────────
   const isAdmin = role === 'admin' || role === 'owner';
@@ -256,6 +261,14 @@ export function AnalyzeSheet({
       setSuiteId(suite.id);
       setCreatingSuite(false);
       setNewSuiteName('');
+      /* The row above only tells THIS dialog about the suite. The POST really did
+         create it, but nothing else in the app knew: it was missing from the
+         sidebar and the tests list, the writer screen fell back to "this suite"
+         for its name, and the job poller — which watches the suites the shell
+         knows about — never picked up the analysis started on it. Closing the
+         dialog made the suite look like it had never been created. */
+      onSuitesChanged?.();
+      showToast?.(`Suite “${suite.name}” created`, 'success');
     } catch {
       setError('Could not create that suite.');
     }
