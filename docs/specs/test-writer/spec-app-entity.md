@@ -5,9 +5,15 @@ Status: approved for implementation (founder accepted all five decisions
 2026-08-12; won a 3-design competition, 2 judges unanimous, 10-attack
 adversarial pass all resolved — `docs/assessments/2026-08-11-app-entity-architecture-plan.md`)
 Owner: Test Writer workstream
-Migrations: **036_app_entity.sql** + **037_app_entity_cutover.sql** (+038 optional
-shadow purge) — claimed in COORDINATION.md 2026-08-12. **Renumbered** from the
-assessment doc's "035/036": validation-trust took 035, so app-entity is 036/037.
+Updated: 2026-08-17 — Decision 5 corrected (the runtime role is a superuser, not
+merely the table owner; FORCE RLS alone closes nothing). Migration numbers shift
+by one: 036 is now the standalone RLS enablement that shipped ahead of this spec.
+Migrations: **037_app_entity.sql** + **038_app_entity_cutover.sql** (+039 optional
+shadow purge). **Renumbered twice**: from the assessment doc's "035/036" because
+validation-trust took 035, and again because `036_force_rls.sql` took 036 when
+the RLS half was split out and shipped first. The FORCE statements listed in §1
+are already applied by 036 for the five tables that existed then; 037 adds them
+for `apps` and `app_origins` only.
 
 ## 0. Goal & keying principle
 
@@ -35,7 +41,7 @@ deployment silently lacks (verified live: `relforcerowsecurity = f` on every
 tenant table; isolation currently rests solely on query-level `tenant_id`
 predicates).
 
-## 1. Schema — migration 036_app_entity.sql
+## 1. Schema — migration 037_app_entity.sql
 
 One transaction, additive, safe with old suite-keyed code still deployed (legacy
 `UNIQUE (tenant_id, suite_id, url_normalized)` retained until 037).
@@ -120,7 +126,7 @@ test (ports, IDN, schemes, `_` hosts). Ordered steps:
 7. `app_briefs.app_id` via `generation_job_id → generation_jobs.app_id`; `scope` from the job.
 8. `test_suites.app_id` = most recent generation job's `app_id`; NULL for never-analyzed suites.
 
-### 037_app_entity_cutover.sql (after live verification)
+### 038_app_entity_cutover.sql (after live verification)
 
 Drop legacy `site_pages_tenant_id_suite_id_url_normalized_key`; renumber
 colliding backfilled `(tenant, app, version)` briefs by `created_at`, then
@@ -202,10 +208,41 @@ versions to their originating suite/job so near-zero-work reads as reuse.
 4. **No `options.reuseFreshCrawl` in v1.** Classification + synthesis reuse
    already removes the dominant cost; keep the honest "elements never trusted
    across crawls" default; revisit when P5 gives freshness a UI.
-5. **Runtime DB user stays table-owner for now; FORCE RLS closes the hole.**
-   Moving to a non-owner role is strictly stronger but touches Railway/docker
-   provisioning for both workstreams — filed as a scheduled hardening task with
-   its own cross-note, not coupled to this migration window.
+5. ~~**Runtime DB user stays table-owner for now; FORCE RLS closes the hole.**~~
+   **CORRECTED 2026-08-17 — the premise was wrong, and the decision it produced
+   does not hold.**
+
+   This was written believing the runtime connects as the tables' *owner*, for
+   which `FORCE ROW LEVEL SECURITY` is indeed the fix. It does not: on the dev
+   stack it connects as **`kaizen`, a SUPERUSER** (`rolsuper = t`, verified
+   live). Postgres exempts superusers and `BYPASSRLS` roles from row-level
+   security **unconditionally — FORCE included**. So FORCE alone closes nothing.
+
+   Measured, same query, no `WHERE` clause, on the dev database with FORCE
+   already applied:
+
+   | connected as | rows returned from `site_pages` |
+   |---|---|
+   | `kaizen` (superuser, the runtime role) | **59 — every tenant's** |
+   | an unprivileged role | 30 — exactly the current tenant's |
+
+   The mechanism is sound and now proven (`src/db/__tests__/tenant-isolation.integration.test.ts`
+   passes every isolation assertion under an unprivileged role, including
+   refusing a cross-tenant INSERT). What is missing is that the application does
+   not use it.
+
+   **Revised decision: a non-superuser, non-owner runtime role is REQUIRED, not
+   a later hardening task.** It is the whole of the work, not the polish on it.
+   Until it lands, "tenant isolation is enforced by the database" remains false
+   and must not be said to anyone — an enterprise security review included.
+   Migration 036 ships anyway because it is a genuine prerequisite and is inert
+   rather than risky, but it must not be reported as the fix.
+
+   Provisioning is the real cost, and it is why this needs a decision rather
+   than a commit: a new role must exist in dev compose, in CI, and in the
+   production database, with grants on every current and future table
+   (`ALTER DEFAULT PRIVILEGES`), before the app's connection string can change —
+   and a mistake in that order locks the product out of its own database.
 
 ## 6. B11 / P5 hooks
 

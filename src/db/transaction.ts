@@ -1,4 +1,4 @@
-import { PoolClient } from 'pg';
+import { PoolClient, QueryResult, QueryResultRow } from 'pg';
 import { getPool } from './pool';
 
 /**
@@ -32,4 +32,27 @@ export async function withTenantTransaction<T>(
   } finally {
     client.release();
   }
+}
+
+/**
+ * One tenant-scoped statement.
+ *
+ * Exists because the alternative people reach for — `getPool().query(...)` with
+ * a `tenant_id = $1` predicate — is isolation by discipline: it works only while
+ * every author remembers, and it is invisible to the database. Under
+ * `FORCE ROW LEVEL SECURITY` those queries do not quietly return the wrong rows,
+ * they fail outright, because the policy reads a setting no one set.
+ *
+ * Deliberately ONE statement per transaction rather than a long-lived one: the
+ * Test Writer pipeline runs for minutes across a crawl and several LLM calls,
+ * and holding a connection open across that would trade a security fix for a
+ * pool-exhaustion bug. Short transactions keep the tenant setting attached to
+ * the statement that needs it and to nothing else.
+ */
+export async function tenantQuery<T extends QueryResultRow = QueryResultRow>(
+  tenantId: string,
+  sql: string,
+  params: readonly unknown[] = [],
+): Promise<QueryResult<T>> {
+  return withTenantTransaction(tenantId, (client) => client.query<T>(sql, params as unknown[]));
 }

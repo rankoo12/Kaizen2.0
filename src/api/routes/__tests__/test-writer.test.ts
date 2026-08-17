@@ -1,11 +1,16 @@
 import Fastify from 'fastify';
 import { testWriterRoutes } from '../test-writer';
 import { getPool } from '../../../db/pool';
-import { withTenantTransaction } from '../../../db/transaction';
+import { withTenantTransaction, tenantQuery } from '../../../db/transaction';
 import { usageThisMonth } from '../../../modules/billing-meter/usage';
 
 jest.mock('../../../db/pool', () => ({ getPool: jest.fn() }));
-jest.mock('../../../db/transaction', () => ({ withTenantTransaction: jest.fn() }));
+// tenantQuery is a thin wrapper over withTenantTransaction; the mock mirrors that
+// relationship so a route that switched to it exercises the same fake client.
+jest.mock('../../../db/transaction', () => ({
+  withTenantTransaction: jest.fn(),
+  tenantQuery: jest.fn(),
+}));
 jest.mock('../../middleware/auth', () => ({
   requireAuth: jest.fn((request: Record<string, unknown>, _reply: unknown, done: () => void) => {
     request.tenantId = 'tenant-1';
@@ -62,6 +67,9 @@ describe('testWriterRoutes - POST /testwriter/jobs/:jobId/plan-approval', () => 
     (getPool as jest.Mock).mockReturnValue({ query: mockQuery });
     (withTenantTransaction as jest.Mock).mockImplementation(
       async (_t: string, cb: (c: unknown) => unknown) => cb({ query: mockQuery }),
+    );
+    (tenantQuery as jest.Mock).mockImplementation(
+      async (_t: string, sql: string, params?: unknown[]) => mockQuery(sql, params),
     );
   });
 
@@ -190,6 +198,9 @@ describe('testWriterRoutes - GET /suites/:suiteId/coverage', () => {
     (withTenantTransaction as jest.Mock).mockImplementation(
       async (_t: string, cb: (c: unknown) => unknown) => cb({ query: mockQuery }),
     );
+    (tenantQuery as jest.Mock).mockImplementation(
+      async (_t: string, sql: string, params?: unknown[]) => mockQuery(sql, params),
+    );
   });
 
   afterEach(() => jest.clearAllMocks());
@@ -301,6 +312,9 @@ describe('testWriterRoutes - POST /suites/:suiteId/suggest', () => {
     (getPool as jest.Mock).mockReturnValue({ query: mockQuery });
     (withTenantTransaction as jest.Mock).mockImplementation(
       async (_t: string, cb: (c: unknown) => unknown) => cb({ query: mockQuery }),
+    );
+    (tenantQuery as jest.Mock).mockImplementation(
+      async (_t: string, sql: string, params?: unknown[]) => mockQuery(sql, params),
     );
     (usageThisMonth as jest.Mock).mockResolvedValue(0);
   });

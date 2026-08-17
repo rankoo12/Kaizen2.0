@@ -1,4 +1,4 @@
-import { getPool } from '../../db/pool';
+import { tenantQuery } from '../../db/transaction';
 import type { Finding } from '../../types/test-writer';
 
 /**
@@ -71,7 +71,8 @@ export async function reconFindings(
   // Interactive controls with no accessible name. Two problems in one row: a
   // screen reader announces nothing, and Kaizen cannot write a test that refers
   // to it — which is why these were sitting in the grounding set as noise.
-  const { rows: unnamed } = await getPool().query<{ url_normalized: string; role: string; n: string }>(
+  const { rows: unnamed } = await tenantQuery<{ url_normalized: string; role: string; n: string }>(
+    tenantId,
     `SELECT sp.url_normalized, pe.role, count(*)::text AS n
      FROM page_elements pe
      JOIN site_pages sp ON sp.id = pe.page_id

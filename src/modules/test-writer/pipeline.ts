@@ -1,4 +1,4 @@
-import { getPool } from '../../db/pool';
+import { tenantQuery } from '../../db/transaction';
 import type { TestWriterJobPayload } from '../../queue';
 import type { IObservability } from '../observability/interfaces';
 import type { ITestWriterGateway } from '../llm-gateway/testwriter.interfaces';
@@ -118,8 +118,8 @@ export async function runTestWriterJob(
   payload: TestWriterJobPayload,
   deps: TestWriterPipelineDeps,
 ): Promise<void> {
-  const pool = getPool();
-  const { rows } = await pool.query<JobRow>(
+  const { rows } = await tenantQuery<JobRow>(
+    payload.tenantId,
     `SELECT status, target_url, suite_id, options, test_plan, plan_notes, report,
             scope, auth_consent, login_case_id, auth_consented_by
      FROM generation_jobs WHERE id = $1 AND tenant_id = $2`,
@@ -138,7 +138,7 @@ export async function runTestWriterJob(
     deps.obs.log('error', 'testwriter.consent_mismatch', {
       jobId: payload.jobId, detail: authDecision.detail,
     });
-    await finishJob(payload.jobId, 'blocked', null,
+    await finishJob(payload.tenantId, payload.jobId, 'blocked', null,
       'This analysis was stopped because its recorded permissions did not match what was requested.');
     return;
   }
@@ -149,14 +149,15 @@ export async function runTestWriterJob(
       return;
     }
 
-    await pool.query(
+    await tenantQuery(
+      payload.tenantId,
       `UPDATE generation_jobs SET status = 'running', started_at = now() WHERE id = $1`,
       [payload.jobId],
     );
 
     // Progress is written as it happens so the UI can show real counts instead
     // of a fake bar. Phases before PLAN otherwise report nothing at all.
-    const progress = makeProgressWriter(payload.jobId);
+    const progress = makeProgressWriter(payload.tenantId, payload.jobId);
     await progress({ phase: 'recon' });
 
     const recon = await runRecon(payload, deps, progress, authDecision);
@@ -176,12 +177,12 @@ export async function runTestWriterJob(
     );
 
     if (recon.auth?.blockedReason) {
-      await finishJob(payload.jobId, 'blocked', { recon, findings: await earlyFindings() },
+      await finishJob(payload.tenantId, payload.jobId, 'blocked', { recon, findings: await earlyFindings() },
         authBlockedMessage(recon.auth.blockedReason, recon.auth.blockedDetail));
       return;
     }
     if (recon.pagesCrawled === 0) {
-      await finishJob(payload.jobId, 'blocked', { recon, findings: await earlyFindings() },
+      await finishJob(payload.tenantId, payload.jobId, 'blocked', { recon, findings: await earlyFindings() },
         'All reachable pages were blocked (challenge/robots).');
       return;
     }
@@ -245,19 +246,21 @@ export async function runTestWriterJob(
       },
     };
 
-    await pool.query(
+    await tenantQuery(
+      payload.tenantId,
       `UPDATE generation_jobs SET test_plan = $2, report = $3 WHERE id = $1`,
       [payload.jobId, JSON.stringify({ scenarios: plan.scenarios }), JSON.stringify(report)],
     );
 
     if (plan.scenarios.length === 0) {
-      await finishJob(payload.jobId, 'completed', report, 'No scenarios could be planned.');
+      await finishJob(payload.tenantId, payload.jobId, 'completed', report, 'No scenarios could be planned.');
       return;
     }
 
     // ── Checkpoint ──────────────────────────────────────────────────────────
     if (payload.options.planApproval !== 'auto') {
-      await pool.query(
+      await tenantQuery(
+        payload.tenantId,
         `UPDATE generation_jobs SET status = 'awaiting_plan_approval' WHERE id = $1`,
         [payload.jobId],
       );
@@ -276,7 +279,7 @@ export async function runTestWriterJob(
     const message = err instanceof Error ? err.message : String(err);
     deps.obs.log('error', 'testwriter.job_failed', { jobId: payload.jobId, error: message });
     deps.obs.increment('testwriter.jobs_failed');
-    await finishJob(payload.jobId, 'failed', null, message);
+    await finishJob(payload.tenantId, payload.jobId, 'failed', null, message);
   }
 }
 
@@ -296,9 +299,10 @@ export type JobProgress = {
   validationRunsTotal?: number;
 };
 
-function makeProgressWriter(jobId: string): (p: JobProgress) => Promise<void> {
+function makeProgressWriter(tenantId: string, jobId: string): (p: JobProgress) => Promise<void> {
   return async (p) => {
-    await getPool().query(
+    await tenantQuery(
+      tenantId,
       `UPDATE generation_jobs
        SET report = COALESCE(report, '{}'::jsonb) || jsonb_build_object('progress', $2::jsonb)
        WHERE id = $1`,
@@ -385,8 +389,8 @@ async function runGenerationPhases(
   deps: TestWriterPipelineDeps,
   job: JobRow,
 ): Promise<void> {
-  const pool = getPool();
-  await pool.query(`UPDATE generation_jobs SET status = 'running' WHERE id = $1`, [payload.jobId]);
+  await tenantQuery(payload.tenantId,
+    `UPDATE generation_jobs SET status = 'running' WHERE id = $1`, [payload.jobId]);
 
   const planned = job.test_plan?.scenarios ?? [];
   // An explicit empty array means "the human discarded this plan" — it must not
@@ -396,14 +400,14 @@ async function runGenerationPhases(
     : planned.filter((s) => payload.approvedScenarios!.includes(s.name));
 
   if (approved.length === 0) {
-    await finishJob(payload.jobId, 'completed', job.report ?? null, 'No scenarios were approved.');
+    await finishJob(payload.tenantId, payload.jobId, 'completed', job.report ?? null, 'No scenarios were approved.');
     return;
   }
 
   const consent = await loadSuiteConsent(payload.tenantId, payload.suiteId);
   const rejected: ScenarioRejection[] = [];
   const written: WrittenScenario[] = [];
-  const progress = makeProgressWriter(payload.jobId);
+  const progress = makeProgressWriter(payload.tenantId, payload.jobId);
   await progress({ phase: 'write', scenariosWritten: 0, scenariosTotal: approved.length });
 
   // ── WRITE (sequential: each call is small, and ordering keeps the report readable)
@@ -565,7 +569,7 @@ async function runGenerationPhases(
     harvest: validation.harvest,
   };
 
-  await finishJob(payload.jobId, 'completed', report, null, payload.tenantId);
+  await finishJob(payload.tenantId, payload.jobId, 'completed', report, null, true);
   deps.obs.increment('testwriter.jobs_completed');
 }
 
@@ -611,7 +615,8 @@ async function loadLoginSteps(
 }
 
 async function loadTenantBrief(tenantId: string, suiteId: string): Promise<TenantBrief | null> {
-  const { rows } = await getPool().query<{ tenant_brief: TenantBrief | null }>(
+  const { rows } = await tenantQuery<{ tenant_brief: TenantBrief | null }>(
+    tenantId,
     `SELECT tenant_brief FROM test_suites WHERE id = $1 AND tenant_id = $2`,
     [suiteId, tenantId],
   );
@@ -619,7 +624,8 @@ async function loadTenantBrief(tenantId: string, suiteId: string): Promise<Tenan
 }
 
 async function loadSuiteConsent(tenantId: string, suiteId: string): Promise<boolean> {
-  const { rows } = await getPool().query<{ allow_synthetic_data: boolean }>(
+  const { rows } = await tenantQuery<{ allow_synthetic_data: boolean }>(
+    tenantId,
     `SELECT allow_synthetic_data FROM test_suites WHERE id = $1 AND tenant_id = $2`,
     [suiteId, tenantId],
   );
@@ -627,7 +633,8 @@ async function loadSuiteConsent(tenantId: string, suiteId: string): Promise<bool
 }
 
 async function loadExistingCaseNames(tenantId: string, suiteId: string): Promise<string[]> {
-  const { rows } = await getPool().query<{ name: string }>(
+  const { rows } = await tenantQuery<{ name: string }>(
+    tenantId,
     `SELECT name FROM test_cases WHERE tenant_id = $1 AND suite_id = $2 AND status <> 'rejected'`,
     [tenantId, suiteId],
   );
@@ -671,7 +678,8 @@ async function loadExistingCaseSteps(
    */
   loginPrefixTexts: string[] = [],
 ): Promise<Array<{ kind: string; steps: string[]; name: string }>> {
-  const { rows } = await getPool().query<{ name: string; steps: string[] }>(
+  const { rows } = await tenantQuery<{ name: string; steps: string[] }>(
+    tenantId,
     `SELECT tc.name, ARRAY_AGG(ts.raw_text ORDER BY tcs.position) AS steps
      FROM test_cases tc
      JOIN test_case_steps tcs ON tcs.case_id = tc.id AND tcs.is_active = true
@@ -701,7 +709,8 @@ async function loadExistingCaseSteps(
  * only if two jobs for one tenant overlap.
  */
 async function tokenUsage(jobId: string, tenantId: string): Promise<Record<string, number>> {
-  const { rows } = await getPool().query<{ purpose: string; tokens: string }>(
+  const { rows } = await tenantQuery<{ purpose: string; tokens: string }>(
+    tenantId,
     `SELECT COALESCE(be.metadata->>'purpose', 'other') AS purpose,
             SUM(be.quantity)::bigint AS tokens
      FROM billing_events be
@@ -725,16 +734,18 @@ async function tokenUsage(jobId: string, tenantId: string): Promise<Record<strin
 }
 
 async function finishJob(
+  tenantId: string,
   jobId: string,
   status: 'completed' | 'failed' | 'blocked',
   report: Record<string, unknown> | null,
   error: string | null,
-  tenantId?: string,
+  withTokenUsage = false,
 ): Promise<void> {
-  const withUsage = report && tenantId
+  const withUsage = report && withTokenUsage
     ? { ...report, tokenUsage: await tokenUsage(jobId, tenantId) }
     : report;
-  await getPool().query(
+  await tenantQuery(
+    tenantId,
     `UPDATE generation_jobs
      SET status = $2, report = COALESCE($3, report), error = $4, finished_at = now()
      WHERE id = $1`,
