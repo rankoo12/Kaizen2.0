@@ -35,6 +35,8 @@ export class TestPlanner {
     scope: 'public' | 'authenticated';
     syntheticDataConsent: boolean;
     maxScenarios: number;
+    /** Scoped Suggest: every scenario must target this page. Spec: spec-scoped-suggest.md §4 */
+    focusUrl?: string;
   }): Promise<PlanResult> {
     const capabilitiesByPage: Record<string, string[]> = {};
     for (const page of params.pages) {
@@ -49,6 +51,7 @@ export class TestPlanner {
       scope: params.scope,
       syntheticDataConsent: params.syntheticDataConsent,
       maxScenarios: params.maxScenarios,
+      focusUrl: params.focusUrl,
       catalogBlock: renderCatalogBlock(),
     }, params.tenantId);
 
@@ -73,6 +76,14 @@ export class TestPlanner {
         // The planner referenced pages the crawler never observed — the graph
         // disposes of it rather than letting WRITE invent grounding.
         dropped.push({ name, reason: 'no observed target pages' });
+        continue;
+      }
+
+      // Scoped Suggest is enforced here, not merely requested in the prompt: a
+      // plan that wandered off the page the user asked about would spend their
+      // budget answering a question they didn't ask.
+      if (params.focusUrl && !targetPages.includes(params.focusUrl)) {
+        dropped.push({ name, reason: 'not about the page this suggestion is scoped to' });
         continue;
       }
 

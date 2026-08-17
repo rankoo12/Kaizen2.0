@@ -29,16 +29,20 @@ to-do list now produces duplicate work. The audit:
 | `report.progress` written by the pipeline at phase boundaries (§11.0-d) | **built** |
 | Findings section on the delivery face (`spec-findings-and-coverage.md` §3) | **built** |
 | `outline` / catalog skeleton shown per plan row | **built** |
-| **Signed-in exploration** — still the disabled "soon" row | **not built** |
-| **PLAN phase progress write** — the rail never lights `PLAN` | **not built** |
-| **Away-from-screen channel** — document title, sidebar chip, transition toasts | **not built** |
-| **Deselection provenance** — declined scenarios are discarded, not recorded | **not built** |
-| **Findings on halted/blocked faces** — the report carries them; the face drops them | **not built** |
-| **Coverage** — `GET /suites/:id/coverage` is complete and has zero UI | **not built** |
-| **Suggest** — no route, no pipeline mode (`spec-scoped-suggest.md`) | **not built** |
+| **Signed-in exploration** — analyze-sheet card, picker, consent | **built** (PR #73) |
+| **PLAN phase progress write** — the rail lights `PLAN` | **built** (PR #74) |
+| **Away-from-screen channel** — document title, sidebar chip, transition toasts | **built** (PR #74) |
+| **Deselection provenance** — `report.plan.declined`, shown on delivery | **built** (PR #74) |
+| **Findings on halted/blocked faces** | **built** (PR #73) |
+| **Coverage** — strip on the tests screen, thin-crawl guard honoured | **built** (PR #75) |
+| **Suggest** — route, pipeline focus, entry on the authoring screen | **built** (`spec-scoped-suggest.md`) |
 
 Keep this table current. A spec that claims less than the code is as misleading
 as one that claims more, and this one was misleading in both directions at once.
+
+**Mission 1 closed 2026-08-17** — every row above is built. What remains of this
+spec is the trust ladder's rung 3 (§1.3) and the §11.5 hardening items, both
+deliberately deferred.
 
 ### 0.1 The live shell is `kaizen-app.tsx`, not the routed shell
 `packages/web/src/app/(app)/layout.tsx` renders `<KaizenApp />` and states that

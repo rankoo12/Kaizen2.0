@@ -200,6 +200,18 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
           + ' SIGNED-OUT-ONLY, and never plan a scenario whose premise is being logged'
           + ' out (signing up, signing in, password reset, or expecting a redirect to'
           + ' the login page) — those belong to a public analysis and cannot pass here.',
+      // Scoped Suggest. Stated as a hard constraint rather than a preference:
+      // the planner is deterministically dropping anything that misses the
+      // focus anyway, so a model that spreads across the app just burns the
+      // budget and delivers an empty plan.
+      input.focusUrl
+        ? `## FOCUS: plan ONLY tests for this page — ${input.focusUrl}\n`
+          + 'Every scenario\'s targetPages MUST include that exact url. Other pages appear below'
+          + ' as context so you understand the app; they are NOT targets. A test may pass through'
+          + ' another page on the way, but what it exercises must be this one. If this page'
+          + ' honestly supports fewer good tests than the budget allows, return fewer — padding'
+          + ' a short list with weak tests is the one failure that matters here.'
+        : '',
       UNTRUSTED_PREAMBLE,
       '',
       'Return only valid JSON matching exactly:',

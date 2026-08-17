@@ -76,6 +76,16 @@ export type TestWriterJobPayload = {
     validate: boolean;
     /** 'review' pauses after PLAN for human approval; 'auto' runs straight through. */
     planApproval: 'review' | 'auto';
+    /**
+     * Scoped Suggest: the single page this job is about. RECON re-captures just
+     * this page (maxPages is 1) and PLAN targets only it; the rest of the site
+     * model is reused as context. Absent on a whole-app analyze.
+     * Spec: docs/specs/test-writer/spec-scoped-suggest.md
+     */
+    focusUrl?: string;
+    /** How the job was requested. Distinguishes a scoped suggestion from an
+     *  analyze in reports and history without a schema change. */
+    mode?: 'analyze' | 'suggest';
   };
   /**
    * Set when the job is re-enqueued by the plan-approval endpoint: RECON and
