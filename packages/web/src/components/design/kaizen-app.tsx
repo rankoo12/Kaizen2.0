@@ -161,6 +161,29 @@ export default function KaizenApp() {
     setScreen('run');
   }
 
+  /** Every accepted test in the suite, each as its own run. Stays on the list —
+   *  with many runs in flight there is no single run to jump to; the rows and
+   *  suite health tell the story as results land.
+   *  Spec: docs/specs/tests-ux/spec-run-suite.md */
+  const runSuite = useCallback(async (s: { id: string }) => {
+    try {
+      const r = await fetch(`/api/proxy/suites/${s.id}/run`, {
+        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+      });
+      const b = await r.json().catch(() => ({}));
+      if (!r.ok) { showToast(b.message || 'Could not start the suite', 'error'); return; }
+      const n = b.queued?.length ?? 0;
+      const drafts = (b.skipped ?? []).length;
+      showToast(
+        `Queued ${n} ${n === 1 ? 'test' : 'tests'}${drafts ? ` — skipped ${drafts} ${drafts === 1 ? 'draft' : 'drafts'}` : ''}`,
+        'success',
+      );
+      setTimeout(refetch, 2000);
+    } catch {
+      showToast('Could not start the suite', 'error');
+    }
+  }, [refetch, showToast]);
+
   /* Which job the workspace has in flight, plus the tab title, the sidebar chip
      and the transition toasts that the PROGRESS face promises. */
   const { pendingDelivery, activeJobs, refresh: scanJobs } = useActiveGenerationJobs(
@@ -288,7 +311,7 @@ export default function KaizenApp() {
   const body =
     screen === 'tests' ? (
       <TestsScreen cases={cases} suites={suites} stats={stats}
-        onOpen={openCase} onNew={() => { setEditing(null); go('author'); }} onRun={runNow}
+        onOpen={openCase} onNew={() => { setEditing(null); go('author'); }} onRun={runNow} onRunSuite={runSuite}
         onEdit={(c) => editCase(c.id)} onDelete={deleteCase}
         suiteFilter={suite} onClearSuite={() => setSuite(null)} group={group} showToast={showToast}
         onAnalyze={() => setAnalyzeOpen(true)}
@@ -379,7 +402,7 @@ export default function KaizenApp() {
       )
       : (
         <TestsScreen cases={cases} suites={suites} stats={stats}
-          onOpen={openCase} onNew={() => { setEditing(null); go('author'); }} onRun={runNow}
+          onOpen={openCase} onNew={() => { setEditing(null); go('author'); }} onRun={runNow} onRunSuite={runSuite}
           onEdit={(c) => editCase(c.id)} onDelete={deleteCase}
           suiteFilter={suite} onClearSuite={() => setSuite(null)} group={group} showToast={showToast} />
       );

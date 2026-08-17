@@ -409,3 +409,103 @@ describe('testCasesRoutes - GET /cases (tenant-wide login-recipe picker)', () =>
     expect(res.json().cases).toEqual([]);
   });
 });
+
+// Spec: docs/specs/tests-ux/spec-run-suite.md
+describe('testCasesRoutes - POST /suites/:suiteId/run', () => {
+  let app: ReturnType<typeof Fastify>;
+  let mockQuery: jest.Mock;
+  let mockAdd: jest.Mock;
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.decorateRequest('tenantId', '');
+    app.decorateRequest('userId', '');
+    await app.register(testCasesRoutes);
+  });
+
+  beforeEach(() => {
+    mockQuery = jest.fn();
+    mockAdd = jest.fn();
+    (getPool as jest.Mock).mockReturnValue({ query: mockQuery });
+    (withTenantTransaction as jest.Mock).mockImplementation(async (_t, cb) => cb({ query: mockQuery }));
+    (tenantQuery as jest.Mock).mockImplementation(
+      async (_t: string, sql: string, params?: unknown[]) => mockQuery(sql, params),
+    );
+    (tenantPool as jest.Mock).mockImplementation(() => ({ query: mockQuery }));
+    (LearnedCompiler.prototype.compile as jest.Mock).mockImplementation(
+      async (raw: string) => ({ action: 'click', rawText: raw }),
+    );
+    (usageThisMonth as jest.Mock).mockResolvedValue(0);
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  /** Routes SQL by shape rather than by call order, so the per-case fetch loop
+   *  reads naturally regardless of how many cases the suite holds. */
+  function wireDb(opts: {
+    suite?: boolean; cases: Array<{ id: string; name: string; status: string }>; budget?: string;
+  }) {
+    let runSeq = 0;
+    mockQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      const s = String(sql);
+      if (s.includes('FROM test_suites')) return { rows: opts.suite === false ? [] : [{ id: 'suite-1' }] };
+      if (s.includes('FROM test_cases') && s.includes('suite_id = $1')) return { rows: opts.cases };
+      if (s.includes('FROM test_cases WHERE id = $1')) {
+        const c = opts.cases.find((x) => x.id === params?.[0]);
+        return { rows: c ? [{ id: c.id, suite_id: 'suite-1', base_url: 'http://t', status: c.status }] : [] };
+      }
+      if (s.includes('FROM test_case_steps')) return { rows: [{ id: 'st-1', raw_text: 'click x', compiled_ast: null }] };
+      if (s.includes('llm_budget_tokens_monthly')) return { rows: [{ llm_budget_tokens_monthly: opts.budget ?? '5000' }] };
+      if (s.includes('INSERT INTO runs')) return { rows: [{ id: `run-${++runSeq}` }] };
+      throw new Error(`unexpected sql: ${s}`);
+    });
+  }
+
+  it('queues one run per active case and reports drafts as skipped, not run', async () => {
+    wireDb({ cases: [
+      { id: 'c1', name: 'A', status: 'active' },
+      { id: 'c2', name: 'B (draft)', status: 'draft' },
+      { id: 'c3', name: 'C', status: 'active' },
+    ] });
+    const { createRunQueue } = jest.requireMock('../../../queue');
+    (createRunQueue as jest.Mock).mock.results.forEach((r) => { r.value.add = mockAdd; });
+
+    const res = await app.inject({ method: 'POST', url: '/suites/suite-1/run' });
+    expect(res.statusCode).toBe(202);
+    const body = res.json();
+    expect(body.queued.map((q: { caseId: string }) => q.caseId)).toEqual(['c1', 'c3']);
+    expect(body.skipped).toEqual([{ caseId: 'c2', name: 'B (draft)', reason: expect.stringContaining('draft') }]);
+    expect(mockAdd).toHaveBeenCalledTimes(2);
+    // Every enqueued job carries the case's tenant — never a body-supplied one.
+    for (const [, payload] of mockAdd.mock.calls) expect(payload.tenantId).toBe('tenant-1');
+  });
+
+  it('refuses the whole suite before queueing anything when the budget is spent', async () => {
+    wireDb({ cases: [{ id: 'c1', name: 'A', status: 'active' }], budget: '100' });
+    (usageThisMonth as jest.Mock).mockResolvedValue(100);
+    const { createRunQueue } = jest.requireMock('../../../queue');
+    (createRunQueue as jest.Mock).mock.results.forEach((r) => { r.value.add = mockAdd; });
+
+    const res = await app.inject({ method: 'POST', url: '/suites/suite-1/run' });
+    expect(res.statusCode).toBe(402);
+    expect(res.json().error).toBe('TOKEN_LIMIT_REACHED');
+    expect(mockAdd).not.toHaveBeenCalled();
+    expect(mockQuery.mock.calls.some(([sql]) => String(sql).includes('INSERT INTO runs'))).toBe(false);
+  });
+
+  it('400s when every test is still a draft, and says so', async () => {
+    wireDb({ cases: [{ id: 'c2', name: 'B', status: 'draft' }] });
+    const res = await app.inject({ method: 'POST', url: '/suites/suite-1/run' });
+    expect(res.statusCode).toBe(400);
+    expect(res.json()).toMatchObject({ error: 'NO_RUNNABLE_CASES', message: expect.stringContaining('draft') });
+  });
+
+  it('404s on a suite that is not this tenant\'s — the lookup carries tenant_id', async () => {
+    wireDb({ suite: false, cases: [] });
+    const res = await app.inject({ method: 'POST', url: '/suites/other/run' });
+    expect(res.statusCode).toBe(404);
+    const lookup = mockQuery.mock.calls.find(([sql]) => String(sql).includes('FROM test_suites'));
+    expect(String(lookup![0])).toContain('tenant_id = $2');
+    expect(lookup![1]).toContain('tenant-1');
+  });
+});
