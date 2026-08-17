@@ -173,7 +173,57 @@ the product out of its own database.
 That silently restores today's situation while looking like a fix, and the
 provisioning script will start failing its own assertion — which is the point.
 
-## 5. Open question for production
+## 5. Railway — the concrete flip
+
+Kaizen deploys on Railway (`Dockerfile`: the pre-deploy command runs
+`npm run db:migrate` in the production image). What decides the exact steps is
+**where the production Postgres lives**, which the repo does not record —
+`docs/specs/deployment/spec-deployment.md` describes an older Render + Supabase
+plan, and the Railway migration is documented only in the Dockerfile.
+
+Two cases. Find out which one you are in first: connect with the current
+`DATABASE_URL` and run
+`SELECT current_user, rolsuper, rolbypassrls FROM pg_roles WHERE rolname = current_user;`
+
+**Case A — Railway Postgres plugin (or any DB where the current role is a
+superuser).** Same as dev. Steps 4–8 of §4 apply verbatim:
+
+```
+# 1. In Railway → the Postgres service → Variables: copy DATABASE_URL.
+#    Set it on the API and worker services as DATABASE_ADMIN_URL (new var).
+# 2. Choose a strong password; set on both services:
+#      KAIZEN_APP_DB_ROLE=kaizen_app
+#      KAIZEN_APP_DB_PASSWORD=<generated>
+# 3. Provision, from a one-off shell (railway run) or your machine with the
+#    admin URL:
+DATABASE_ADMIN_URL="$RAILWAY_DB_URL" KAIZEN_APP_DB_ROLE=kaizen_app KAIZEN_APP_DB_PASSWORD='<generated>' npx tsx scripts/provision-app-role.ts
+# 4. Verify before touching anything user-facing:
+DATABASE_URL="postgresql://kaizen_app:<generated>@<host>:<port>/<db>" DATABASE_ADMIN_URL="$RAILWAY_DB_URL" npx jest --config jest.integration.config.ts tenant-isolation      # must be 7/7
+# 5. Only now: change DATABASE_URL on the API + worker services to the
+#    kaizen_app URL. Leave DATABASE_ADMIN_URL as the original. Redeploy.
+#    Migrations keep working (they use the admin URL); the app runs restricted.
+# Rollback: set DATABASE_URL back to the admin URL. Nothing else changes.
+```
+
+**Case B — Supabase (or any managed Postgres where the app role is already NOT
+a superuser).** Then RLS may *already* be enforcing in production for
+non-owner roles, and this branch's query conversion is what has been keeping —
+or will keep — the app working there. Check `rolsuper` first; if it is `f`, the
+role is likely the table owner (Supabase's `postgres`), which is exempt from
+policies **only on tables that are not FORCEd**. Migration 036 FORCEd five
+tables, so on this shape 036 activates enforcement on those five at deploy —
+which is exactly why the Test Writer paths were converted in the same PR. The
+switch to a separate app role is still worth doing (owner exemption on the
+other thirteen tables is a hole), and the steps are the same as Case A with
+Supabase's connection string as the admin URL and `?sslmode=require` on both
+URLs. `src/db/pool.ts` does not currently set `ssl`; if the provider requires
+it, add `ssl: { rejectUnauthorized: false }` when `DB_SSL=true` before the
+flip — the deployment spec §3.4 called for this and it was never wired.
+
+In either case the acceptance check is the same: the isolation suite at 7/7
+against production, run once with the new URL before the app is pointed at it.
+
+## 6. Open question for production
 
 What role does the production database connect as? If it is also a superuser,
 migration 036 is inert there and merging it is risk-free. If it is a non-owner,
