@@ -1,9 +1,9 @@
 # Runbook — moving the runtime off the superuser
 
 Created: 2026-08-17
-Status: **role provisioning is built and proven; the shared-brain policy is
-fixed (037). The connection-string switch is still BLOCKED on the API-key lookup
-and ~57 query conversions (§3). Do not flip it yet.**
+Status: **role provisioning built and proven; both design blockers fixed (037
+shared brain, 038 API-key lookup). The connection-string switch is BLOCKED only
+on the ~57 mechanical query conversions in §3(a). Do not flip it yet.**
 Spec: `docs/specs/test-writer/spec-app-entity.md` §5 (Decision 5, corrected)
 
 ---
@@ -71,7 +71,7 @@ work: **`FORCE` is only about the table's owner. For any non-owner role, plain
 5 tables — it activates all **18** that have RLS enabled, including `runs`,
 `test_cases`, `test_suites`, `step_results`, `run_events` and `selector_cache`.
 
-Three distinct pieces of work follow. **(c) is done; (a) and (b) remain.**
+Three distinct pieces of work follow. **(b) and (c) are done; only (a) — the mechanical conversion — remains.**
 
 **a. ~57 bare-pool queries, across 19 files, must move inside a tenant
 transaction.** Counted by file:
@@ -88,11 +88,22 @@ is `tenantQuery(tenantId, sql, params)` from `src/db/transaction.ts` — one
 statement per transaction, because the worker holds work open for minutes and a
 long-lived transaction would trade a security fix for pool exhaustion.
 
-**b. `api_keys` is a chicken-and-egg problem.** Its policy is
-`tenant_id = current_setting('app.current_tenant_id')`, but the auth middleware
-looks a key up *in order to discover which tenant it belongs to*. Under RLS that
-lookup cannot succeed. It needs either a policy exception for that table or a
-`SECURITY DEFINER` lookup function. This is a design decision, not a conversion.
+**b. ~~`api_keys` is a chicken-and-egg problem.~~ FIXED — migration 038.** Its
+policy is `tenant_id = current_setting('app.current_tenant_id')`, but the auth
+middleware reads a key *in order to discover which tenant it belongs to*, so
+under RLS that one lookup could never succeed. Resolved with a `SECURITY DEFINER`
+function rather than a policy exception: `api_key_lookup(hash)` returns tenant,
+scope and expiry and nothing else — cannot list, cannot search by tenant, cannot
+return the hash. Holding a valid hash IS the credential, so answering "whose is
+it" leaks nothing the caller did not already prove. `search_path` is pinned so
+the function cannot be pointed at a shadow table. A companion `api_key_touch`
+keeps `last_used_at` writes off the direct path.
+
+Proven under the unprivileged role with no tenant set: a direct `SELECT` on
+`api_keys` errors; the definer function answers. Then end to end: a bogus API
+key is a clean 401 and a valid one authenticates — the request now fails later,
+inside the *route handler*, on an un-scoped `runs` read that belongs to (a).
+Which is the point: authentication is no longer in the way.
 
 **c. ~~`selector_cache` would silently lose the global brain.~~ FIXED —
 migration 037.** Its policy was the same tenant-equality predicate, but shared
@@ -128,7 +139,7 @@ the database agree with a sharing decision the product had already made.
 Sequencing matters more than any individual step here: getting it wrong locks
 the product out of its own database.
 
-1. Fix (b), the API-key lookup. (c) is already shipped as migration 037.
+1. ~~Fix (b) and (c)~~ — both shipped (migrations 037, 038).
 2. Convert the ~57 queries (a), in tranches by area, each independently
    shippable and each verifiable by running the affected surface.
 3. `FORCE` the remaining tenant tables (they are already ENABLEd, so this only
