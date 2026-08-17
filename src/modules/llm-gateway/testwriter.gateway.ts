@@ -317,10 +317,25 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
       input.repairErrors?.length
         ? `\nYOUR PREVIOUS ATTEMPT WAS REJECTED. Fix exactly these problems:\n- ${input.repairErrors.join('\n- ')}`
         : '',
+      // A rewrite after the quality judge: keep the actions, fix the oracle.
+      // The previous steps are shown so the model edits rather than reinvents.
+      input.judgeFeedback?.length
+        ? [
+            '\nA PRINCIPAL QA REVIEWER READ YOUR PREVIOUS VERSION AND DID NOT PASS IT. Their notes:',
+            ...input.judgeFeedback.map((f) => `- ${f}`),
+            'Keep the user task the same. Change what is wrong — usually the final assertion: it must',
+            'check something the actions CAUSED (a result, a message, a changed list, a captured item',
+            'appearing where the action put it), not something that was already true.',
+            input.previousSteps?.length
+              ? `Your previous steps were:\n${input.previousSteps.map((s, i) => `  ${i + 1}. ${s}`).join('\n')}`
+              : '',
+          ].filter(Boolean).join('\n')
+        : '',
     ].filter(Boolean).join('\n');
 
     const result = await this.complete<Omit<GeneratedScenario, 'planRef'>>({
-      purpose: 'generateScenario', tier: 'mini', tenantId, system, user,
+      // Spec: spec-judge-repair-loop.md §2.3 — the caller escalates repairs.
+      purpose: 'generateScenario', tier: input.tier ?? 'mini', tenantId, system, user,
     });
     return { ...result, planRef: input.plan.name };
   }
@@ -372,7 +387,12 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
       'D4 marginal_value (SOFT) — adds coverage the rest of this batch does not already have.',
       '',
       'Verdict rule: PROPOSE when both HARD dimensions pass and at most one SOFT fails.',
-      'REVISE when both HARD pass but both SOFT fail. REJECT when any HARD dimension fails.',
+      'REVISE when the ACTIONS are a real user task but a HARD dimension fails only because the',
+      '   ORACLE is weak (asserts the wrong thing, or something already true) — a REVISE is sent back',
+      '   for one rewrite, so its reason must say what to assert instead. Also REVISE when both HARD',
+      '   pass but both SOFT fail.',
+      'REJECT when the scenario exercises nothing that a better assertion could rescue: no state',
+      '   change at all, page-poking, or a premise the app does not support.',
       'Lint findings are advisory evidence — weigh them, do not obey them blindly.',
       UNTRUSTED_PREAMBLE,
       '',

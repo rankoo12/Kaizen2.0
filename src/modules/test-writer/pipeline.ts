@@ -16,6 +16,7 @@ import { AppBriefSynthesizer } from './comprehend/synthesizer';
 import { TestPlanner } from './plan/test-planner';
 import { ScenarioWriter, type WrittenScenario } from './write/scenario-writer';
 import { dedupeScenarios } from './write/dedup';
+import { judgeWithRepair } from './write/judge-round';
 import { ValidationRunner } from './validate/validation-runner';
 import { FORM_DATA_TOKENS } from '../test-data/generate';
 import { LearnedCompiler } from '../test-compiler/learned.compiler';
@@ -407,6 +408,7 @@ async function runGenerationPhases(
   const consent = await loadSuiteConsent(payload.tenantId, payload.suiteId);
   const rejected: ScenarioRejection[] = [];
   const written: WrittenScenario[] = [];
+  const writeParamsByRef = new Map<string, Parameters<ScenarioWriter['write']>[0]>();
   const progress = makeProgressWriter(payload.tenantId, payload.jobId);
   await progress({ phase: 'write', scenariosWritten: 0, scenariosTotal: approved.length });
 
@@ -438,7 +440,7 @@ async function runGenerationPhases(
       payload.tenantId, payload.suiteId, targetPages,
     );
 
-    const outcome = await deps.writer.write({
+    const writeParams = {
       tenantId: payload.tenantId,
       plan,
       grounding,
@@ -449,9 +451,14 @@ async function runGenerationPhases(
       safeMode: payload.options.safeMode,
       maxSteps: 10,
       scope: job.scope,
-    });
+    };
+    const outcome = await deps.writer.write(writeParams);
 
-    if (outcome.ok) written.push(outcome.scenario);
+    if (outcome.ok) {
+      written.push(outcome.scenario);
+      // Kept so a judge rewrite can re-run WRITE with the same grounding.
+      writeParamsByRef.set(plan.name, writeParams);
+    }
     else {
       rejected.push({
         name: plan.name, stage: outcome.failure.stage, reason: outcome.failure.reason,
@@ -488,39 +495,30 @@ async function runGenerationPhases(
   const keptRefs = new Set(dedup.kept.map((k) => k.planRef));
   const deduped = written.filter((w) => keptRefs.has(w.plan.name));
 
-  // ── JUDGE (one batched call — the value filter VALIDATE cannot provide)
-  let survivors = deduped;
-  if (deduped.length > 0) {
-    try {
-      const verdicts = await deps.gateway.judgeScenarios({
-        scenarios: deduped.map((w) => ({
-          planRef: w.plan.name, name: w.name, kind: w.kind,
-          steps: w.steps.map((s) => s.text), rationale: w.rationale,
-        })),
-        lintFindings: Object.fromEntries(deduped.map((w) => [w.plan.name, w.lintFindings])),
-      }, payload.tenantId);
-
-      const byRef = new Map(verdicts.map((v) => [v.planRef, v]));
-      survivors = deduped.filter((w) => {
-        const verdict = byRef.get(w.plan.name);
-        if (!verdict || verdict.verdict === 'PROPOSE') return true;
-        if (verdict.verdict === 'REVISE') return true;   // proposed with findings on the report
-        const failed = verdict.dimensions?.filter((d) => !d.pass).map((d) => `${d.dimension}: ${d.reason}`);
-        rejected.push({
-          name: w.name, stage: 'judge',
-          reason: failed?.join('; ') || 'rejected by the quality judge',
-          steps: w.steps.map((s) => s.text),
-        });
-        return false;
+  // ── JUDGE (batched, with one repair round — the value filter VALIDATE
+  // cannot provide, now able to fix an oracle rather than only delete it).
+  // Spec: docs/specs/test-writer/spec-judge-repair-loop.md §2.2
+  const judged = await judgeWithRepair(deduped, {
+    judge: (batch) => deps.gateway.judgeScenarios({
+      scenarios: batch.map((w) => ({
+        planRef: w.plan.name, name: w.name, kind: w.kind,
+        steps: w.steps.map((s) => s.text), rationale: w.rationale,
+      })),
+      lintFindings: Object.fromEntries(batch.map((w) => [w.plan.name, w.lintFindings])),
+    }, payload.tenantId),
+    rewrite: (w, feedback) => {
+      const base = writeParamsByRef.get(w.plan.name);
+      if (!base) return Promise.resolve({ ok: false, failure: { plan: w.plan, stage: 'schema', reason: 'no write context' } });
+      return deps.writer.write({
+        ...base,
+        judgeFeedback: feedback,
+        previousSteps: w.steps.map((s) => s.text),
       });
-    } catch (err) {
-      // A judge outage must not block the pipeline — validation still guards
-      // executability; only the value filter is missing for this job.
-      deps.obs.log('warn', 'testwriter.judge_failed', {
-        error: err instanceof Error ? err.message : String(err),
-      });
-    }
-  }
+    },
+    obs: deps.obs,
+  });
+  const survivors = judged.survivors;
+  rejected.push(...judged.rejected);
 
   // ── VALIDATE
   await progress({
@@ -568,6 +566,8 @@ async function runGenerationPhases(
       written: written.length,
       deduped: dedup.dropped.length,
       judged: deduped.length,
+      judgeRepairAttempted: judged.repairAttempted,
+      judgeRepaired: judged.repaired,
       survivedJudge: survivors.length,
     },
     validate: {

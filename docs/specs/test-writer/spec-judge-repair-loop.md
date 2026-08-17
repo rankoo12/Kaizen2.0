@@ -1,8 +1,8 @@
 # Spec: Judge repair loop — reject less, rewrite more
 
 **Created:** 2026-08-17
-**Updated:** 2026-08-17 — judge tier finding recorded in §2.1
-**Status:** Proposed
+**Updated:** 2026-08-17 — judge tier finding recorded in §2.1; §2.2/§2.3 built (second PR), REVISE fallback rule added
+**Status:** Built (both PRs)
 **Owner:** test-writer
 **Amends:** `spec-generation-pipeline.md` §4 (gate stack), `spec-testwriter-ux.md` (rejection list)
 
@@ -123,6 +123,11 @@ In `runGenerationPhases`, after the first judge call:
    then are **re-judged in one batched call**. PROPOSE → survivors; anything else → rejected
    with stage `judge` and both reasons on the report (`reason: "after one rewrite: …"`).
 4. Dedup is not re-run (rewrites keep their action set by construction; only the oracle moves).
+5. **Fallback rule (as built):** a REVISE whose rewrite does not reach PROPOSE (or fails a
+   gate) keeps its ORIGINAL — proposed with findings, exactly as REVISE always was, so the loop
+   can only add tests, never subtract them. A REJECT whose rewrite does not reach PROPOSE is
+   rejected with both verdicts on the report and the steps of the rewrite. Nothing is rewritten
+   twice. Judge outage in either round reads as PROPOSE, as before. `write/judge-round.ts`.
 
 Cost: at most one extra `generateScenario` per non-PROPOSE scenario and one extra judge call per
 job. On the saucedemo job that is ~5 writes + 1 judge ≈ 8–12k tokens, against a job that spent
