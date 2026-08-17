@@ -8,6 +8,7 @@ import { runSchemaGate } from './step-intent.schema';
 import { renderScenario, type RenderedStep } from './canonical-templates';
 import { classifyScenarioSafety } from './write-safety';
 import { lintScenario } from './lints';
+import { groundingNotes } from './grounding-notes';
 
 /**
  * WRITE — one planned scenario becomes grounded, renderable, safe steps.
@@ -48,6 +49,12 @@ export type WriteFailure = {
   plan: PlannedScenario;
   stage: 'schema' | 'safety' | 'render';
   reason: string;
+  /**
+   * What was written, when anything parseable was. Kept so a rejection can be
+   * read, not just counted — by the user in "Kaizen shows its work" and by us
+   * when a gate looks wrong. Spec: spec-judge-repair-loop.md §2.5
+   */
+  steps?: string[];
 };
 
 export type WriteOutcome =
@@ -116,6 +123,35 @@ export function checkKnownEntityBinding(
   return errors;
 }
 
+/**
+ * Best-effort one-line rendering of steps that did NOT pass the schema gate —
+ * the canonical renderer needs valid intents, and these by definition are not.
+ * Enough for a human to see what the model tried ("type in the Cart link").
+ */
+export function summariseRawSteps(raw: unknown, elements: Map<string, GroundingElement>): string[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.slice(0, 20).map((step) => {
+    if (!step || typeof step !== 'object') return String(step);
+    const s = step as Record<string, unknown>;
+    const parts: string[] = [String(s.action ?? '?')];
+    const target = s.target as Record<string, unknown> | string | undefined;
+    if (typeof target === 'string') {
+      const el = elements.get(target);
+      parts.push(el ? `${el.role} "${el.name}"` : target);
+    } else if (target && typeof target === 'object') {
+      const id = typeof target.elementId === 'string' ? target.elementId : null;
+      const el = id ? elements.get(id) : undefined;
+      if (el) parts.push(`${el.role} "${el.name}"`);
+      else if (typeof target.description === 'string') parts.push(`"${target.description}"`);
+      else if (id) parts.push(`(unknown element ${id.slice(0, 8)}…)`);
+    }
+    if (typeof s.description === 'string') parts.push(`"${s.description}"`);
+    if (typeof s.value === 'string') parts.push(`= "${s.value}"`);
+    if (typeof s.url === 'string') parts.push(s.url);
+    return parts.join(' ');
+  });
+}
+
 export class ScenarioWriter {
   constructor(
     private readonly gateway: ITestWriterGateway,
@@ -142,6 +178,9 @@ export class ScenarioWriter {
     const rolesById = new Map(params.grounding.map((g) => [g.id, g.role]));
 
     let repairErrors: string[] | undefined;
+    // The last thing the model produced, for the rejection record (spec §2.5).
+    let lastSteps: string[] = [];
+    const notes = groundingNotes(params.grounding);
 
     // One generation attempt + one repair round (spec §4).
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -155,6 +194,7 @@ export class ScenarioWriter {
         steeringNotes: params.steeringNotes,
         maxSteps: params.maxSteps,
         repairErrors,
+        groundingNotes: notes,
       }, params.tenantId);
 
       const gate = runSchemaGate(
@@ -162,8 +202,14 @@ export class ScenarioWriter {
       );
       if (!gate.ok) {
         repairErrors = gate.errors;
+        lastSteps = summariseRawSteps(generated.steps, elements);
         this.obs.increment('testwriter.write_schema_reject', { attempt: String(attempt) });
         continue;
+      }
+      try {
+        lastSteps = renderScenario(gate.steps, elements).map((s) => s.text);
+      } catch {
+        lastSteps = summariseRawSteps(generated.steps, elements);
       }
 
       // An archetype whose premise is "an entity that provably EXISTS" cannot be
@@ -191,7 +237,7 @@ export class ScenarioWriter {
       });
       if (safety.verdict === 'blocked') {
         this.obs.increment('testwriter.write_safety_block');
-        return { ok: false, failure: { plan, stage: 'safety', reason: safety.reason } };
+        return { ok: false, failure: { plan, stage: 'safety', reason: safety.reason, steps: lastSteps } };
       }
 
       let steps: RenderedStep[];
@@ -203,6 +249,7 @@ export class ScenarioWriter {
           failure: {
             plan, stage: 'render',
             reason: err instanceof Error ? err.message : String(err),
+            steps: lastSteps,
           },
         };
       }
@@ -238,6 +285,7 @@ export class ScenarioWriter {
       failure: {
         plan, stage: 'schema',
         reason: `failed the schema gate twice: ${(repairErrors ?? []).join('; ')}`,
+        steps: lastSteps,
       },
     };
   }

@@ -308,6 +308,10 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
       `\nSEED TOKENS: ${input.seedTokens.map((t) => `{{${t}}}`).join(' ')}`,
       `\nCITABLE ELEMENTS (elementId :: role "name" :: kind :: page):`,
       untrusted('elements', groundingLines.join('\n')),
+      // Stated before the model starts looking for something to type into.
+      input.groundingNotes?.length
+        ? `\nWHAT THESE PAGES DO NOT HAVE:\n- ${input.groundingNotes.join('\n- ')}`
+        : '',
       input.formSummaries.length ? untrusted('forms', input.formSummaries.join('\n')) : '',
       input.steeringNotes ? `\nHUMAN STEERING NOTES:\n${untrusted('notes', input.steeringNotes)}` : '',
       input.repairErrors?.length
@@ -334,9 +338,21 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
       '   NAVIGATION IS AN ACTION. Arriving somewhere changes the state, so asserting the destination',
       '   (its url, title, or content) after navigating or clicking a link is a GENUINE delta — do not',
       '   fail it. A 404 test, an auth-gate test and a journey hop are all navigation-driven and valid.',
+      '   RUN VARIABLES. A step "click a random <thing>" CAPTURES the clicked element\'s text into a',
+      '   run variable, written {{selectedItem}} (or another {{name}}). Later steps that use it are',
+      '   comparing against what was actually clicked at run time — this is not "checking a variable"',
+      '   and not a placeholder. Asserting that {{selectedItem}} appears somewhere ELSE after a',
+      '   state-changing action (in the cart, on the detail page, in a confirmation) is a strong,',
+      '   causal oracle: it fails if the wrong item was added or the click was ignored.',
+      '   VISIBILITY TOGGLES. Opening a menu, drawer, dialog or expandable section and asserting its',
+      '   contents are visible is a genuine delta when they were hidden before the click. Only the',
+      '   presence of the page\'s static structure (a heading that is always there) is vacuous.',
       '   GOOD: click Register -> verify the confirmation message is visible.',
       '   GOOD: navigate to /nonexistent -> verify the not-found message is visible.',
       '   GOOD: click the product link -> verify the url contains /product (the run started elsewhere).',
+      '   GOOD: click a random add to cart button -> click the cart link -> verify the text',
+      '         "{{selectedItem}}" is shown (the cart now lists what was clicked; wrong item = fail).',
+      '   GOOD: click the "Open Menu" button -> verify the "Logout" link is visible (hidden before).',
       '   BAD:  navigate to /products -> verify the url contains /products (the navigation and the',
       '         assertion say the same thing; nothing was exercised).',
       '   BAD:  navigate to /products -> verify the Products heading is visible (that heading is simply',
@@ -379,8 +395,14 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
         : 'lint findings: none',
     ].join('\n')).join('\n\n');
 
+    // FRONTIER, deliberately. Probed 2026-08-17 with the five saucedemo shapes
+    // (cart-with-capture, remove, open-menu, sort-by-url, static-heading): the
+    // mini model rejected the cart and menu tests every round, contradicting
+    // the GOOD examples above verbatim; gpt-4o judged all five correctly both
+    // rounds. One batched call per job — the cheapest frontier call we make.
+    // Spec: docs/specs/test-writer/spec-judge-repair-loop.md §2.1
     const result = await this.complete<{ verdicts: JudgeVerdict[] }>({
-      purpose: 'judgeScenarios', tier: 'mini', tenantId,
+      purpose: 'judgeScenarios', tier: 'frontier', tenantId,
       system, user: untrusted('scenarios', body),
     });
     return Array.isArray(result?.verdicts) ? result.verdicts : [];

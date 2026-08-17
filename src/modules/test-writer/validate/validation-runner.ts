@@ -94,7 +94,7 @@ export class ValidationRunner {
           await this.validateOne(scenario, params, outcome);
         } catch (err) {
           outcome.rejected.push({
-            name: scenario.name,
+            name: scenario.name, steps: scenario.steps.map((s) => s.text),
             stage: 'validation',
             reason: err instanceof Error ? err.message : String(err),
           });
@@ -150,7 +150,7 @@ export class ValidationRunner {
     });
 
     if (!created) {
-      outcome.rejected.push({ name: scenario.name, stage: 'validation', reason: 'suite not found' });
+      outcome.rejected.push({ name: scenario.name, steps: scenario.steps.map((s) => s.text), stage: 'validation', reason: 'suite not found' });
       return;
     }
 
@@ -158,7 +158,7 @@ export class ValidationRunner {
       outcome.proposed.push({ caseId: created.id, name: scenario.name, runId: null, validated: false, healed: false });
       if (consentBlocked) {
         outcome.rejected.push({
-          name: scenario.name,
+          name: scenario.name, steps: scenario.steps.map((s) => s.text),
           stage: 'consent',
           reason: 'creates throwaway data — enable synthetic-data consent on the suite to validate it',
         });
@@ -238,7 +238,7 @@ export class ValidationRunner {
           caseId: created.id, name: scenario.name, runId, validated: false, healed: false,
         });
         outcome.rejected.push({
-          name: scenario.name, stage: 'validation', runId,
+          name: scenario.name, steps: scenario.steps.map((s) => s.text), stage: 'validation', runId,
           reason: 'could not prove this test — signing in failed during validation, so the test itself is unproven rather than wrong',
         });
         this.obs.increment('testwriter.validation_signin_unavailable');
@@ -269,7 +269,7 @@ export class ValidationRunner {
           [created.id, runId],
         );
         outcome.rejected.push({
-          name: scenario.name, stage: 'validation', runId,
+          name: scenario.name, steps: scenario.steps.map((s) => s.text), stage: 'validation', runId,
           reason: `${audit.rule}: ${audit.reason}`,
         });
         this.obs.increment('testwriter.oracle_audit_reject', { rule: String(audit.rule) });
@@ -287,7 +287,7 @@ export class ValidationRunner {
           [created.id, runId],
         );
         outcome.rejected.push({
-          name: scenario.name, stage: 'validation', runId,
+          name: scenario.name, steps: scenario.steps.map((s) => s.text), stage: 'validation', runId,
           reason: 'oracle_vacuous_executed: the final check already passed without the scenario\'s '
             + 'actions — it would stay green if the feature broke',
         });
@@ -336,7 +336,7 @@ export class ValidationRunner {
         [created.id, runId],
       );
       outcome.rejected.push({
-        name: scenario.name, stage: 'validation', reason: verdict.reason, runId,
+        name: scenario.name, steps: scenario.steps.map((s) => s.text), stage: 'validation', reason: verdict.reason, runId,
       });
       // Everything reaching validation already passed the quality judge. So a
       // red run here has two possible readings, and the pipeline has only ever

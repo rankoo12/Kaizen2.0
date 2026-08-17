@@ -44,6 +44,8 @@ export type ScenarioRejection = {
   stage: 'safety' | 'schema' | 'render' | 'compile' | 'dedup' | 'judge' | 'validation' | 'consent';
   reason: string;
   runId?: string;
+  /** The rendered steps at the moment of rejection, when there were any. */
+  steps?: string[];
 };
 
 /** Live phase counts. Absent until the phase reports — never rendered as a guess. */

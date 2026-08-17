@@ -46,13 +46,54 @@ export async function reconFindings(
   publicPartitionUnverified: boolean,
 ): Promise<Finding[]> {
   const findings: Finding[] = [];
+  const errors = crawlErrors.slice(0, MAX_PER_KIND);
 
-  for (const err of crawlErrors.slice(0, MAX_PER_KIND)) {
+  // A 4xx that nevertheless rendered a real page. Single-page apps routinely
+  // answer every deep link with HTTP 404 and let the client router draw the
+  // page — saucedemo does — so "inventory.html responded 404" sat at the top
+  // of a report whose next line listed that page's controls. The status is
+  // still worth knowing (link checkers and search engines see the 404 too),
+  // but it is not "could not be opened", and it is not the headline.
+  // Spec: docs/specs/test-writer/spec-judge-repair-loop.md §2.6
+  const rendered = new Map<string, number>();
+  const clientErrorUrls = errors
+    .filter((e) => e.status !== null && e.status >= 400 && e.status < 500)
+    .map((e) => e.url);
+  if (clientErrorUrls.length > 0) {
+    const { rows } = await tenantQuery<{ url_normalized: string; n: string }>(
+      tenantId,
+      `SELECT sp.url_normalized, count(pe.id)::text AS n
+         FROM site_pages sp
+         LEFT JOIN page_elements pe ON pe.page_id = sp.id AND pe.tenant_id = sp.tenant_id
+        WHERE sp.tenant_id = $1 AND sp.suite_id = $2 AND sp.url_normalized = ANY($3)
+        GROUP BY sp.url_normalized`,
+      [tenantId, suiteId, clientErrorUrls],
+    ).catch(() => ({ rows: [] as Array<{ url_normalized: string; n: string }> }));
+    for (const row of rows) rendered.set(row.url_normalized, Number(row.n));
+  }
+
+  for (const err of errors) {
     const isServer = err.status !== null && err.status >= 500;
     // A page reached by following a link from another page is a BROKEN LINK —
     // a defect in the linking page, and the version of this a person can act on.
     const isBrokenLink = !!err.linkedFrom;
     const where = sanitizeForDisplay(err.url, 300);
+    const elementCount = rendered.get(err.url);
+    if (!isServer && elementCount !== undefined && elementCount > 0) {
+      findings.push({
+        kind: isBrokenLink ? 'broken_link' : 'crawl_error_page',
+        severity: 'low',
+        title: `A page answers ${err.status} but still renders`,
+        detail:
+          `${where} responded ${err.status}, yet a real page came back with ${elementCount} interactive `
+          + `${elementCount === 1 ? 'control' : 'controls'} — usually a single-page app whose server returns `
+          + `${err.status} for deep links and lets the browser draw the page. Users won't notice; link `
+          + 'checkers, search engines and monitoring will treat it as broken.',
+        evidence: { url: where, elementRef: err.linkedFrom ? sanitizeForDisplay(err.linkedFrom, 300) : undefined },
+        source: 'recon',
+      });
+      continue;
+    }
     findings.push({
       kind: isBrokenLink ? 'broken_link' : 'crawl_error_page',
       severity: isServer ? 'high' : 'medium',

@@ -11,8 +11,9 @@ import type {
  * execution-path interface stays small, while preserving the hard rule that
  * ALL provider calls live in the llm-gateway module.
  *
- * Tiering (model-tier.ts): synthesizeAppBrief + planScenarios run on the
- * frontier tier — they ARE the QA-engineer judgment. Everything else is mini.
+ * Tiering (model-tier.ts): synthesizeAppBrief, planScenarios and judgeScenarios
+ * run on the frontier tier — they ARE the QA-engineer judgment. Classification
+ * and writing are mini.
  *
  * Spec: docs/specs/test-writer/spec-generation-pipeline.md §1.3, §2, §3, §4.6
  */
@@ -47,7 +48,8 @@ export interface ITestWriterGateway {
   /**
    * Batched quality judgement over rendered scenarios — the value filter that
    * VALIDATE is structurally blind to (a vacuous test passes validation
-   * forever). ONE mini call per job.
+   * forever). ONE frontier call per job (mini could not apply its own rubric —
+   * spec-judge-repair-loop.md §2.1).
    */
   judgeScenarios(input: JudgeInput, tenantId: string): Promise<JudgeVerdict[]>;
 }
