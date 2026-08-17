@@ -272,7 +272,7 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
       '   OMIT that step and shorten the scenario. Typing into a link silently does nothing.',
       '2. DESCRIPTION TARGETS are allowed in exactly two places:',
       '   (a) click_random (it names a CLASS of elements by design);',
-      '   (b) an assertion that DIRECTLY FOLLOWS a state-changing action, when the thing to assert',
+      '   (b) an assertion (or a run of assertions) that FOLLOWS a state-changing action, when the thing to assert',
       '       only exists after that action (a success banner, a validation error). The crawler never',
       '       submits forms, so those elements have no id. Phrase them generically:',
       '       {"action":"assert_visible","target":{"kind":"description","description":"the error message"}}',
