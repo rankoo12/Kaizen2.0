@@ -146,3 +146,108 @@ describe('testWriterRoutes - POST /testwriter/jobs/:jobId/plan-approval', () => 
     expect(queueAdd).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * Coverage's guard, not its arithmetic.
+ *
+ * The number is the least important thing this endpoint returns. What matters
+ * is that it refuses to produce one when the crawl behind it saw too little —
+ * "1 of 1 covered" off a one-page crawl of an SPA behind robots.txt is worse
+ * than silence, because a ratio a user half-reads is remembered as a ratio.
+ * The UI leans on this flag to decide whether to print anything at all.
+ * Spec: docs/specs/test-writer/spec-findings-and-coverage.md §4, §3.2
+ */
+describe('testWriterRoutes - GET /suites/:suiteId/coverage', () => {
+  let app: ReturnType<typeof Fastify>;
+  let mockQuery: jest.Mock;
+
+  const page = (url: string, cases: number, auth = false) => ({
+    url_normalized: url, purpose_tag: 'listing', requires_auth: auth, case_count: String(cases),
+  });
+
+  /** Wires the three reads the route makes: suite lookup, pages, last job. */
+  function withModel(pages: unknown[], lastJob: unknown) {
+    mockQuery.mockImplementation((sql: string) => {
+      if (/FROM test_suites/.test(sql)) return Promise.resolve({ rows: [{ id: 'suite-1' }] });
+      if (/FROM site_pages/.test(sql)) return Promise.resolve({ rows: pages });
+      if (/FROM generation_jobs/.test(sql)) return Promise.resolve({ rows: lastJob ? [lastJob] : [] });
+      return Promise.resolve({ rows: [] });
+    });
+  }
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.decorateRequest('tenantId', '');
+    app.decorateRequest('userId', '');
+    app.decorateRequest('role', '');
+    await app.register(testWriterRoutes);
+  });
+
+  beforeEach(() => {
+    mockQuery = jest.fn();
+    (getPool as jest.Mock).mockReturnValue({ query: mockQuery });
+    (withTenantTransaction as jest.Mock).mockImplementation(
+      async (_t: string, cb: (c: unknown) => unknown) => cb({ query: mockQuery }),
+    );
+  });
+
+  afterEach(() => jest.clearAllMocks());
+  afterAll(async () => { await app.close(); });
+
+  it('reports coverage when the crawl saw enough to judge', async () => {
+    withModel(
+      [page('https://a.test/', 1), page('https://a.test/x', 0), page('https://a.test/y', 2)],
+      { blocked: false, pages_blocked: 0 },
+    );
+    const res = await app.inject({ method: 'GET', url: '/suites/suite-1/coverage' });
+    expect(res.statusCode).toBe(200);
+    const { coverage } = res.json();
+    expect(coverage.summary).toEqual({ total: 3, tested: 2, untested: 1 });
+    expect(coverage.coverageConfidence).toBe('observed');
+    expect(coverage.confidenceReason).toBeNull();
+  });
+
+  it('refuses to judge a one-page crawl', async () => {
+    // The case the guard exists for: a single page, fully "covered", which would
+    // otherwise render as 100%.
+    withModel([page('https://a.test/', 1)], { blocked: false, pages_blocked: 0 });
+    const { coverage } = (await app.inject({ method: 'GET', url: '/suites/suite-1/coverage' })).json();
+    expect(coverage.coverageConfidence).toBe('unknown');
+    expect(coverage.confidenceReason).toMatch(/1 page/);
+  });
+
+  it('refuses to judge when the last analysis was blocked', async () => {
+    withModel(
+      [page('https://a.test/', 1), page('https://a.test/x', 1), page('https://a.test/y', 1)],
+      { blocked: true, pages_blocked: 0 },
+    );
+    const { coverage } = (await app.inject({ method: 'GET', url: '/suites/suite-1/coverage' })).json();
+    expect(coverage.coverageConfidence).toBe('unknown');
+  });
+
+  it('refuses to judge when pages were blocked mid-crawl', async () => {
+    withModel(
+      [page('https://a.test/', 1), page('https://a.test/x', 1), page('https://a.test/y', 1)],
+      { blocked: false, pages_blocked: 4 },
+    );
+    const { coverage } = (await app.inject({ method: 'GET', url: '/suites/suite-1/coverage' })).json();
+    expect(coverage.coverageConfidence).toBe('unknown');
+  });
+
+  it('marks pages behind sign-in, so the gap points somewhere', async () => {
+    withModel(
+      [page('https://a.test/', 1), page('https://a.test/acct', 0, true), page('https://a.test/y', 1)],
+      { blocked: false, pages_blocked: 0 },
+    );
+    const { coverage } = (await app.inject({ method: 'GET', url: '/suites/suite-1/coverage' })).json();
+    const behindAuth = coverage.pages.filter((p: { requiresAuth: boolean }) => p.requiresAuth);
+    expect(behindAuth).toHaveLength(1);
+    expect(behindAuth[0].tested).toBe(false);
+  });
+
+  it('404s a suite that is not the caller\'s', async () => {
+    mockQuery.mockResolvedValue({ rows: [] });
+    const res = await app.inject({ method: 'GET', url: '/suites/someone-elses/coverage' });
+    expect(res.statusCode).toBe(404);
+  });
+});

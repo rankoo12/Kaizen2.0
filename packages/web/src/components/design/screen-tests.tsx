@@ -7,6 +7,7 @@ import * as React from 'react';
 import { I, StatusBadge } from './icons';
 import { Toolbar, Seg, Stat, Ring, Menu, ConfirmSheet } from './chrome';
 import { AppBriefCard } from './app-brief-card';
+import { CoverageStrip } from './coverage-strip';
 import { fmt } from './data';
 import type { DesignCase, DesignSuite } from './use-design-data';
 
@@ -213,6 +214,11 @@ export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit
         {/* Scoped to a single suite: the brief describes ONE app, so it would be
             meaningless over a mixed list. */}
         {suiteFilter && <AppBriefCard suiteId={suiteFilter} onReanalyze={onAnalyze} />}
+
+        {/* What the suite does NOT cover, next to what Kaizen knows about the
+            app — the two halves of the same question. Suite-scoped for the same
+            reason the brief is: coverage of a mixed list means nothing. */}
+        {suiteFilter && <div style={{ marginBottom: 16 }}><CoverageStrip suiteId={suiteFilter} /></div>}
 
         <div className="card rise" style={{ display: 'flex', alignItems: 'stretch', marginBottom: 16, overflow: 'hidden', flexWrap: 'wrap' }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14, padding: '14px 18px', borderRight: '.5px solid var(--sep)', flex: '1 1 300px', minWidth: 0 }}>

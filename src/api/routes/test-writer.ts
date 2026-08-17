@@ -470,6 +470,19 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
       // A page counts as tested when an ACTIVE case in this suite names its URL
       // in a step. Deliberately literal: a page is covered because a test goes
       // there, not because a model thought the two sounded related.
+      //
+      // Matched as a whole URL, not as a substring. A plain `position()` test
+      // made every page a prefix of its own children — "https://shop.com/"
+      // occurs inside "navigate to https://shop.com/products", so the landing
+      // page counted as covered by a test that never visits it, and on a real
+      // site the root page came out covered by literally every test. That
+      // inflates the single number this endpoint exists to report honestly.
+      //
+      // So: pull the URLs out of the step text and compare them for equality,
+      // tolerating a trailing slash and trailing sentence punctuation. The
+      // pattern is a constant — no stored URL is ever interpolated into a
+      // regex, where a `?` or `+` from a query string would be read as a
+      // quantifier.
       const { rows: pages } = await client.query<{
         url_normalized: string; purpose_tag: string | null; requires_auth: boolean; case_count: string;
       }>(
@@ -479,7 +492,13 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
          LEFT JOIN test_case_steps tcs
            ON tcs.tenant_id = sp.tenant_id AND tcs.is_active = true
          LEFT JOIN test_steps ts
-           ON ts.id = tcs.step_id AND position(sp.url_normalized in ts.raw_text) > 0
+           ON ts.id = tcs.step_id
+          AND EXISTS (
+                SELECT 1
+                FROM regexp_matches(ts.raw_text, 'https?://[^\\s"''<>)]+', 'g') AS m(u)
+                WHERE rtrim(m.u[1], '.,;:!)"''')
+                      IN (sp.url_normalized, sp.url_normalized || '/', rtrim(sp.url_normalized, '/'))
+              )
          LEFT JOIN test_cases tc
            ON tc.id = tcs.case_id AND tc.suite_id = $2 AND tc.status = 'active' AND ts.id IS NOT NULL
          WHERE sp.tenant_id = $1 AND sp.suite_id = $2
