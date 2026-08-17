@@ -175,7 +175,13 @@ function PlanRow({ s, checked, onToggle, consent }: {
   s: PlannedScenario; checked: boolean; onToggle: () => void; consent: boolean;
 }) {
   const [open, setOpen] = useState(false);
-  const skeleton = s.source.kind === 'catalog' ? ARCHETYPE_SKELETONS[s.source.archetypeKey] : null;
+  // Read defensively. This is the product's one blocking gate, and a single
+  // scenario missing a field it was expected to have used to throw during
+  // render — taking the whole approval screen down and stranding the job with
+  // no way to approve or discard it. A row that renders thinly is recoverable;
+  // a blank screen is not.
+  const fromCatalog = s.source?.kind === 'catalog';
+  const skeleton = s.source?.kind === 'catalog' ? ARCHETYPE_SKELETONS[s.source.archetypeKey] : null;
   const approach = skeleton ?? s.outline ?? '';
   const needsConsent = s.requiresSyntheticData && !consent;
 
@@ -186,13 +192,15 @@ function PlanRow({ s, checked, onToggle, consent }: {
       <div style={{ flex: 1, minWidth: 0 }}>
         <div className="row-t">{s.name}</div>
         <div style={{ display: 'flex', gap: 5, flexWrap: 'wrap', margin: '5px 0 6px' }}>
-          <Chip text={s.kind.toUpperCase()} tone={KIND_TONE[s.kind]} />
-          <Chip text={s.priority.toUpperCase()} />
-          <Chip text={s.source.kind === 'catalog' ? 'CATALOG' : 'AI'}
-            tone={s.source.kind === 'catalog' ? 'var(--text-2)' : 'var(--accent)'}
-            title={s.source.kind === 'catalog'
-              ? 'From Kaizen’s curated pattern library — a proven test shape, bound to your app’s real pages'
-              : 'Written specifically for this app — no library pattern covered it'} />
+          {s.kind && <Chip text={s.kind.toUpperCase()} tone={KIND_TONE[s.kind]} />}
+          {s.priority && <Chip text={s.priority.toUpperCase()} />}
+          {s.source && (
+            <Chip text={fromCatalog ? 'CATALOG' : 'AI'}
+              tone={fromCatalog ? 'var(--text-2)' : 'var(--accent)'}
+              title={fromCatalog
+                ? 'From Kaizen’s curated pattern library — a proven test shape, bound to your app’s real pages'
+                : 'Written specifically for this app — no library pattern covered it'} />
+          )}
           {needsConsent && <Chip text="NEEDS DATA CONSENT" tone="var(--warn)" />}
         </div>
         {s.rationale && (
@@ -221,8 +229,8 @@ function PlanRow({ s, checked, onToggle, consent }: {
         )}
       </div>
       <div className="num hide-md" style={{ width: 120, flex: 'none', fontSize: 11, color: 'var(--text-3)', textAlign: 'right' }}>
-        {s.targetPages.slice(0, 1).map((p) => { try { return new URL(p).pathname; } catch { return p; } })}
-        {s.targetPages.length > 1 && ` +${s.targetPages.length - 1}`}
+        {(s.targetPages ?? []).slice(0, 1).map((p) => { try { return new URL(p).pathname; } catch { return p; } })}
+        {(s.targetPages?.length ?? 0) > 1 && ` +${s.targetPages.length - 1}`}
       </div>
     </div>
   );
@@ -394,6 +402,7 @@ function DeliveryFace({ job, drafts, onAcceptAll, onAccept, onDismiss, onOpenRun
   const unproven = drafts.filter((d) => d.validationState !== 'validated');
   const findings = job.report?.findings ?? [];
   const auth = job.report?.auth ?? null;
+  const declined = job.report?.plan?.declined ?? [];
 
   return (
     <div style={{ display: 'grid', gap: 14 }}>
@@ -547,6 +556,25 @@ function DeliveryFace({ job, drafts, onAcceptAll, onAccept, onDismiss, onOpenRun
       )}
 
       <FindingsSection findings={findings} onOpenRun={onOpenRun} />
+
+      {/* What the user turned down, kept next to what Kaizen turned down. The
+          plan screen's design law is that you should see what you declined —
+          that has to survive past the moment you declined it. */}
+      {declined.length > 0 && (
+        <div className="card" style={{ padding: '0 16px' }}>
+          <Disclose title={`${declined.length} ${declined.length === 1 ? 'scenario you' : 'scenarios you'} declined`}>
+            <div style={{ display: 'grid', gap: 6 }}>
+              {declined.map((d, i) => (
+                <div key={`${d.name}-${i}`} style={{ fontSize: 12, color: 'var(--text-2)' }}>{d.name}</div>
+              ))}
+              <div style={{ fontSize: 11.5, color: 'var(--text-3)', lineHeight: 1.5, marginTop: 2 }}>
+                Kaizen didn’t write these because you unchecked them at the plan. They’ll be
+                offered again next time unless the suite already covers them.
+              </div>
+            </div>
+          </Disclose>
+        </div>
+      )}
 
       {rejected.length > 0 && (
         <div className="card" style={{ padding: '0 16px' }}>

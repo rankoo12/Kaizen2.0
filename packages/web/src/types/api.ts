@@ -67,7 +67,14 @@ export type GenerationReport = {
     coverageGaps?: string[];
     journeysDropped?: Array<{ name: string; reason: string }>;
   };
-  plan?: { scenariosPlanned: number; fromCatalog: number; fromLlm: number };
+  plan?: {
+    scenariosPlanned: number; fromCatalog: number; fromLlm: number;
+    /** Scenarios the pipeline itself dropped before the user ever saw them. */
+    dropped?: Array<{ name: string; reason: string }>;
+    /** Scenarios a human unchecked at the plan checkpoint. Absent on jobs that
+     *  ran in `auto` mode, and on jobs approved before this was recorded. */
+    declined?: Array<{ name: string; reason: string }>;
+  };
   write?: { attempted: number; written: number; deduped: number; survivedJudge: number };
   validate?: { proposed: number; validated: number; unvalidated: number };
   /**

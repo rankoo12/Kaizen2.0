@@ -15,6 +15,7 @@ import { UsageScreen } from './screen-usage';
 import { WriterScreen } from './screen-writer';
 import { AnalysesScreen } from './screen-analyses';
 import { AnalyzeSheet, type AnalyzeDraft } from './writer-analyze-sheet';
+import { useActiveGenerationJobs } from './use-active-generation-jobs';
 import { useDesignData, type DesignCase } from './use-design-data';
 import { useAuth } from '@/context/auth-context';
 
@@ -117,8 +118,10 @@ export default function KaizenApp() {
     go('tests', suite);
   };
 
-  const showToast = useCallback((message: string, kind = 'info') => {
-    const k = Date.now(); setToast({ message, kind, k });
+  /** `onClick` makes a toast a way IN, not just an announcement: "your plan is
+   *  ready" is only useful if it also takes you to the plan. */
+  const showToast = useCallback((message: string, kind = 'info', onClick?: () => void) => {
+    const k = Date.now(); setToast({ message, kind, k, onClick });
     setTimeout(() => setToast((cur: any) => (cur && cur.k === k ? null : cur)), 2600);
   }, []);
 
@@ -153,52 +156,13 @@ export default function KaizenApp() {
     setScreen('run');
   }
 
-  /* One job per suite is watched — the one that most recently needed the user.
-     Nothing lives only in memory: this is re-derived from the API on mount, so a
-     reload (or a walk away and back) still finds the delivery waiting. */
-  const [pendingDelivery, setPendingDelivery] = useState<
-    { jobId: string; suiteId: string; status: string; count: number; pagesCrawled?: number | null } | null>(null);
-
-  const scanJobs = useCallback(async () => {
-    if (suites.length === 0) { setPendingDelivery(null); return; }
-    try {
-      const results = await Promise.all(suites.map(async (s) => {
-        const r = await fetch(`/api/proxy/suites/${s.id}/jobs`);
-        if (!r.ok) return null;
-        const { jobs } = await r.json();
-        return (jobs ?? [])[0] ? { ...jobs[0], suiteId: s.id } : null;
-      }));
-      const jobs = results.filter(Boolean) as any[];
-      // Ranked by what most needs the user: a plan blocking on approval, then a
-      // job still working (which must stay reachable — leaving the writer screen
-      // used to strand it with no way back), then a finished delivery.
-      const waiting = jobs.find((j) => j.status === 'awaiting_plan_approval');
-      const working = jobs.find((j) => j.status === 'running' || j.status === 'queued');
-      const delivered = jobs.find((j) => j.status === 'completed' && (j.report?.validate?.proposed ?? 0) > 0);
-      // A job that proposed NOTHING still has to be reachable: its report is
-      // where the reasons live, and "0 tests, no way to see why" is the worst
-      // possible outcome to hide.
-      const finished = jobs.find((j) => ['completed', 'failed', 'blocked'].includes(j.status));
-      const winner = waiting ?? working ?? delivered ?? finished ?? null;
-      setPendingDelivery(winner ? {
-        jobId: winner.id, suiteId: winner.suiteId, status: winner.status,
-        count: winner.report?.validate?.proposed ?? 0,
-        pagesCrawled: winner.report?.progress?.pagesCrawled ?? null,
-      } : null);
-    } catch { /* the banner is a convenience; its absence must not break the list */ }
-  }, [suites]);
-
-  useEffect(() => { void scanJobs(); }, [scanJobs]);
-
-  /* Keep the banner honest while a job works: without this it would report
-     "exploring" long after the job finished, and a delivery would only appear
-     after a manual refresh. Polling stops once nothing is in flight. */
-  const jobInFlight = pendingDelivery?.status === 'running' || pendingDelivery?.status === 'queued';
-  useEffect(() => {
-    if (!jobInFlight) return;
-    const id = setInterval(scanJobs, 4000);
-    return () => clearInterval(id);
-  }, [jobInFlight, scanJobs]);
+  /* Which job the workspace has in flight, plus the tab title, the sidebar chip
+     and the transition toasts that the PROGRESS face promises. */
+  const { pendingDelivery, activeJobs, refresh: scanJobs } = useActiveGenerationJobs(
+    suites,
+    (message, kind, onClick) => showToast(message, kind, onClick),
+    (suiteId, jobId) => { setWriterFocus({ suiteId, jobId }); setSuite(suiteId); setScreen('writer'); },
+  );
 
   /** Accepting a draft is reversible, so it is announced rather than confirmed. */
   const acceptDraft = useCallback(async (c: DesignCase) => {
@@ -401,6 +365,10 @@ export default function KaizenApp() {
             {sidebar ? (
               <Sidebar active={activeNav} onNav={go} counts={counts}
                 suites={suites} user={user}
+                activeJobs={activeJobs}
+                onOpenJob={(suiteId: string, jobId: string) => {
+                  setWriterFocus({ suiteId, jobId }); setSuite(suiteId); setScreen('writer');
+                }}
                 onSettings={() => go('usage')} onLights={() => {}} onToggle={() => setSidebar(false)} />
             ) : (
               /* Collapsed: the window controls and the toggle move into the content
@@ -443,6 +411,11 @@ export default function KaizenApp() {
             setWriterFocus({ suiteId, jobId });
             setSuite(suiteId);
             setScreen('writer');
+            // Pull the new job into the watch set now. Without this the shell has
+            // nothing live to poll, so the sidebar chip and tab title — the very
+            // things the next screen promises — would not appear until something
+            // unrelated triggered a rescan.
+            void scanJobs();
             showToast('Exploring your app — this keeps running if you leave', 'info');
           }} />
       )}
