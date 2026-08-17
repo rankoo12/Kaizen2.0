@@ -41,22 +41,39 @@ const FORCED_TABLES = [
  * fail for reasons that have nothing to do with what it is testing.
  */
 async function connectAsAdmin(): Promise<Client> {
-  const client = new Client({
-    connectionString: process.env.DATABASE_ADMIN_URL ?? process.env.DATABASE_URL,
-  });
+  const raw = process.env.DATABASE_ADMIN_URL ?? process.env.DATABASE_URL ?? '';
+  const client = new Client({ connectionString: raw, ssl: sslFor(raw) });
   await client.connect();
   return client;
 }
 
+/**
+ * SSL for both connections, mirroring what a hosted Postgres behind a public
+ * proxy (Railway's *.proxy.rlwy.net, Supabase, Neon) needs. Off by default so a
+ * plain local Docker Postgres keeps working; on when the URL says so or
+ * DB_SSL=true. `rejectUnauthorized: false` because these proxies present certs
+ * for a name the client is not connecting by — the tunnel is still encrypted,
+ * which is what a `read ECONNRESET` on the second connection was telling us
+ * was missing.
+ */
+function sslFor(url: string): false | { rejectUnauthorized: false } {
+  const wantsSsl = process.env.DB_SSL === 'true'
+    || /sslmode=require/i.test(url)
+    || /\.proxy\.rlwy\.net|supabase\.co|neon\.tech/i.test(url);
+  return wantsSsl ? { rejectUnauthorized: false } : false;
+}
+
 /** A connection with ordinary privileges — no ownership, no superuser. */
 async function connectAsProbe(): Promise<Client> {
-  const url = new URL(process.env.DATABASE_URL as string);
+  const raw = process.env.DATABASE_URL as string;
+  const url = new URL(raw);
   const client = new Client({
     host: url.hostname,
     port: Number(url.port || 5432),
     database: url.pathname.replace(/^\//, ''),
     user: PROBE_ROLE,
     password: PROBE_PASSWORD,
+    ssl: sslFor(raw),
   });
   await client.connect();
   return client;
