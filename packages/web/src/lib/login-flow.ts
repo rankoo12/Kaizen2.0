@@ -6,6 +6,7 @@ import {
   ACCESS_COOKIE_OPTIONS,
   REFRESH_COOKIE_OPTIONS,
 } from '@/lib/cookies';
+import { claimsFromAccessToken } from '@/lib/session-claims';
 
 const API_URL = process.env.KAIZEN_API_URL ?? 'http://localhost:3000';
 
@@ -64,5 +65,9 @@ export async function completeLogin(email: string, password: string): Promise<Ne
   cookieStore.set(ACCESS_COOKIE, accessToken, ACCESS_COOKIE_OPTIONS);
   cookieStore.set(REFRESH_COOKIE, refreshToken, REFRESH_COOKIE_OPTIONS);
 
-  return NextResponse.json({ user, tenantId });
+  // The role rides back with the profile so a freshly-signed-in session knows what
+  // it may do without waiting for a reload to hit /api/auth/me.
+  const { role } = claimsFromAccessToken(accessToken);
+
+  return NextResponse.json({ user, tenantId, role });
 }

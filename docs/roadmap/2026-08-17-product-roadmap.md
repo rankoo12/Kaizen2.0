@@ -138,6 +138,31 @@ repo" and "usable product".
 **Done when:** a new user can run an authenticated analyze end-to-end from the UI — consent,
 progress, plan approval, findings, draft review — without touching an API client.
 
+> **Amended 2026-08-17, after a code audit at the start of the mission.** The bullets above were
+> reconciled from two older roadmaps and inherited stale claims in both directions. The corrected
+> inventory, which the specs now carry:
+>
+> - **Consent UX** — as described. Backend complete, UI is one disabled row. Unchanged.
+> - **Writer progress screen** — *already built* (`6e99583`). `ProgressFace` polls at 2s and
+>   renders real counts from `report.progress`, which the pipeline writes. What is actually
+>   missing is smaller and different: the `plan` phase never writes progress (so that segment of
+>   the rail never lights), and the away-from-screen channel the copy promises — tab title,
+>   sidebar chip, transition toasts — does not exist. Specced at
+>   `docs/specs/tests-ux/spec-testwriter-ux.md` §11.6.
+> - **Findings on screen** — *already built* (`3e56294`), including the zero-draft case. Missing:
+>   findings are dropped on the blocked/halted face, which is the one place §0's "a job must never
+>   return nothing" rule matters most; two of four evidence fields never render; and
+>   `GET /suites/:id/coverage` — complete, honest, thin-crawl-guarded — has no UI at all.
+> - **Suggest** — the backend does **not** exist. There is no route and no scoped pipeline mode;
+>   the dead button sits in the dormant component tree. This is a small feature, not a wiring job.
+>   New spec: `docs/specs/test-writer/spec-scoped-suggest.md`.
+> - **Plan polish** — `outline` is already rendered per row. Deselection is still unrecorded.
+>
+> Net effect on the mission: unchanged in value and slightly smaller in total, with the work
+> redistributed — deliverables 2 and 3 shrink to finishing touches, deliverable 4 grows into the
+> second-largest piece after consent. §2's gap table above is stale for the same reason; trust
+> `spec-testwriter-ux.md` §0.0, which is a maintained audit.
+
 ---
 
 ### Mission 2 — Trust foundation: app-entity + real RLS

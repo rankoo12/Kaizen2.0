@@ -1,7 +1,9 @@
 # Spec: Findings & Coverage — the QA-engineer deliverable
 
 Created: 2026-08-12
-Status: approved for implementation (founder accepted 2026-08-12)
+Updated: 2026-08-17 — §3.1 records what phase 1 shipped and the three delivery
+gaps left; §3.2 decides where coverage lives (Mission 1 deliverable 3).
+Status: phase 1 implemented (`3e56294`); phase 2 (coverage UI) specified in §3.2
 Owner: Test Writer workstream
 Depends on: worker final-state capture (spec-validation-trust.md §8)
 
@@ -92,6 +94,65 @@ N things worth your attention," then the list. Severity drives a chip
 Copy principle (per house style): name things by what the user recognizes — "5
 buttons have no readable label" not "empty accessible name on 5 nodes." The
 `detail` carries the technical precision.
+
+### 3.1 Build status and the remainder (added 2026-08-17)
+
+Phase 1 shipped in `3e56294`: the six kinds, the `possible_app_defect`
+reclassification, ranking, sanitization, and `FindingsSection` on the delivery
+face. Three gaps remain, all small, all in the delivery half:
+
+**a. Findings are dropped exactly where they matter most.** They render on the
+DELIVERY face only. A job that ends `blocked` — sign-in failed, robots refused,
+every page challenged — renders `HaltedFace`, which shows the error and nothing
+else, even though the pipeline deliberately computed and stored findings before
+stopping. §0's rule is *a job must never return nothing*, and the blocked job is
+the job that currently returns nothing. `HaltedFace` renders the same
+`FindingsSection`.
+
+**b. Two of the four evidence fields are never shown.** `evidence.repro` and
+`evidence.runId` render; `evidence.url` and `evidence.elementRef` do not. For
+`crawl_error_page`, `broken_link` and `empty_accessible_name` — half the kinds,
+and the ones with no run to link to — the URL *is* the finding's actionability.
+Render `url` as the row's secondary line (plain text, never a link that a
+hostile crawled page chose the target of; the same untrusted-content discipline
+as §2) and `elementRef` beside it when present.
+
+**c. Severity is shown but does not order the eye.** Findings arrive ranked;
+the list renders flat. Group under `high` / `medium` / `low & info` headings so
+a 12-finding job reads as a triage list rather than a wall.
+
+## 3.2 The coverage face
+
+§6 phase 2 left the choice open — "a simple coverage face (or a strip on the
+delivery screen)". **Decision: a strip, on the tests screen, not a screen of its
+own, and not on the delivery face.**
+
+Reasoning. The endpoint (`GET /suites/:suiteId/coverage`) is built, complete and
+honest — pages ⋈ active cases, with the thin-crawl `coverageConfidence` guard —
+and has no UI at all. Where it belongs follows from what the number is *for*:
+coverage answers "what does my suite not cover", which is a question about the
+**suite**, asked while looking at the suite, repeatedly over weeks. The delivery
+face is a per-job story that is over once the drafts are accepted; putting a
+durable answer inside a disposable narrative buries it. A dedicated screen is
+Mission 6's job (the roadmap explicitly holds "coverage map as a durable screen"
+there) and would be over-built for one endpoint today.
+
+So: a collapsed strip on `screen-tests.tsx`, beside the App Brief card, reading
+`{tested} of {total} pages have a test` with an expander listing the untested
+ones by URL and `purposeTag`. It is the same information a QA lead would ask for
+in a standup, in the place they already stand.
+
+**The honesty guard is the load-bearing part, not the number.** When
+`coverageConfidence === 'unknown'`, the strip must not render a ratio at all —
+not greyed, not caveated, not "3 of 3 (limited)". It renders
+`confidenceReason` alone: *"Coverage can't be assessed — only N pages were
+reachable."* A 1-page crawl showing "1 of 1 covered" is the single most
+dishonest thing this feature could put on screen, and a percentage that a user
+half-reads will be remembered as a percentage.
+
+Pages marked `requiresAuth` are labelled *"behind sign-in"* in the untested
+list — that is the coverage gap most worth converting, and it points straight at
+signed-in exploration.
 
 ## 4. Coverage map
 

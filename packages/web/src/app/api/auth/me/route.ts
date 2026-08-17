@@ -6,6 +6,7 @@ import {
   ACCESS_COOKIE_OPTIONS,
   REFRESH_COOKIE_OPTIONS,
 } from '@/lib/cookies';
+import { claimsFromAccessToken } from '@/lib/session-claims';
 
 const API_URL = process.env.KAIZEN_API_URL ?? 'http://localhost:3000';
 
@@ -39,19 +40,8 @@ export async function GET() {
 
     if (meRes.ok) {
       const { user } = await meRes.json();
-      // Extract tenantId from the JWT claims embedded in the access token payload
-      // (We decode the middle segment — no signature verification needed here,
-      //  the backend already validated the token)
-      let tenantId: string | null = null;
-      try {
-        const payload = JSON.parse(
-          Buffer.from(accessToken.split('.')[1], 'base64url').toString('utf8'),
-        );
-        tenantId = payload.tenantId ?? null;
-      } catch {
-        // Non-fatal — tenantId just won't be available
-      }
-      return NextResponse.json({ user, tenantId });
+      const { tenantId, role } = claimsFromAccessToken(accessToken);
+      return NextResponse.json({ user, tenantId, role });
     }
 
     // 401 from /users/me — access token is expired, fall through to refresh
@@ -87,14 +77,6 @@ export async function GET() {
   }
 
   const { user } = await meRes.json();
-  let tenantId: string | null = null;
-  try {
-    const payload = JSON.parse(
-      Buffer.from(newTokens.accessToken.split('.')[1], 'base64url').toString('utf8'),
-    );
-    tenantId = payload.tenantId ?? null;
-  } catch {
-    // Non-fatal
-  }
-  return NextResponse.json({ user, tenantId });
+  const { tenantId, role } = claimsFromAccessToken(newTokens.accessToken);
+  return NextResponse.json({ user, tenantId, role });
 }

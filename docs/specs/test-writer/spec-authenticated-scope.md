@@ -1,6 +1,9 @@
 # Spec — Authenticated Scope (Phase 3: signed-in exploration + generation)
 
 Created: 2026-08-06
+Updated: 2026-08-17 — §11 expanded from design sketch to implementable spec
+(Mission 1 deliverable 1): build status, the two backend gaps the UI needs, the
+error→copy contract, and the test plan.
 Branch: `feat/test-writer/authenticated-scope` (off main, after P2 merged as #65)
 Status: **Backend implemented** (2026-08-07) — §3 through §10 and §12 are built
 and unit-tested; migration 034 applied to the shared dev DB. Design was
@@ -971,6 +974,46 @@ grouping and origin filtering, no steps, no stats.
 
 ## 11. Consent UX (analyze sheet + report)
 
+> **Updated 2026-08-17** — expanded from design sketch to implementable spec for
+> Mission 1 deliverable 1. §11.0 records what the backend already provides and
+> what the UI must add; §11.1–§11.4 are the original design, unchanged in intent;
+> §11.5 is the new error→copy contract; §11.6 is the test plan.
+
+### 11.0 Build status and the two backend gaps
+
+The backend is **complete and live-proven**: `POST /suites/:suiteId/analyze`
+accepts `scope`, `loginCaseId`, `authConsent`; enforces `AUTH_CONSENT_REQUIRED`,
+`AUTH_SCOPE_REQUIRES_ADMIN`, `AUTH_SCOPE_NOT_VIA_IMPERSONATION`, and the five
+`checkLoginCase()` eligibility gates; stamps the consenting user and time; and
+the pipeline re-checks the job row authoritatively (§10.1). Nothing in §3–§10
+needs revisiting.
+
+The UI provides **none of it**. `writer-analyze-sheet.tsx:226-229` renders a
+disabled row reading "Signed-in exploration — soon", and the submit body sends
+no auth fields at all. Every real app's value is behind login, so this single
+disabled row is the product's most expensive locked door.
+
+Two things the UI needs that do not exist yet:
+
+- **a. Tenant-wide login-candidate listing.** §10.5 already recorded this
+  ("the picker needs an endpoint that does not exist") and it was not built.
+  Add `GET /cases?status=active` to `src/api/routes/test-cases.ts`, returning
+  `{id, name, suiteId, suiteName, baseUrl}` — no steps, no stats, tenant-scoped
+  by the same transaction wrapper as every other read. Rationale unchanged from
+  §3.1: login cases live once, in a base suite, and the picker is tenant-wide.
+  **Add an optional `?origin=` filter** so the client is not paginating a large
+  tenant's whole case list to find three sign-in tests; the server filter is a
+  convenience and the API's eligibility check remains authoritative either way.
+- **b. The current user's role must reach the browser.** The card renders
+  disabled for non-admins (§11.2), and today the web session exposes only
+  `{user, tenantId}` — the role is in the JWT and is dropped. Extend
+  `packages/web/src/app/api/auth/me/route.ts` to surface `role` from the same
+  decoded payload it already reads `tenantId` from. **This is presentation
+  only.** The 403 is the enforcement; a client that lies about its role gets a
+  server rejection, so this must never be written as if it were a gate.
+
+### 11.1 The card
+
 Follows `spec-testwriter-ux.md` (supersedes draft-review-ux §2.1's dialog).
 The disabled "Signed-in exploration — soon" row
 (writer-analyze-sheet.tsx:226-229) is removed; in its place, a second card in
@@ -1038,6 +1081,49 @@ would misrepresent its weight:
 - One additional caveat line whenever a job runs authenticated, because some
   apps invalidate other sessions on new sign-ins: *"Signing in may log the
   same account out elsewhere — another reason for a dedicated test account."*
+
+### 11.5 Rejection copy — every gate gets a sentence a human can act on
+
+The API rejects eight distinct ways. A generic "Could not start the analysis"
+on any of them wastes the eligibility work entirely: the user learns that
+something is wrong but not what to change. The sheet maps each error code to a
+specific remedy, rendered inline against the field that caused it.
+
+| Error | Copy | Where |
+|---|---|---|
+| `AUTH_CONSENT_REQUIRED` | *"Turn on signed-in exploration and pick a sign-in test first."* | card |
+| `AUTH_SCOPE_REQUIRES_ADMIN` | *"Only a workspace admin or owner can let Kaizen sign in. Ask one of them to start this analysis."* | card (also pre-empted by the disabled state) |
+| `AUTH_SCOPE_NOT_VIA_IMPERSONATION` | *"This is a support session. Signed-in exploration has to be started by someone from your own workspace."* | card |
+| `LOGIN_CASE_NOT_FOUND` | *"That sign-in test no longer exists."* + refetch the picker | picker |
+| `LOGIN_CASE_NOT_ACTIVE` | *"'{name}' is a draft. A sign-in recipe has to be a test you've accepted and run."* | picker |
+| `LOGIN_CASE_ORIGIN_MISMATCH` | *"'{name}' signs in to {caseHost}, not {targetHost}. Pick a sign-in test for this site."* | picker |
+| `LOGIN_CASE_NAVIGATES_OFF_ORIGIN` | *"'{name}' navigates to {otherHost} partway through. Kaizen won't run a sign-in flow that leaves the site it's testing."* | picker |
+| `LOGIN_CASE_USES_SEED_TOKENS` | *"'{name}' uses {{token}} placeholders that Kaizen fills with random values on every run — it would try to sign in with a random password. Put the real test-account values in the step text, or use a sign-in button flow."* | picker |
+
+The last one is the least obvious and the most likely to be hit by a user who
+built their login test the "clever" way; the copy must explain the mechanism,
+not just name the rule.
+
+**Client-side filtering is a courtesy, not a gate.** The picker filters
+candidates to the target origin so the common case shows a short, correct list,
+but it never hides a case *because it looks ineligible* on any other rule — the
+server owns eligibility, and a client that silently drops the case the user was
+looking for produces a support ticket instead of an error message.
+
+### 11.6 Testing
+
+- **API**: `GET /cases?status=active` returns only the caller's tenant, only
+  active cases, and honours `?origin=`; a second tenant's active case is absent.
+  This is a new tenant-wide read — the cross-tenant assertion is mandatory, not
+  optional (§8, confidentiality first).
+- **Web**: the card is disabled for `member`/`viewer` roles; enabling it reveals
+  the picker; submitting sends `scope`, `loginCaseId`, `authConsent`; the empty
+  state renders its CTA and the sheet's state survives the round trip to the
+  new-test screen; each §11.5 error renders its specific copy.
+- **Live** (the §14 dogfood, still outstanding): an authenticated analyze of
+  Kaizen's own app driven entirely from the UI — pick the demo-login recipe,
+  consent, watch the progress face report "signed in · exploring", and land on a
+  delivery whose stat row shows pages behind sign-in.
 
 ## 12. Security posture
 

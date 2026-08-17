@@ -27,8 +27,11 @@ export function Seg({ value, onChange, options, size }: any) {
   );
 }
 
-export function Switch({ checked, onChange }: any) {
-  return <button className="switch" role="switch" aria-checked={checked} onClick={() => onChange(!checked)}><i /></button>;
+export function Switch({ checked, onChange, disabled, title }: any) {
+  // `disabled` rather than an inert onChange: a control the caller cannot use has
+  // to say so to a screen reader and to a keyboard, not only to a mouse.
+  return <button className="switch" role="switch" aria-checked={checked} disabled={disabled}
+    title={title} onClick={() => !disabled && onChange(!checked)}><i /></button>;
 }
 
 export function Disclose({ title, children, defaultOpen, accent, badge }: any) {

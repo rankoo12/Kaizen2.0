@@ -307,3 +307,97 @@ describe('testCasesRoutes - Token Limit Enforcement', () => {
     expect(sql.some((s) => /DELETE FROM test_cases WHERE id/.test(s))).toBe(true);
   });
 });
+
+/**
+ * The login-recipe picker's source. This is the first tenant-WIDE case read in
+ * the API — every other listing is scoped by a suite the caller named — so the
+ * isolation assertion here is doing real work, not ceremony.
+ * Spec: docs/specs/test-writer/spec-authenticated-scope.md §10.5, §11.6
+ */
+describe('testCasesRoutes - GET /cases (tenant-wide login-recipe picker)', () => {
+  let app: ReturnType<typeof Fastify>;
+  let mockQuery: jest.Mock;
+
+  const ROWS = [
+    { id: 'c1', name: 'Sign in', base_url: 'https://app.acme.io/login', suite_id: 's1', suite_name: 'Base' },
+    { id: 'c2', name: 'Checkout', base_url: 'https://shop.acme.io/', suite_id: 's2', suite_name: 'Shop' },
+  ];
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.decorateRequest('tenantId', '');
+    app.decorateRequest('userId', '');
+    await app.register(testCasesRoutes);
+  });
+
+  beforeEach(() => {
+    mockQuery = jest.fn().mockResolvedValue({ rows: ROWS });
+    (getPool as jest.Mock).mockReturnValue({ query: mockQuery });
+    (withTenantTransaction as jest.Mock).mockImplementation(
+      async (_tenantId: string, cb: (c: unknown) => unknown) => cb({ query: mockQuery }),
+    );
+  });
+
+  afterEach(() => jest.clearAllMocks());
+  afterAll(async () => { await app.close(); });
+
+  it('returns the tenant\'s active cases with their suite', async () => {
+    const res = await app.inject({ method: 'GET', url: '/cases?status=active' });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().cases).toEqual([
+      { id: 'c1', name: 'Sign in', baseUrl: 'https://app.acme.io/login', suiteId: 's1', suiteName: 'Base' },
+      { id: 'c2', name: 'Checkout', baseUrl: 'https://shop.acme.io/', suiteId: 's2', suiteName: 'Shop' },
+    ]);
+  });
+
+  it('scopes every read to the caller\'s tenant and to active cases only', async () => {
+    await app.inject({ method: 'GET', url: '/cases?status=active' });
+
+    // The transaction wrapper is what applies tenant scoping; going around it
+    // with a bare pool query is the mistake this asserts against.
+    expect(withTenantTransaction).toHaveBeenCalledWith('tenant-1', expect.any(Function));
+    const sql = String(mockQuery.mock.calls[0][0]).replace(/\s+/g, ' ');
+    expect(sql).toMatch(/tc\.tenant_id = \$1/);
+    expect(sql).toMatch(/tc\.status = 'active'/);
+    expect(mockQuery.mock.calls[0][1]).toEqual(['tenant-1']);
+  });
+
+  it('rejects a status other than active', async () => {
+    // A picker has no business reading drafts or archived tests, and a recipe
+    // must be a case the tenant trusts — so the narrow query is the contract.
+    const res = await app.inject({ method: 'GET', url: '/cases?status=draft' });
+    expect(res.statusCode).toBe(400);
+    expect(mockQuery).not.toHaveBeenCalled();
+  });
+
+  it('filters by parsed origin, not by string prefix', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [
+        ...ROWS,
+        // The reason the comparison parses rather than matching prefixes.
+        { id: 'c3', name: 'Evil', base_url: 'https://app.acme.io.evil.com/', suite_id: 's3', suite_name: 'X' },
+      ],
+    });
+    const res = await app.inject({
+      method: 'GET', url: '/cases?status=active&origin=' + encodeURIComponent('https://app.acme.io'),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().cases.map((c: { id: string }) => c.id)).toEqual(['c1']);
+  });
+
+  it('400s on an unparseable origin rather than guessing', async () => {
+    const res = await app.inject({ method: 'GET', url: '/cases?status=active&origin=not-a-url' });
+    expect(res.statusCode).toBe(400);
+  });
+
+  it('survives a row whose base_url is not a URL', async () => {
+    mockQuery.mockResolvedValue({
+      rows: [{ id: 'c9', name: 'Odd', base_url: 'about:blank', suite_id: 's1', suite_name: 'Base' }],
+    });
+    const res = await app.inject({
+      method: 'GET', url: '/cases?status=active&origin=' + encodeURIComponent('https://app.acme.io'),
+    });
+    expect(res.statusCode).toBe(200);
+    expect(res.json().cases).toEqual([]);
+  });
+});

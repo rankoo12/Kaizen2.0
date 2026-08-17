@@ -8,6 +8,7 @@
  *   DELETE /suites/:suiteId               — delete suite and all its cases
  *
  *   GET    /suites/:suiteId/cases         — list cases with last run status
+ *   GET    /cases?status=active[&origin=] — tenant-wide active cases (login-recipe picker)
  *   POST   /suites/:suiteId/cases         — create case with initial steps
  *   GET    /cases/:caseId                 — single case with active steps + recent runs
  *   PATCH  /cases/:caseId                 — update name / base_url / steps (versioned)
@@ -37,6 +38,16 @@ import type { StepAST } from '../../types';
 
 function contentHash(rawText: string): string {
   return createHash('sha256').update(rawText.toLowerCase().trim()).digest('hex');
+}
+
+/** Origin of a URL, or null when it isn't one. Never throws — a malformed
+ *  `base_url` in one row must not fail a whole listing. */
+function safeOrigin(url: string): string | null {
+  try {
+    return new URL(url).origin;
+  } catch {
+    return null;
+  }
 }
 
 // ─── Zod schemas ─────────────────────────────────────────────────────────────
@@ -72,6 +83,18 @@ const CaseListQuery = z.object({
    * Defaults to active,draft,validating — what a user can act on.
    */
   status: z.string().optional(),
+});
+
+/**
+ * The tenant-wide picker's query. Deliberately narrow: this is not a general
+ * cross-suite case listing, it is "which of my tests could sign Kaizen in".
+ * Spec: docs/specs/test-writer/spec-authenticated-scope.md §10.5, §11.0-a
+ */
+const TenantCaseListQuery = z.object({
+  /** Only `active` is meaningful — a login recipe must be a test the tenant trusts. */
+  status: z.literal('active'),
+  /** Convenience filter so a large tenant's picker isn't paging its whole catalogue. */
+  origin: z.string().optional(),
 });
 
 /**
@@ -334,6 +357,70 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
     });
 
     return reply.send({ cases: cases.map(mapCaseSummary) });
+  });
+
+  // ── GET /cases ───────────────────────────────────────────────────────────────
+  /**
+   * Tenant-wide active cases — the login-recipe picker's source.
+   *
+   * Login cases naturally live once, in a base suite, so a suite-scoped picker
+   * would force every suite to duplicate the one test whose staleness matters
+   * most. The real boundary is the origin check, which the analyze route
+   * enforces authoritatively; `?origin=` here is only so the picker shows a
+   * short list rather than a tenant's whole catalogue.
+   *
+   * Narrow on purpose: no steps, no stats, no run history. Enough to group by
+   * suite and filter by origin, and nothing a picker has no business reading.
+   * Spec: docs/specs/test-writer/spec-authenticated-scope.md §10.5, §11.0-a
+   */
+  app.get('/cases', { preHandler: [requireAuth] }, async (request, reply) => {
+    const parsed = TenantCaseListQuery.safeParse(request.query ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'INVALID_REQUEST', details: parsed.error.issues });
+    }
+    const { tenantId } = request;
+
+    const rows = await withTenantTransaction(tenantId, async (client) => {
+      const { rows: found } = await client.query<{
+        id: string; name: string; base_url: string; suite_id: string; suite_name: string;
+      }>(
+        `SELECT tc.id, tc.name, tc.base_url, tc.suite_id, ts.name AS suite_name
+           FROM test_cases tc
+           JOIN test_suites ts ON ts.id = tc.suite_id AND ts.tenant_id = tc.tenant_id
+          WHERE tc.tenant_id = $1 AND tc.status = 'active'
+          ORDER BY ts.name ASC, tc.name ASC`,
+        [tenantId],
+      );
+      return found;
+    });
+
+    // Origin comparison in JS rather than SQL: `base_url` is a stored URL, and
+    // matching origins by string prefix in SQL would call https://acme.io.evil.com
+    // a match for https://acme.io. Parsing is the only honest comparison.
+    let filtered = rows;
+    if (parsed.data.origin !== undefined) {
+      const wanted = safeOrigin(parsed.data.origin);
+      // An unparseable filter is a client bug. Rejecting it beats the two silent
+      // readings — "match nothing" and "match everything" — which are both wrong
+      // and neither of which the caller could distinguish from a real answer.
+      if (!wanted) {
+        return reply.status(400).send({
+          error: 'INVALID_REQUEST',
+          message: '`origin` must be an absolute URL.',
+        });
+      }
+      filtered = rows.filter((r) => safeOrigin(r.base_url) === wanted);
+    }
+
+    return reply.send({
+      cases: filtered.map((r) => ({
+        id: r.id,
+        name: r.name,
+        baseUrl: r.base_url,
+        suiteId: r.suite_id,
+        suiteName: r.suite_name,
+      })),
+    });
   });
 
   // ── POST /suites/:suiteId/cases ──────────────────────────────────────────────

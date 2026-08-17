@@ -247,6 +247,7 @@ button:disabled, button[aria-disabled="true"], [role="button"][aria-disabled="tr
 .switch[aria-checked="true"] { background: var(--pass); }
 .switch i { position: absolute; top: 2px; left: 2px; width: 18px; height: 18px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0, 0, 0, .28); transition: transform .18s cubic-bezier(.32, .72, 0, 1); }
 .switch[aria-checked="true"] i { transform: translateX(16px); }
+.switch:disabled { cursor: not-allowed; opacity: .45; }
 
 .field { width: 100%; height: 30px; padding: 0 10px; border-radius: var(--r-ctl); border: .5px solid var(--sep-strong); background: var(--field); color: var(--text); font: inherit; outline: none; transition: box-shadow .14s, border-color .14s; }
 .field:focus { border-color: var(--accent); box-shadow: 0 0 0 3.5px var(--accent-soft); }

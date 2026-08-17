@@ -1,7 +1,10 @@
 # Spec — Test Writer UX ("Kaizen as a QA engineer" in the app)
 
 Created: 2026-08-06
-Status: Design agreed; implementation not started.
+Updated: 2026-08-17 — §0.0 build status added (the "implementation not started"
+header was two shipped PRs out of date); §11.6 enumerates the Mission 1 remainder.
+Status: **Substantially implemented** — see §0.0. §11.1–§11.4 shipped in
+`6e99583`, `2143df1` and `3e56294`; the remainder is §11.6.
 Supersedes the UI portions of `spec-draft-review-ux.md` §2 (which targeted the
 dormant SideRail/TopBar tree — see §0.1). The case-lifecycle contract in that
 spec's §1 still stands.
@@ -9,6 +12,33 @@ spec's §1 still stands.
 ---
 
 ## 0. Ground truth (read before designing anything else)
+
+### 0.0 What is built (audited 2026-08-17)
+
+This spec was written as a design. Most of it then shipped, and reading it as a
+to-do list now produces duplicate work. The audit:
+
+| Surface | State |
+|---|---|
+| `screen-writer.tsx` — four faces, phase rail, plan rows, delivery, halted | **built** |
+| `writer-analyze-sheet.tsx` — URL, brief, synthetic-data consent, advanced | **built** |
+| `use-generation-job.ts` — single-job poller (2s / 10s / stop) + suite history | **built** |
+| `kaizen-app.tsx` — writer screen, File-menu entry, delivery scan across suites | **built** |
+| `screen-tests.tsx` — empty-state hero, ✦ Analyze, draft badges, delivery banner | **built** |
+| `app-brief-card.tsx`, `screen-analyses.tsx` (job history as a screen) | **built** |
+| `report.progress` written by the pipeline at phase boundaries (§11.0-d) | **built** |
+| Findings section on the delivery face (`spec-findings-and-coverage.md` §3) | **built** |
+| `outline` / catalog skeleton shown per plan row | **built** |
+| **Signed-in exploration** — still the disabled "soon" row | **not built** |
+| **PLAN phase progress write** — the rail never lights `PLAN` | **not built** |
+| **Away-from-screen channel** — document title, sidebar chip, transition toasts | **not built** |
+| **Deselection provenance** — declined scenarios are discarded, not recorded | **not built** |
+| **Findings on halted/blocked faces** — the report carries them; the face drops them | **not built** |
+| **Coverage** — `GET /suites/:id/coverage` is complete and has zero UI | **not built** |
+| **Suggest** — no route, no pipeline mode (`spec-scoped-suggest.md`) | **not built** |
+
+Keep this table current. A spec that claims less than the code is as misleading
+as one that claims more, and this one was misleading in both directions at once.
 
 ### 0.1 The live shell is `kaizen-app.tsx`, not the routed shell
 `packages/web/src/app/(app)/layout.tsx` renders `<KaizenApp />` and states that
@@ -666,6 +696,80 @@ tokens-per-phase.
 14. HALTED faces, concurrent guard, narrow viewport. 15. Remembered options;
 rung-3 groundwork. 16. Web tests: face selection per §5.1 row, approve/discard,
 accept/undo, consent-gated states.
+
+### 11.6 Mission 1 remainder (2026-08-17)
+
+Everything below is what §0.0 marks not built, specified to implementation
+depth. Signed-in exploration is specified in `../test-writer/spec-authenticated-scope.md`
+§11 and Suggest in `../test-writer/spec-scoped-suggest.md`; the rest is here.
+
+**a. The PLAN segment must light up.** `pipeline.ts` writes `progress` for
+`recon`, `comprehend`, `write` and `validate` — never `plan`. So a job sits
+visibly on UNDERSTAND while it is planning, which for a slow LLM plan is the
+longest single stretch of the wait, and the one segment of the rail that never
+activates is the one immediately before the user's turn. Add
+`await progress({ phase: 'plan' })` before `planner.plan()`. One line; it is
+listed here because it reads as cosmetic and is not — the rail is the only
+honest signal the user has, and a segment that never lights teaches them the
+rail is decorative.
+
+**b. The away-from-screen channel (§6.1, §6.2).** The premise of the PROGRESS
+face is *"you can leave — we'll flag the sidebar and the tab title"*, and today
+that promise is not kept: there is no title change, no sidebar chip, and no
+transition toast. Copy that promises a notification the product does not send
+is worse than no copy.
+
+What exists is `kaizen-app.tsx`'s `scanJobs`/`pendingDelivery` — a fan-out over
+`GET /suites/:id/jobs` on mount, polled at 4s while something is in flight,
+feeding the tests-screen delivery banner. That is the right foundation and is
+**not** to be replaced by the `useActiveGenerationJobs` hook §6.1 imagined;
+extract it into `hooks/use-active-generation-jobs.ts` with its behaviour intact
+and add three outputs:
+
+- **Document title** — `● Plan ready — Kaizen` when any job awaits approval,
+  `◔ Exploring… — Kaizen` while any job runs, restored on idle. Restoration
+  must be in the effect's cleanup, or a user who navigates away from an active
+  job keeps a stale title forever.
+- **Sidebar activity chip** (`chrome.tsx`) — one row per live job, suite name
+  plus state, clicking routes to that writer screen; a pulsing dot on the suite
+  row. Derived from the same scan, so a reload rebuilds it from the API.
+- **Transition toasts** — fired on observed status *change*, never on first
+  observation. A toast on mount would announce a plan the user approved
+  yesterday every time they open the app. The hook already tracks previous
+  status per job for the banner; the toast rides the same comparison, and jobs
+  first seen in a terminal state are seeded silently.
+
+Polling stays as it is: 4s while in flight, nothing when idle. Do not lower it
+for the title's benefit.
+
+**c. Deselection provenance (§4.4).** The plan screen sends `approvedScenarios`
+and the declined ones vanish — no record that a human looked at a scenario and
+said no. That is a hole in an audit surface the product otherwise takes
+seriously, and it is the raw material for the obvious future behaviour ("stop
+proposing this").
+
+`POST /testwriter/jobs/:jobId/plan-approval` already computes the approved set
+against `test_plan.scenarios`; the complement is free. Persist it into the job
+report as `report.plan.declined: [{ name, reason: 'user_deselected' }]` — the
+same shape as the existing `report.plan.dropped`, so the delivery face's
+disclosure renders both with one component. Recorded as a `reason`-bearing row
+rather than a bare name list so a later "why" (a per-row note, a rejection
+category) has somewhere to go without a shape change.
+
+The delivery face gains one line in the rejection disclosure: *"{n} scenarios
+you declined"* — shown, never hidden, because §4.4's design law is that the user
+should see what they declined.
+
+**d. Findings on the halted and blocked faces.** `spec-findings-and-coverage.md`
+§0's rule is *a job must never return nothing*, and the pipeline honours it: a
+job blocked at sign-in or by robots still writes `report.findings` before it
+stops (`pipeline.ts` `earlyFindings`). `HaltedFace` renders none of them. So the
+one path where the user has *least* to show for their spend is the one path that
+shows them nothing — the exact failure the findings spec was written to close.
+`HaltedFace` renders `<FindingsSection>` beneath its message, unchanged.
+
+**e. Coverage gets a face.** Specified in
+`../test-writer/spec-findings-and-coverage.md` §3.1 (amended 2026-08-17).
 
 ---
 

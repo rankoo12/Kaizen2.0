@@ -128,6 +128,10 @@ export type GenerationJob = {
   suiteId: string;
   targetUrl: string;
   scope: 'public' | 'authenticated';
+  /** The sign-in recipe this job used. Null on public jobs, and on list rows,
+   *  which don't select it. Present on the single-job read so a sign-in failure
+   *  can point at the test to fix. */
+  loginCaseId?: string | null;
   status: GenerationJobStatus;
   options: Record<string, unknown>;
   testPlan: { scenarios?: PlannedScenario[] } | null;
