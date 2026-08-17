@@ -188,10 +188,20 @@ Two cases. Find out which one you are in first: connect with the current
 **Case A — Railway Postgres plugin (or any DB where the current role is a
 superuser).** Same as dev. Steps 4–8 of §4 apply verbatim:
 
+Which services connect to Postgres, from the code (not from the service names):
+**API, worker-1, test-writer, persistence-db-updates** — four. `screenshotter`
+touches only Redis and object storage and needs nothing here. Railway's
+**Shared Variables** (project → Settings) is the right place to define these
+once and reference from all four, so there is one place to rotate the password.
+
 ```
 # 1. In Railway → the Postgres service → Variables: copy DATABASE_URL.
-#    Set it on the API and worker services as DATABASE_ADMIN_URL (new var).
-# 2. Choose a strong password; set on both services:
+#    Set it on ALL FOUR Postgres-using services as DATABASE_ADMIN_URL (new var).
+#    Strictly only the API runs migrations (Dockerfile pre-deploy), but having
+#    it everywhere means a manual `railway run npm run db:migrate` against any
+#    service works instead of failing with a confusing "permission denied".
+# 2. Choose a strong password (letters+digits, 32+ chars — URL-safe, no
+#    escaping); set on the same four services:
 #      KAIZEN_APP_DB_ROLE=kaizen_app
 #      KAIZEN_APP_DB_PASSWORD=<generated>
 # 3. Provision, from a one-off shell (railway run) or your machine with the
@@ -199,8 +209,9 @@ superuser).** Same as dev. Steps 4–8 of §4 apply verbatim:
 DATABASE_ADMIN_URL="$RAILWAY_DB_URL" KAIZEN_APP_DB_ROLE=kaizen_app KAIZEN_APP_DB_PASSWORD='<generated>' npx tsx scripts/provision-app-role.ts
 # 4. Verify before touching anything user-facing:
 DATABASE_URL="postgresql://kaizen_app:<generated>@<host>:<port>/<db>" DATABASE_ADMIN_URL="$RAILWAY_DB_URL" npx jest --config jest.integration.config.ts tenant-isolation      # must be 7/7
-# 5. Only now: change DATABASE_URL on the API + worker services to the
+# 5. Only now: change DATABASE_URL on the same four services to the
 #    kaizen_app URL. Leave DATABASE_ADMIN_URL as the original. Redeploy.
+#    screenshotter is untouched throughout.
 #    Migrations keep working (they use the admin URL); the app runs restricted.
 # Rollback: set DATABASE_URL back to the admin URL. Nothing else changes.
 ```
