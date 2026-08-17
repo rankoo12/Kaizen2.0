@@ -179,6 +179,25 @@ export default function KaizenApp() {
     }
   }, [refetch, showToast]);
 
+  /** Creates a suite and makes the whole app aware of it. Returns false so the
+   *  caller can keep the name the user typed when the create didn't land. */
+  const createSuite = useCallback(async (name: string): Promise<boolean> => {
+    try {
+      const r = await fetch('/api/proxy/suites', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      if (!r.ok) throw new Error();
+      const { suite } = await r.json();
+      refetch();
+      showToast(`Suite “${suite.name}” created`, 'success');
+      return true;
+    } catch {
+      showToast('Could not create the suite', 'error');
+      return false;
+    }
+  }, [refetch, showToast]);
+
   async function deleteCase(c: DesignCase) {
     try {
       const r = await fetch(`/api/proxy/cases/${c.id}`, { method: 'DELETE' });
@@ -366,6 +385,7 @@ export default function KaizenApp() {
               <Sidebar active={activeNav} onNav={go} counts={counts}
                 suites={suites} user={user}
                 activeJobs={activeJobs}
+                onCreateSuite={createSuite}
                 onOpenJob={(suiteId: string, jobId: string) => {
                   setWriterFocus({ suiteId, jobId }); setSuite(suiteId); setScreen('writer');
                 }}
@@ -393,6 +413,7 @@ export default function KaizenApp() {
           defaultUrl={cases.find((c) => !suite || c.suiteId === suite)?.baseUrl}
           role={role} draft={analyzeDraft}
           onClose={() => { setAnalyzeOpen(false); setAnalyzeDraft(null); }}
+          onSuitesChanged={refetch}
           showToast={showToast}
           onCreateLoginTest={(draft, template) => {
             // Park the form, not discard it: the user is leaving mid-decision to
@@ -415,6 +436,12 @@ export default function KaizenApp() {
             // nothing live to poll, so the sidebar chip and tab title — the very
             // things the next screen promises — would not appear until something
             // unrelated triggered a rescan.
+            //
+            // The re-read is the safety net for the case where the suite was made
+            // in this same dialog seconds ago: the job poller only watches suites
+            // the shell has, and a scan that runs before the list catches up would
+            // skip the very job just started. A fresh list re-triggers the scan.
+            refetch();
             void scanJobs();
             showToast('Exploring your app — this keeps running if you leave', 'info');
           }} />
