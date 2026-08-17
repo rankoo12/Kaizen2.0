@@ -93,9 +93,11 @@ function CaseRow({ c, sel, onSelect, onOpen, onRun, onEdit, onDelete, rowRef, on
   );
 }
 
-export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit, onDelete, suiteFilter, onClearSuite, group = true, showToast, onAnalyze, onAcceptDraft, onOpenProof, pendingDelivery, onOpenDelivery }: {
+export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onRunSuite, onEdit, onDelete, suiteFilter, onClearSuite, group = true, showToast, onAnalyze, onAcceptDraft, onOpenProof, pendingDelivery, onOpenDelivery }: {
   cases: DesignCase[]; suites: DesignSuite[]; stats: any;
   onOpen: (c: DesignCase) => void; onNew: () => void; onRun: (c: DesignCase) => void;
+  /** Queues every accepted test in the suite. Spec: docs/specs/tests-ux/spec-run-suite.md */
+  onRunSuite?: (s: DesignSuite) => Promise<void> | void;
   onEdit: (c: DesignCase) => void; onDelete?: (c: DesignCase) => void;
   suiteFilter: string | null; onClearSuite: () => void; group?: boolean; showToast?: any;
   /** Opens the analyze dialog — absent in contexts where generation isn't offered. */
@@ -155,6 +157,18 @@ export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit
   }, [list, selId, onRun]);
 
   const suite = suiteFilter ? suites.find((s) => s.id === suiteFilter) : null;
+  // What "Run suite" would actually run: accepted tests only. Drafts are
+  // proposals; the button says so by counting them out.
+  const runnableCount = uM(
+    () => (suite ? cases.filter((c) => c.suiteId === suite.id && c.caseStatus === 'active').length : 0),
+    [cases, suite],
+  );
+  const [runningSuite, setRunningSuite] = uSt(false);
+  async function runSuite() {
+    if (!suite || !onRunSuite || runningSuite) return;
+    setRunningSuite(true);
+    try { await onRunSuite(suite); } finally { setRunningSuite(false); }
+  }
   const groups = group && !suiteFilter
     ? suites.map((s) => ({ s, items: list.filter((c) => c.suiteId === s.id) })).filter((g) => g.items.length)
     : [{ s: suite, items: list }];
@@ -174,6 +188,15 @@ export function TestsScreen({ cases, suites, stats, onOpen, onNew, onRun, onEdit
           { value: 'healed', label: 'Healed' }, { value: 'passed', label: 'Passed' },
           ...(draftCount ? [{ value: 'drafts', label: `Drafts ${draftCount}` }] : []),
         ]} />
+        {suite && onRunSuite && (
+          <button className="btn" onClick={runSuite} disabled={runningSuite || runnableCount === 0}
+            title={runnableCount === 0
+              ? 'Nothing to run yet — accept a draft or write a test first'
+              : `Run all ${runnableCount} accepted ${runnableCount === 1 ? 'test' : 'tests'} in this suite`}>
+            {runningSuite ? <span className="spinner" style={{ width: 11, height: 11 }} /> : <I.play size={12} />}
+            Run suite
+          </button>
+        )}
         {onAnalyze && (
           <button className="btn" onClick={onAnalyze} title="Have Kaizen explore your app and propose tests">
             <I.sparkle size={13} />Analyze

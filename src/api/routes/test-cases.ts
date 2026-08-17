@@ -14,6 +14,7 @@
  *   PATCH  /cases/:caseId                 — update name / base_url / steps (versioned)
  *   DELETE /cases/:caseId                 — hard-delete case
  *   POST   /cases/:caseId/run             — enqueue a run for this case
+ *   POST   /suites/:suiteId/run           — enqueue a run for every active case in the suite
  *
  * All routes require JWT auth (requireAuth middleware → request.tenantId, request.userId).
  * All DB operations use withTenantTransaction for RLS enforcement.
@@ -869,17 +870,48 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
     });
   });
 
-  // ── POST /cases/:caseId/run ───────────────────────────────────────────────────
-  app.post('/cases/:caseId/run', { preHandler: [requireAuth] }, async (request, reply) => {
-    const { caseId } = request.params as { caseId: string };
-    const parsed = RunCaseBody.safeParse(request.body ?? {});
-    if (!parsed.success) {
-      return reply.status(400).send({ error: 'INVALID_REQUEST', details: parsed.error.issues });
+  /**
+   * The tenant's monthly LLM budget, as a reply-ready refusal or null when there
+   * is room. Shared by the single-case and whole-suite run routes so the two can
+   * never drift on what "over budget" means.
+   */
+  async function budgetRefusal(tenantId: string): Promise<{ status: 402; body: Record<string, unknown> } | null> {
+    const { rows: budgetRows } = await tenantQuery<{ llm_budget_tokens_monthly: string }>(
+      tenantId,
+      `SELECT llm_budget_tokens_monthly FROM tenants WHERE id = $1`,
+      [tenantId],
+    );
+    const budget = Number(budgetRows[0]?.llm_budget_tokens_monthly ?? 0);
+    if (budget <= 0) {
+      return {
+        status: 402,
+        body: {
+          error: 'INSUFFICIENT_TOKENS',
+          message: 'This account has no LLM tokens allocated. Contact the workspace owner to enable runs.',
+        },
+      };
     }
-    const { tenantId } = request;
+    const used = await usageThisMonth(tenantId);
+    if (used >= budget) {
+      return {
+        status: 402,
+        body: {
+          error: 'TOKEN_LIMIT_REACHED',
+          message: `Token limit reached (${budget.toLocaleString()}). Used ${used.toLocaleString()} this month.`,
+          used,
+          budget,
+        },
+      };
+    }
+    return null;
+  }
 
-    // Fetch case + active steps inside tenant transaction
-    const caseData = await withTenantTransaction(tenantId, async (client) => {
+  /**
+   * Fetch one case with its active steps, inside the tenant transaction.
+   * Null when the case is not this tenant's.
+   */
+  async function loadCaseForRun(tenantId: string, caseId: string) {
+    return withTenantTransaction(tenantId, async (client) => {
       const { rows: caseRows } = await client.query<{
         id: string; suite_id: string; base_url: string; status: string;
       }>(
@@ -914,45 +946,20 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
         storedAsts: stepRows.map((r) => r.compiled_ast),
       };
     });
+  }
 
-    if (!caseData) return reply.status(404).send({ error: 'CASE_NOT_FOUND' });
+  type LoadedCase = NonNullable<Awaited<ReturnType<typeof loadCaseForRun>>>;
 
-    // A draft has not been accepted into the suite yet, and a rejected case
-    // failed its proving run — neither is part of what "green" means here.
-    if (caseData.status !== 'active') {
-      return reply.status(400).send({
-        error: 'CASE_NOT_ACTIVE',
-        message: caseData.status === 'draft'
-          ? 'This test is a draft Kaizen proposed. Accept it into the suite before running it.'
-          : `A ${caseData.status} test cannot be run.`,
-        status: caseData.status,
-      });
-    }
-
-    const { rows: budgetRows } = await tenantQuery<{ llm_budget_tokens_monthly: string }>(
-      tenantId,
-      `SELECT llm_budget_tokens_monthly FROM tenants WHERE id = $1`,
-      [tenantId],
-    );
-    const budget = Number(budgetRows[0]?.llm_budget_tokens_monthly ?? 0);
-    if (budget <= 0) {
-      return reply.status(402).send({
-        error: 'INSUFFICIENT_TOKENS',
-        message: 'This account has no LLM tokens allocated. Contact the workspace owner to enable runs.',
-      });
-    }
-
-    const used = await usageThisMonth(tenantId);
-    if (used >= budget) {
-      return reply.status(402).send({
-        error: 'TOKEN_LIMIT_REACHED',
-        message: `Token limit reached (${budget.toLocaleString()}). Used ${used.toLocaleString()} this month.`,
-        used,
-        budget,
-      });
-    }
-
-    const baseUrl = parsed.data.baseUrl ?? caseData.base_url;
+  /**
+   * Compile, record and enqueue one run for an already-loaded, already-active
+   * case. The budget check is the caller's: a suite run checks it once for the
+   * whole batch, a single run once for itself.
+   * Spec: docs/specs/tests-ux/spec-run-suite.md §3
+   */
+  async function enqueueCaseRun(
+    tenantId: string, caseData: LoadedCase, baseUrlOverride: string | undefined,
+  ): Promise<string> {
+    const baseUrl = baseUrlOverride ?? caseData.base_url;
 
     // Compile natural-language steps → AST, reusing any stored AST as-is.
     const compiledSteps = await Promise.all(
@@ -968,9 +975,9 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       `INSERT INTO runs (tenant_id, suite_id, case_id, triggered_by, status, environment_url, total_steps)
        VALUES ($1, $2, $3, 'web', 'queued', $4, $5)
        RETURNING id`,
-      [tenantId, caseData.suite_id, caseId, baseUrl, compiledSteps.length],
+      [tenantId, caseData.suite_id, caseData.id, baseUrl, compiledSteps.length],
     );
-    const runId = rows[0].id;
+    const runId: string = rows[0].id;
 
     await queue.add('run', {
       runId,
@@ -987,7 +994,100 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       seedVariables: generateFormData(),
     });
 
+    return runId;
+  }
+
+  // ── POST /cases/:caseId/run ───────────────────────────────────────────────────
+  app.post('/cases/:caseId/run', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { caseId } = request.params as { caseId: string };
+    const parsed = RunCaseBody.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'INVALID_REQUEST', details: parsed.error.issues });
+    }
+    const { tenantId } = request;
+
+    const caseData = await loadCaseForRun(tenantId, caseId);
+    if (!caseData) return reply.status(404).send({ error: 'CASE_NOT_FOUND' });
+
+    // A draft has not been accepted into the suite yet, and a rejected case
+    // failed its proving run — neither is part of what "green" means here.
+    if (caseData.status !== 'active') {
+      return reply.status(400).send({
+        error: 'CASE_NOT_ACTIVE',
+        message: caseData.status === 'draft'
+          ? 'This test is a draft Kaizen proposed. Accept it into the suite before running it.'
+          : `A ${caseData.status} test cannot be run.`,
+        status: caseData.status,
+      });
+    }
+
+    const refusal = await budgetRefusal(tenantId);
+    if (refusal) return reply.status(refusal.status).send(refusal.body);
+
+    const runId = await enqueueCaseRun(tenantId, caseData, parsed.data.baseUrl);
     return reply.status(202).send({ runId, status: 'queued' });
+  });
+
+  // ── POST /suites/:suiteId/run ─────────────────────────────────────────────────
+  // Every active test in the suite, each as its own run. Drafts, rejected and
+  // archived cases are reported as skipped, never run — the same line the
+  // single-case route draws. Spec: docs/specs/tests-ux/spec-run-suite.md
+  app.post('/suites/:suiteId/run', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { suiteId } = request.params as { suiteId: string };
+    const parsed = RunCaseBody.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'INVALID_REQUEST', details: parsed.error.issues });
+    }
+    const { tenantId } = request;
+
+    const { rows: suiteRows } = await tenantQuery<{ id: string }>(
+      tenantId, `SELECT id FROM test_suites WHERE id = $1 AND tenant_id = $2`, [suiteId, tenantId],
+    );
+    if (suiteRows.length === 0) return reply.status(404).send({ error: 'SUITE_NOT_FOUND' });
+
+    const { rows: cases } = await tenantQuery<{ id: string; name: string; status: string }>(
+      tenantId,
+      `SELECT id, name, status FROM test_cases
+        WHERE suite_id = $1 AND tenant_id = $2 AND status <> 'archived'
+        ORDER BY created_at`,
+      [suiteId, tenantId],
+    );
+    const runnable = cases.filter((c) => c.status === 'active');
+    const skipped = cases
+      .filter((c) => c.status !== 'active')
+      .map((c) => ({
+        caseId: c.id, name: c.name,
+        reason: c.status === 'draft' || c.status === 'validating'
+          ? 'draft — accept it into the suite first'
+          : `${c.status} tests are not run`,
+      }));
+
+    if (runnable.length === 0) {
+      return reply.status(400).send({
+        error: 'NO_RUNNABLE_CASES',
+        message: cases.length === 0
+          ? 'This suite has no tests yet.'
+          : 'Every test in this suite is still a draft. Accept the ones you want before running the suite.',
+        skipped,
+      });
+    }
+
+    // One budget check for the whole batch — refusing after queueing half of a
+    // suite would leave the user with a partial run and a bill.
+    const refusal = await budgetRefusal(tenantId);
+    if (refusal) return reply.status(refusal.status).send(refusal.body);
+
+    const queued: Array<{ caseId: string; runId: string }> = [];
+    for (const c of runnable) {
+      const caseData = await loadCaseForRun(tenantId, c.id);
+      // Deleted between the listing and now — nothing to run, nothing to report.
+      if (!caseData || caseData.status !== 'active') continue;
+      const runId = await enqueueCaseRun(tenantId, caseData, parsed.data.baseUrl);
+      queued.push({ caseId: c.id, runId });
+    }
+
+    app.log.info({ event: 'suite_run_enqueued', suiteId, tenantId, queued: queued.length, skipped: skipped.length });
+    return reply.status(202).send({ queued, skipped });
   });
 }
 
