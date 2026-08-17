@@ -15,6 +15,7 @@ const { useState: uSt, useMemo: uM, useEffect: uEt, useRef: uRt } = React;
 
 function CaseRow({ c, sel, onSelect, onOpen, onRun, onEdit, onDelete, rowRef, onAccept, onProof }: any) {
   const [menu, setMenu] = uSt(false);
+  const moreRef = uRt<HTMLButtonElement>(null);
   const stop = (e: any) => e.stopPropagation();
   const cost = c.lastCost == null ? '—' : c.lastCost === 0 ? 'free' : fmt.k(c.lastCost);
   const isDraft = c.caseStatus === 'draft';
@@ -76,8 +77,8 @@ function CaseRow({ c, sel, onSelect, onOpen, onRun, onEdit, onDelete, rowRef, on
             <I.play size={12} />
           </button>
         )}
-        <button className="btn icon ghost" onClick={() => setMenu(!menu)}><I.more size={14} /></button>
-        {menu && <Menu onClose={() => setMenu(false)} style={{ top: 26, right: 0 }} items={[
+        <button className="btn icon ghost" ref={moreRef} onClick={() => setMenu(!menu)}><I.more size={14} /></button>
+        {menu && <Menu onClose={() => setMenu(false)} anchor={moreRef.current} items={[
           ...(isDraft ? [
             { label: 'Accept into the suite', icon: 'check', onClick: () => onAccept?.(c) },
           ] : [
