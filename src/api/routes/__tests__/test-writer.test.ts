@@ -2,6 +2,7 @@ import Fastify from 'fastify';
 import { testWriterRoutes } from '../test-writer';
 import { getPool } from '../../../db/pool';
 import { withTenantTransaction } from '../../../db/transaction';
+import { usageThisMonth } from '../../../modules/billing-meter/usage';
 
 jest.mock('../../../db/pool', () => ({ getPool: jest.fn() }));
 jest.mock('../../../db/transaction', () => ({ withTenantTransaction: jest.fn() }));
@@ -249,5 +250,181 @@ describe('testWriterRoutes - GET /suites/:suiteId/coverage', () => {
     mockQuery.mockResolvedValue({ rows: [] });
     const res = await app.inject({ method: 'GET', url: '/suites/someone-elses/coverage' });
     expect(res.statusCode).toBe(404);
+  });
+});
+
+/**
+ * Scoped Suggest. The contract that matters is that it is the SAME job with a
+ * smaller budget — same gates, same queue, same pipeline — plus the two things
+ * that are genuinely new: a one-page budget it will not let you widen, and an
+ * honest answer about whether this is a suggestion or a first full analysis.
+ * Spec: docs/specs/test-writer/spec-scoped-suggest.md §2, §3, §7
+ */
+describe('testWriterRoutes - POST /suites/:suiteId/suggest', () => {
+  let app: ReturnType<typeof Fastify>;
+  let mockQuery: jest.Mock;
+
+  /** knownPages: the suite's existing site model. running: an unfinished job. */
+  function withState({ knownPages = [] as string[], running = false, budget = 100000 } = {}) {
+    mockQuery.mockImplementation((sql: string) => {
+      if (/FROM test_suites/.test(sql)) return Promise.resolve({ rows: [{ id: 'suite-1' }] });
+      if (/FROM generation_jobs/.test(sql)) {
+        return Promise.resolve({ rows: running ? [{ id: 'job-live' }] : [] });
+      }
+      if (/llm_budget_tokens_monthly/.test(sql)) {
+        return Promise.resolve({ rows: [{ llm_budget_tokens_monthly: String(budget) }] });
+      }
+      if (/FROM site_pages/.test(sql)) {
+        return Promise.resolve({ rows: knownPages.map((u) => ({ url_normalized: u })) });
+      }
+      if (/INSERT INTO generation_jobs/.test(sql)) return Promise.resolve({ rows: [{ id: 'job-new' }] });
+      return Promise.resolve({ rows: [] });
+    });
+  }
+
+  /** The options object as it was enqueued. */
+  function enqueuedOptions(): Record<string, unknown> {
+    return (queueAdd.mock.calls[0][1] as { options: Record<string, unknown> }).options;
+  }
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.decorateRequest('tenantId', '');
+    app.decorateRequest('userId', '');
+    app.decorateRequest('role', '');
+    app.decorateRequest('isImpersonation', false);
+    await app.register(testWriterRoutes);
+  });
+
+  beforeEach(() => {
+    mockQuery = jest.fn();
+    (getPool as jest.Mock).mockReturnValue({ query: mockQuery });
+    (withTenantTransaction as jest.Mock).mockImplementation(
+      async (_t: string, cb: (c: unknown) => unknown) => cb({ query: mockQuery }),
+    );
+    (usageThisMonth as jest.Mock).mockResolvedValue(0);
+  });
+
+  afterEach(() => jest.clearAllMocks());
+  afterAll(async () => { await app.close(); });
+
+  it('scopes the job to one page when the suite already knows the app', async () => {
+    withState({ knownPages: ['https://acme.test/', 'https://acme.test/products'] });
+    const res = await app.inject({
+      method: 'POST', url: '/suites/suite-1/suggest',
+      payload: { pageUrl: 'https://acme.test/cart' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(res.json().mode).toBe('scoped');
+    const options = enqueuedOptions();
+    // The whole point: one page, and it is the page that was asked about.
+    expect(options.maxPages).toBe(1);
+    expect(options.focusUrl).toBe('https://acme.test/cart');
+    expect(options.mode).toBe('suggest');
+    // The safety rail is never a caller's choice.
+    expect(options.safeMode).toBe(true);
+  });
+
+  it('falls back to a full analyze when the suite knows nothing, and says so', async () => {
+    // A "suggestion" that silently becomes a thirty-page crawl is a broken
+    // promise about time and spend — the caller has to be told.
+    withState({ knownPages: [] });
+    const res = await app.inject({
+      method: 'POST', url: '/suites/suite-1/suggest',
+      payload: { pageUrl: 'https://acme.test/cart' },
+    });
+
+    expect(res.statusCode).toBe(202);
+    expect(res.json().mode).toBe('analyze');
+    const options = enqueuedOptions();
+    expect(options.maxPages).toBe(30);
+    expect(options.focusUrl).toBeUndefined();
+  });
+
+  it('refuses a page belonging to a different app than the suite models', async () => {
+    withState({ knownPages: ['https://acme.test/', 'https://acme.test/products'] });
+    const res = await app.inject({
+      method: 'POST', url: '/suites/suite-1/suggest',
+      payload: { pageUrl: 'https://somewhere-else.test/cart' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('PAGE_OFF_MODEL');
+    expect(queueAdd).not.toHaveBeenCalled();
+  });
+
+  it('will not accept a page budget from the caller', async () => {
+    // maxPages is absent from the schema on purpose; passing it must not widen
+    // the crawl. Zod strips unknown keys — this asserts the strip holds.
+    withState({ knownPages: ['https://acme.test/'] });
+    const res = await app.inject({
+      method: 'POST', url: '/suites/suite-1/suggest',
+      payload: { pageUrl: 'https://acme.test/cart', options: { maxPages: 50, maxScenarios: 3 } },
+    });
+    expect(res.statusCode).toBe(202);
+    expect(enqueuedOptions().maxPages).toBe(1);
+  });
+
+  it('runs straight through by default, and honours an explicit checkpoint', async () => {
+    withState({ knownPages: ['https://acme.test/'] });
+    await app.inject({
+      method: 'POST', url: '/suites/suite-1/suggest',
+      payload: { pageUrl: 'https://acme.test/cart' },
+    });
+    expect(enqueuedOptions().planApproval).toBe('auto');
+
+    jest.clearAllMocks();
+    (usageThisMonth as jest.Mock).mockResolvedValue(0);
+    withState({ knownPages: ['https://acme.test/'] });
+    await app.inject({
+      method: 'POST', url: '/suites/suite-1/suggest',
+      payload: { pageUrl: 'https://acme.test/cart', options: { planApproval: 'review' } },
+    });
+    expect(enqueuedOptions().planApproval).toBe('review');
+  });
+
+  it('refuses a second job while one is already running for the suite', async () => {
+    withState({ knownPages: ['https://acme.test/'], running: true });
+    const res = await app.inject({
+      method: 'POST', url: '/suites/suite-1/suggest',
+      payload: { pageUrl: 'https://acme.test/cart' },
+    });
+    expect(res.statusCode).toBe(409);
+    expect(res.json().error).toBe('JOB_ALREADY_RUNNING');
+    expect(queueAdd).not.toHaveBeenCalled();
+  });
+
+  it('applies the same SSRF boundary as analyze', async () => {
+    withState({ knownPages: ['https://acme.test/'] });
+    const res = await app.inject({
+      method: 'POST', url: '/suites/suite-1/suggest',
+      payload: { pageUrl: 'http://169.254.169.254/latest/meta-data/' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('TARGET_NOT_ALLOWED');
+    expect(queueAdd).not.toHaveBeenCalled();
+  });
+
+  it('demands the same authenticated grant as analyze — no shortcut', async () => {
+    // A copied route is exactly where a gate goes missing, so the matrix is
+    // re-asserted here rather than inherited from analyze's tests.
+    withState({ knownPages: ['https://acme.test/'] });
+    const res = await app.inject({
+      method: 'POST', url: '/suites/suite-1/suggest',
+      payload: { pageUrl: 'https://acme.test/cart', scope: 'authenticated' },
+    });
+    expect(res.statusCode).toBe(400);
+    expect(res.json().error).toBe('AUTH_CONSENT_REQUIRED');
+    expect(queueAdd).not.toHaveBeenCalled();
+  });
+
+  it('gates on the tenant token budget before enqueuing', async () => {
+    withState({ knownPages: ['https://acme.test/'], budget: 0 });
+    const res = await app.inject({
+      method: 'POST', url: '/suites/suite-1/suggest',
+      payload: { pageUrl: 'https://acme.test/cart' },
+    });
+    expect(res.statusCode).toBe(402);
+    expect(queueAdd).not.toHaveBeenCalled();
   });
 });

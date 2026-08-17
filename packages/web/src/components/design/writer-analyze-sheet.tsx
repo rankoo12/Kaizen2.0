@@ -114,7 +114,7 @@ function originOf(url: string): string | null {
 }
 
 export function AnalyzeSheet({
-  suites: suiteProp, defaultSuiteId, defaultUrl, role, draft,
+  suites: suiteProp, defaultSuiteId, defaultUrl, role, draft, mode = 'analyze',
   onClose, onStarted, onCreateLoginTest, onSuitesChanged, showToast,
 }: {
   suites: DesignSuite[];
@@ -125,6 +125,13 @@ export function AnalyzeSheet({
   role?: string | null;
   /** Restores a form the user left to go and author a sign-in test. */
   draft?: AnalyzeDraft | null;
+  /**
+   * `suggest` scopes the job to one page. Deliberately this component rather
+   * than a second dialog: the consent wording — throwaway data and signed-in
+   * exploration — is the most carefully-written text in the product and must
+   * exist in exactly one place. Spec: spec-scoped-suggest.md §6
+   */
+  mode?: 'analyze' | 'suggest';
   onClose: () => void;
   onStarted: (suiteId: string, jobId: string) => void;
   /** Hands the current form back so it can be restored, and asks the shell to
@@ -135,13 +142,17 @@ export function AnalyzeSheet({
   onSuitesChanged?: () => void;
   showToast?: (message: string, kind?: string) => void;
 }) {
+  const suggest = mode === 'suggest';
   const [suiteId, setSuiteId] = useState(draft?.suiteId ?? defaultSuiteId ?? suiteProp[0]?.id ?? '');
   const [url, setUrl] = useState(draft?.url ?? defaultUrl ?? '');
   const [brief, setBrief] = useState(draft?.brief ?? '');
   const [consent, setConsent] = useState(draft?.consent ?? false);
   const [maxPages, setMaxPages] = useState(draft?.maxPages ?? 30);
-  const [maxScenarios, setMaxScenarios] = useState(draft?.maxScenarios ?? 6);
-  const [review, setReview] = useState(draft?.review ?? true);
+  const [maxScenarios, setMaxScenarios] = useState(draft?.maxScenarios ?? (mode === 'suggest' ? 3 : 6));
+  // The checkpoint's question — "is this the right thing to attempt?" — is
+  // largely answered by choosing the page, so a scoped job runs straight
+  // through by default. Still exposed under Advanced.
+  const [review, setReview] = useState(draft?.review ?? (mode === 'suggest' ? false : true));
   const [validate, setValidate] = useState(draft?.validate ?? true);
   const [advanced, setAdvanced] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -207,6 +218,27 @@ export function AnalyzeSheet({
     setLoginError(null);
   }, [targetOrigin]);
 
+  /* Does this suite already model the app? Decides the honest time estimate, and
+     the same question the API answers authoritatively when the job is created —
+     asked here only so the user is told BEFORE they commit, not after. */
+  const [knownApp, setKnownApp] = useState<boolean | null>(null);
+  React.useEffect(() => {
+    if (!suggest || !suiteId) { setKnownApp(null); return; }
+    let alive = true;
+    setKnownApp(null);
+    void (async () => {
+      try {
+        const r = await fetch(`/api/proxy/suites/${suiteId}/coverage`);
+        if (!r.ok) { if (alive) setKnownApp(false); return; }
+        const { coverage } = await r.json();
+        if (alive) setKnownApp((coverage?.summary?.total ?? 0) > 0);
+      } catch {
+        if (alive) setKnownApp(false);
+      }
+    })();
+    return () => { alive = false; };
+  }, [suggest, suiteId]);
+
   const chosen = candidates?.find((c) => c.id === loginCaseId) ?? null;
   const currentDraft = (): AnalyzeDraft => ({
     suiteId, url, brief, consent, maxPages, maxScenarios, review, validate,
@@ -253,25 +285,47 @@ export function AnalyzeSheet({
     setError(null);
     setLoginError(null);
     try {
-      const r = await fetch(`/api/proxy/suites/${suiteId}/analyze`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          targetUrl: url.trim(),
-          initBrief: brief.trim() || undefined,
-          allowSyntheticData: consent,
-          // Consent for signed-in exploration travels with the request that acts
-          // on it, never as a saved preference: the API stamps who granted it and
-          // when, and a per-job grant is the only kind that audit can mean.
-          ...(authScope && loginCaseId
-            ? { scope: 'authenticated', loginCaseId, authConsent: true }
-            : {}),
-          options: {
-            maxPages, maxScenarios, includeNegative: true, safeMode: true,
-            validate, planApproval: review ? 'review' : 'auto',
-          },
-        }),
-      });
+      // Consent for signed-in exploration travels with the request that acts on
+      // it, never as a saved preference: the API stamps who granted it and when,
+      // and a per-job grant is the only kind that audit can mean.
+      const authFields = authScope && loginCaseId
+        ? { scope: 'authenticated', loginCaseId, authConsent: true }
+        : {};
+      // The suite's throwaway-data flag is a suite setting, so it is saved the
+      // same way from either mode.
+      if (suggest) {
+        await fetch(`/api/proxy/suites/${suiteId}`, {
+          method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ allowSyntheticData: consent }),
+        }).catch(() => { /* the job still runs; consent simply stays as it was */ });
+      }
+      const r = suggest
+        ? await fetch(`/api/proxy/suites/${suiteId}/suggest`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              pageUrl: url.trim(),
+              ...authFields,
+              options: {
+                maxScenarios, includeNegative: true,
+                validate, planApproval: review ? 'review' : 'auto',
+              },
+            }),
+          })
+        : await fetch(`/api/proxy/suites/${suiteId}/analyze`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              targetUrl: url.trim(),
+              initBrief: brief.trim() || undefined,
+              allowSyntheticData: consent,
+              ...authFields,
+              options: {
+                maxPages, maxScenarios, includeNegative: true, safeMode: true,
+                validate, planApproval: review ? 'review' : 'auto',
+              },
+            }),
+          });
       const body = await r.json().catch(() => ({}));
       if (!r.ok) {
         const copy = loginErrorCopy(
@@ -290,6 +344,12 @@ export function AnalyzeSheet({
       // Secret scrubbing happens server-side on intake; surface what was removed
       // so the user knows their paste was handled, not silently swallowed.
       (body.warnings ?? []).forEach((w: string) => showToast?.(w, 'info'));
+      // A suggestion against a suite with no model is an analyze, and the user
+      // was told to expect a minute. Say so rather than letting them discover a
+      // full crawl by watching the clock.
+      if (suggest && body.mode === 'analyze') {
+        showToast?.('Kaizen hasn’t explored this app yet — running a full analysis first', 'info');
+      }
       onStarted(suiteId, body.jobId);
     } catch {
       setError('Could not reach Kaizen. Try again in a moment.');
@@ -298,16 +358,34 @@ export function AnalyzeSheet({
   }
 
   return (
-    <Sheet title="Analyze an app" onClose={onClose} width={580} footer={<>
+    <Sheet title={suggest ? 'Suggest tests for this page' : 'Analyze an app'}
+      onClose={onClose} width={580} footer={<>
       <button className="btn lg" onClick={onClose}>Cancel</button>
       <button className="btn lg pri" disabled={!canSubmit} onClick={submit}
         title={authIncomplete ? 'Pick the test that signs in, or turn signed-in exploration off' : undefined}>
-        <I.sparkle size={13} />{busy ? 'Starting…' : 'Start exploring'}
+        <I.sparkle size={13} />
+        {busy ? 'Starting…' : suggest ? 'Suggest tests' : 'Start exploring'}
       </button>
     </>}>
       <div style={{ fontSize: 12.5, color: 'var(--text-2)', lineHeight: 1.55, marginBottom: 14 }}>
-        Kaizen explores it read-only, shows you a test plan, and writes only what you approve.
+        {suggest
+          ? 'Kaizen looks at this one page against what it already knows about your app, and proposes only tests your suite doesn’t already have.'
+          : 'Kaizen explores it read-only, shows you a test plan, and writes only what you approve.'}
       </div>
+
+      {/* What this will actually cost in time, before they commit — a scoped
+          suggestion against an app Kaizen has never seen is a full crawl, and
+          discovering that by watching the clock is a broken promise. */}
+      {suggest && (
+        <div className="card" style={{ padding: '10px 13px', marginBottom: 12,
+          fontSize: 11.5, color: 'var(--text-2)', lineHeight: 1.55 }}>
+          {knownApp === null
+            ? 'Checking what Kaizen already knows about this app…'
+            : knownApp
+              ? 'Kaizen already knows this app, so this takes about a minute: it re-reads this page, then writes and proves what’s missing.'
+              : 'Kaizen hasn’t explored this app yet, so this first run is a full analysis — a few minutes rather than one.'}
+        </div>
+      )}
 
       <div style={{ marginBottom: 12 }}>
         <span className="label" style={{ display: 'block', marginBottom: 5 }}>Suite</span>
@@ -337,7 +415,9 @@ export function AnalyzeSheet({
       </div>
 
       <label style={{ display: 'block', marginBottom: 4 }}>
-        <span className="label" style={{ display: 'block', marginBottom: 5 }}>App URL</span>
+        <span className="label" style={{ display: 'block', marginBottom: 5 }}>
+          {suggest ? 'Page URL' : 'App URL'}
+        </span>
         <input className="field" value={url} onChange={(e) => setUrl(e.target.value)}
           placeholder="https://staging.your-app.com" spellCheck={false}
           style={{ width: '100%', fontSize: 13 }} />
@@ -348,18 +428,25 @@ export function AnalyzeSheet({
           : 'Use a staging URL if you have one. Kaizen never mutates data without your say-so, but proving tests means really running them.'}
       </div>
 
-      <label style={{ display: 'block', marginBottom: 4 }}>
-        <span className="label" style={{ display: 'block', marginBottom: 5 }}>
-          Describe your app — optional, but it makes the plan sharper
-        </span>
-        <textarea className="field" value={brief} onChange={(e) => setBrief(e.target.value)} rows={4}
-          maxLength={8000}
-          placeholder={'What it does, the flows that matter, business rules, what to test hardest.\ne.g. "B2C shop. Checkout is revenue-critical. Coupons ship next week — hit search and cart hard. Never touch /admin."'}
-          style={{ width: '100%', fontSize: 12.5, lineHeight: 1.5, resize: 'vertical', fontFamily: 'inherit' }} />
-      </label>
-      <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 14 }}>
-        Don&apos;t paste credentials — they&apos;re detected and removed.
-      </div>
+      {/* The app description is an analyze-time input: it steers a whole-app plan.
+          A scoped suggestion is already told exactly what to look at, so asking for
+          it again would be a form field that changes nothing. */}
+      {!suggest && (
+        <>
+          <label style={{ display: 'block', marginBottom: 4 }}>
+            <span className="label" style={{ display: 'block', marginBottom: 5 }}>
+              Describe your app — optional, but it makes the plan sharper
+            </span>
+            <textarea className="field" value={brief} onChange={(e) => setBrief(e.target.value)} rows={4}
+              maxLength={8000}
+              placeholder={'What it does, the flows that matter, business rules, what to test hardest.\ne.g. "B2C shop. Checkout is revenue-critical. Coupons ship next week — hit search and cart hard. Never touch /admin."'}
+              style={{ width: '100%', fontSize: 12.5, lineHeight: 1.5, resize: 'vertical', fontFamily: 'inherit' }} />
+          </label>
+          <div style={{ fontSize: 11.5, color: 'var(--text-3)', marginBottom: 14 }}>
+            Don&apos;t paste credentials — they&apos;re detected and removed.
+          </div>
+        </>
+      )}
 
       <div className="card" style={{ padding: '12px 14px', marginBottom: 12 }}>
         <div className="label" style={{ marginBottom: 9 }}>What Kaizen may do on your site</div>
@@ -499,15 +586,20 @@ export function AnalyzeSheet({
       </button>
       {advanced && (
         <div className="rise" style={{ display: 'grid', gap: 10, marginBottom: 12 }}>
-          <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
-            <span className="label" style={{ width: 130 }}>Exploration depth</span>
-            <Seg value={maxPages} onChange={setMaxPages}
-              options={DEPTHS.map((d) => ({ value: d.value, label: `${d.label} ${d.value}` }))} />
-          </div>
+          {/* A scoped job's page budget is one page: itself. Offering a depth
+              control would invite a "suggestion" that quietly crawls the site. */}
+          {!suggest && (
+            <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+              <span className="label" style={{ width: 130 }}>Exploration depth</span>
+              <Seg value={maxPages} onChange={setMaxPages}
+                options={DEPTHS.map((d) => ({ value: d.value, label: `${d.label} ${d.value}` }))} />
+            </div>
+          )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span className="label" style={{ width: 130 }}>Tests to plan</span>
-            <input className="field" type="number" min={1} max={10} value={maxScenarios}
-              onChange={(e) => setMaxScenarios(Math.min(10, Math.max(1, Number(e.target.value) || 1)))}
+            <input className="field" type="number" min={1} max={suggest ? 5 : 10} value={maxScenarios}
+              onChange={(e) => setMaxScenarios(
+                Math.min(suggest ? 5 : 10, Math.max(1, Number(e.target.value) || 1)))}
               style={{ width: 70, fontSize: 12.5 }} />
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
@@ -521,10 +613,12 @@ export function AnalyzeSheet({
         </div>
       )}
 
-      <div style={{ fontSize: 11.5, color: 'var(--text-3)', lineHeight: 1.5, marginTop: 12 }}>
-        Standard depth usually takes 2–5 minutes and well under 50k tokens of your budget.
-        Deep scans can take up to 20 minutes.
-      </div>
+      {!suggest && (
+        <div style={{ fontSize: 11.5, color: 'var(--text-3)', lineHeight: 1.5, marginTop: 12 }}>
+          Standard depth usually takes 2–5 minutes and well under 50k tokens of your budget.
+          Deep scans can take up to 20 minutes.
+        </div>
+      )}
 
       {error && (
         <div style={{ marginTop: 12, fontSize: 12, color: 'var(--fail)', lineHeight: 1.5 }}>{error}</div>

@@ -3,8 +3,11 @@
  * Spec ref: docs/specs/test-writer/spec-test-writer-service.md §5
  *
  *   POST /suites/:suiteId/analyze   — start a recon(+generation) job
+ *   POST /suites/:suiteId/suggest   — scoped generation against ONE page
  *   GET  /testwriter/jobs/:jobId    — job status + report + test plan (UI polls)
  *   GET  /suites/:suiteId/jobs      — job history for a suite
+ *   GET  /suites/:suiteId/coverage  — pages known vs pages an active test touches
+ *   GET  /suites/:suiteId/app-brief — what Kaizen understands about the app
  *
  * All routes require JWT auth. Authenticated scope additionally requires an
  * admin/owner role, a non-impersonated session, an eligible login recipe, and
@@ -45,6 +48,33 @@ const AnalyzeBody = z.object({
     safeMode: z.boolean().default(true),
     validate: z.boolean().default(true),
     planApproval: z.enum(['review', 'auto']).default('review'),
+  }).default({}),
+});
+
+/**
+ * Scoped Suggest — "what am I missing on THIS page?"
+ *
+ * Deliberately not a trimmed AnalyzeBody: `maxPages` is absent because a scoped
+ * job's page budget is 1 by definition, and accepting the field would invite a
+ * "suggestion" that quietly crawls the whole site.
+ * Spec: docs/specs/test-writer/spec-scoped-suggest.md §3.1
+ */
+const SuggestBody = z.object({
+  pageUrl: z.string().url(),
+  scope: z.enum(['public', 'authenticated']).default('public'),
+  loginCaseId: z.string().uuid().optional(),
+  authConsent: z.boolean().default(false),
+  options: z.object({
+    maxScenarios: z.number().int().min(1).max(5).default(3),
+    includeNegative: z.boolean().default(true),
+    validate: z.boolean().default(true),
+    // Defaults to 'auto', unlike analyze. The checkpoint gates blast radius and
+    // spend before irreversible work; a scoped job is one page and at most five
+    // scenarios, and the user answered "is this worth attempting" by choosing
+    // the page. Synthetic-data consent still governs anything that writes, and
+    // the delivery still gates what joins the suite. Exposed, so a tenant that
+    // wants the checkpoint keeps it. Spec §2.5
+    planApproval: z.enum(['review', 'auto']).default('auto'),
   }).default({}),
 });
 
@@ -310,6 +340,182 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
     });
 
     return reply.status(202).send({ jobId, status: 'queued', warnings: briefWarnings });
+  });
+
+  // ── POST /suites/:suiteId/suggest ──────────────────────────────────────────
+  /**
+   * Scoped generation against one page, reusing the site model the suite
+   * already has. The cheap, repeatable, in-the-flow half of the product: the
+   * only way accumulated knowledge pays off between full analyses.
+   *
+   * NOT a second pipeline. It is the same job, the same gate stack, the same
+   * judge and the same proving runs, with a one-page budget and a focused PLAN.
+   * A test proposed here carries identical evidence to one from an analyze —
+   * there is no quick mode that lowers the bar, because two code paths that
+   * both write tests will drift and the one used more often will drift further
+   * from the one that was audited.
+   * Spec: docs/specs/test-writer/spec-scoped-suggest.md
+   */
+  app.post('/suites/:suiteId/suggest', { preHandler: [requireAuth] }, async (request, reply) => {
+    const { suiteId } = request.params as { suiteId: string };
+    const parsed = SuggestBody.safeParse(request.body ?? {});
+    if (!parsed.success) {
+      return reply.status(400).send({ error: 'INVALID_REQUEST', details: parsed.error.issues });
+    }
+    const body = parsed.data;
+    const { tenantId } = request;
+
+    // Same SSRF boundary as analyze — a scoped job fetches from inside our
+    // network exactly like a full one.
+    const blockedTarget = blockedDestinationReason(body.pageUrl);
+    if (blockedTarget) {
+      return reply.status(400).send({
+        error: 'TARGET_NOT_ALLOWED',
+        message: `Kaizen will not analyze a ${blockedTarget} address. Point it at a reachable public URL for the app you want tested.`,
+      });
+    }
+
+    // The authenticated grant is the SAME grant, checked by the same helpers.
+    // Suggest gets no shortcut into a customer's signed-in system.
+    if (body.scope === 'authenticated') {
+      if (!body.loginCaseId || !body.authConsent) {
+        return reply.status(400).send({
+          error: 'AUTH_CONSENT_REQUIRED',
+          message: 'Signed-in analysis needs a sign-in test and your explicit consent.',
+        });
+      }
+      if (request.role !== 'admin' && request.role !== 'owner') {
+        return reply.status(403).send({
+          error: 'AUTH_SCOPE_REQUIRES_ADMIN',
+          message: 'Signed-in exploration can only be enabled by a workspace admin or owner.',
+        });
+      }
+      if (request.isImpersonation) {
+        return reply.status(403).send({
+          error: 'AUTH_SCOPE_NOT_VIA_IMPERSONATION',
+          message: "Signed-in exploration can't be enabled from a support session.",
+        });
+      }
+      const eligibility = await checkLoginCase(tenantId, body.loginCaseId, body.pageUrl);
+      if (eligibility) return reply.status(400).send(eligibility);
+    }
+
+    const suiteExists = await withTenantTransaction(tenantId, async (client) => {
+      const { rows } = await client.query(
+        `SELECT id FROM test_suites WHERE id = $1 AND tenant_id = $2`, [suiteId, tenantId]);
+      return rows.length > 0;
+    });
+    if (!suiteExists) return reply.status(404).send({ error: 'SUITE_NOT_FOUND' });
+
+    // One at a time keeps the site model coherent. The UI has enforced this for
+    // analyze by hiding the button; Suggest is a one-click action in the middle
+    // of authoring, so the API has to mean it.
+    const { rows: running } = await getPool().query<{ id: string }>(
+      `SELECT id FROM generation_jobs
+        WHERE tenant_id = $1 AND suite_id = $2
+          AND status IN ('queued', 'running', 'awaiting_plan_approval')
+        LIMIT 1`,
+      [tenantId, suiteId],
+    );
+    if (running[0]) {
+      return reply.status(409).send({
+        error: 'JOB_ALREADY_RUNNING',
+        message: 'An analysis is already running for this suite. One at a time keeps the site knowledge coherent.',
+        jobId: running[0].id,
+      });
+    }
+
+    const { rows: budgetRows } = await getPool().query<{ llm_budget_tokens_monthly: string }>(
+      `SELECT llm_budget_tokens_monthly FROM tenants WHERE id = $1`, [tenantId]);
+    const budget = Number(budgetRows[0]?.llm_budget_tokens_monthly ?? 0);
+    if (budget <= 0) {
+      return reply.status(402).send({
+        error: 'INSUFFICIENT_TOKENS',
+        message: 'This account has no LLM tokens allocated. Contact the workspace owner.',
+      });
+    }
+    const used = await usageThisMonth(tenantId);
+    if (used >= budget) {
+      return reply.status(402).send({
+        error: 'TOKEN_LIMIT_REACHED',
+        message: `Token limit reached (${budget.toLocaleString()}). Used ${used.toLocaleString()} this month.`,
+        used, budget,
+      });
+    }
+
+    // Does this suite know the app yet? Recon-first is non-negotiable, so with
+    // no model this becomes a full analyze — and the caller is TOLD, because a
+    // "suggestion" that silently turns into a three-minute thirty-page crawl is
+    // a broken promise about both time and spend. Spec §2.2
+    const pageOrigin = resolveCanonicalOrigin(body.pageUrl);
+    const known = await withTenantTransaction(tenantId, async (client) => {
+      const { rows } = await client.query<{ url_normalized: string }>(
+        `SELECT url_normalized FROM site_pages WHERE tenant_id = $1 AND suite_id = $2`,
+        [tenantId, suiteId],
+      );
+      return rows.map((r) => r.url_normalized);
+    });
+    const sameOrigin = known.filter((u) => resolveCanonicalOrigin(u) === pageOrigin);
+
+    // Knowledge of a DIFFERENT app is not knowledge of this one. Suggesting
+    // against a stranger inside a suite that models something else produces
+    // grounded-looking nonsense; the honest answer is "analyze that app first".
+    if (known.length > 0 && sameOrigin.length === 0) {
+      return reply.status(400).send({
+        error: 'PAGE_OFF_MODEL',
+        message: 'This suite models a different app. Run a full analysis on this site first.',
+      });
+    }
+
+    const scoped = sameOrigin.length > 0;
+    const options = {
+      // A scoped job's budget is one page: itself. It is re-captured rather
+      // than read from the model so a page that changed since the last crawl
+      // cannot ground WRITE on elements that no longer exist — which would
+      // surface as "referenced an element the crawl never saw" when the truth
+      // is "your page changed". One page-load, no tokens. Spec §2.1
+      maxPages: scoped ? 1 : 30,
+      maxScenarios: body.options.maxScenarios,
+      includeNegative: body.options.includeNegative,
+      safeMode: true,
+      validate: body.options.validate,
+      planApproval: body.options.planApproval,
+      ...(scoped ? { focusUrl: body.pageUrl } : {}),
+      mode: 'suggest' as const,
+    };
+
+    const isAuth = body.scope === 'authenticated';
+    const { rows } = await getPool().query<{ id: string }>(
+      `INSERT INTO generation_jobs (
+         tenant_id, suite_id, target_url, scope, auth_consent, login_case_id,
+         auth_consented_by, auth_consented_at, options)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+       RETURNING id`,
+      [tenantId, suiteId, body.pageUrl, body.scope, body.authConsent,
+        body.loginCaseId ?? null,
+        isAuth ? request.userId : null,
+        isAuth ? new Date() : null,
+        JSON.stringify(options)],
+    );
+    const jobId = rows[0].id;
+
+    await queue.add('testwriter', {
+      jobId,
+      tenantId,
+      suiteId,
+      targetUrl: body.pageUrl,
+      scope: body.scope,
+      loginCaseId: body.loginCaseId,
+      authConsent: body.authConsent,
+      options,
+    });
+
+    return reply.status(202).send({
+      jobId,
+      status: 'queued',
+      mode: scoped ? 'scoped' : 'analyze',
+      warnings: [],
+    });
   });
 
   // ── POST /testwriter/jobs/:jobId/plan-approval ─────────────────────────────

@@ -111,7 +111,7 @@ function StepEditor({ steps, setSteps }: { steps: string[]; setSteps: (s: string
   );
 }
 
-export function AuthorScreen({ suites, defaultSuiteId, editCaseId, template, onBack, onCreated, onSuitesChanged, showToast }: {
+export function AuthorScreen({ suites, defaultSuiteId, editCaseId, template, onBack, onCreated, onSuitesChanged, onSuggest, showToast }: {
   suites: DesignSuite[];
   defaultSuiteId?: string | null;
   /** When set, the screen edits that test instead of creating a new one. */
@@ -122,6 +122,8 @@ export function AuthorScreen({ suites, defaultSuiteId, editCaseId, template, onB
   /** Called with the new case id, and the run id when the run was enqueued. */
   onCreated: (caseId: string, runId: string | null) => void;
   onSuitesChanged: () => void;
+  /** Opens the scoped-suggestion dialog for the page being authored against. */
+  onSuggest?: (suiteId: string, pageUrl: string) => void;
   showToast: (msg: string, kind?: string) => void;
 }) {
   const seed = editCaseId ? null : template;
@@ -242,6 +244,18 @@ export function AuthorScreen({ suites, defaultSuiteId, editCaseId, template, onB
         sub={editCaseId
           ? 'Editing the steps. Run history and learned selectors are kept.'
           : 'Write it in English — Kaizen finds the elements at run time'}>
+        {/* The in-the-flow half of the product: the user is already looking at a
+            page, and this asks what the suite is missing on it. Needs a suite to
+            attach to and a real URL to look at, so it waits for both. */}
+        {onSuggest && (
+          <button className="btn" disabled={!suiteId || !/^https?:\/\/.+\..+/i.test(url.trim())}
+            title={/^https?:\/\/.+\..+/i.test(url.trim())
+              ? 'Ask Kaizen what this page is missing'
+              : 'Enter the page URL first'}
+            onClick={() => onSuggest(suiteId, url.trim())}>
+            <I.sparkle size={12} />Suggest tests
+          </button>
+        )}
         <button className="btn" onClick={onBack}>Cancel</button>
         <button className="btn" onClick={() => save(false)} disabled={!!busy}>
           {busy === 'save' ? <span className="spinner" style={{ width: 11, height: 11 }} /> : null}Save
