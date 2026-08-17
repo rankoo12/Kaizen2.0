@@ -8,10 +8,11 @@ Owner: Test Writer workstream
 Updated: 2026-08-17 — Decision 5 corrected (the runtime role is a superuser, not
 merely the table owner; FORCE RLS alone closes nothing). Migration numbers shift
 by one: 036 is now the standalone RLS enablement that shipped ahead of this spec.
-Migrations: **037_app_entity.sql** + **038_app_entity_cutover.sql** (+039 optional
-shadow purge). **Renumbered twice**: from the assessment doc's "035/036" because
-validation-trust took 035, and again because `036_force_rls.sql` took 036 when
-the RLS half was split out and shipped first. The FORCE statements listed in §1
+Migrations: **the next two free numbers when this is built**, plus an optional
+shadow purge after them. Deliberately not pinned any more: these were "035/036",
+then "036/037", then "037/038" as validation-trust, `036_force_rls.sql` and
+`037_shared_brain_rls.sql` each shipped ahead of them. Reserving numbers for
+unbuilt work causes a renumber every time something real lands first. The FORCE statements listed in §1
 are already applied by 036 for the five tables that existed then; 037 adds them
 for `apps` and `app_origins` only.
 
@@ -41,7 +42,7 @@ deployment silently lacks (verified live: `relforcerowsecurity = f` on every
 tenant table; isolation currently rests solely on query-level `tenant_id`
 predicates).
 
-## 1. Schema — migration 037_app_entity.sql
+## 1. Schema — the app-entity migration
 
 One transaction, additive, safe with old suite-keyed code still deployed (legacy
 `UNIQUE (tenant_id, suite_id, url_normalized)` retained until 037).
@@ -126,7 +127,7 @@ test (ports, IDN, schemes, `_` hosts). Ordered steps:
 7. `app_briefs.app_id` via `generation_job_id → generation_jobs.app_id`; `scope` from the job.
 8. `test_suites.app_id` = most recent generation job's `app_id`; NULL for never-analyzed suites.
 
-### 038_app_entity_cutover.sql (after live verification)
+### The cutover migration (after live verification)
 
 Drop legacy `site_pages_tenant_id_suite_id_url_normalized_key`; renumber
 colliding backfilled `(tenant, app, version)` briefs by `created_at`, then

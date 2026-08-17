@@ -1,8 +1,9 @@
 # Runbook — moving the runtime off the superuser
 
 Created: 2026-08-17
-Status: **role provisioning is built and proven; the connection-string switch is
-BLOCKED on two design problems and ~57 query conversions (§3). Do not flip it yet.**
+Status: **role provisioning is built and proven; the shared-brain policy is
+fixed (037). The connection-string switch is still BLOCKED on the API-key lookup
+and ~57 query conversions (§3). Do not flip it yet.**
 Spec: `docs/specs/test-writer/spec-app-entity.md` §5 (Decision 5, corrected)
 
 ---
@@ -70,7 +71,7 @@ work: **`FORCE` is only about the table's owner. For any non-owner role, plain
 5 tables — it activates all **18** that have RLS enabled, including `runs`,
 `test_cases`, `test_suites`, `step_results`, `run_events` and `selector_cache`.
 
-Three distinct pieces of work follow:
+Three distinct pieces of work follow. **(c) is done; (a) and (b) remain.**
 
 **a. ~57 bare-pool queries, across 19 files, must move inside a tenant
 transaction.** Counted by file:
@@ -93,23 +94,41 @@ looks a key up *in order to discover which tenant it belongs to*. Under RLS that
 lookup cannot succeed. It needs either a policy exception for that table or a
 `SECURITY DEFINER` lookup function. This is a design decision, not a conversion.
 
-**c. `selector_cache` would silently lose the global brain.** Its policy is the
-same tenant-equality predicate, but shared rows are stored with
-`tenant_id IS NULL`, and `NULL = anything` is never true. Under a non-owner role
-those rows become invisible — the cross-tenant cache that produces Kaizen's
-`firstRunTokens: 97 → lastRunTokens: 0` claim would quietly stop being read.
-It needs a policy that admits shared rows explicitly, e.g.
-`tenant_id = current_setting(...)::uuid OR (tenant_id IS NULL AND is_shared)`.
+**c. ~~`selector_cache` would silently lose the global brain.~~ FIXED —
+migration 037.** Its policy was the same tenant-equality predicate, but shared
+rows are stored with `tenant_id IS NULL`, and `NULL = anything` is never true, so
+every shared row failed the check. Under a non-owner role the cross-tenant cache
+behind `firstRunTokens: 97 → lastRunTokens: 0` would simply have stopped being
+read — no error, just a collapse in hit rate and a rise in token spend that
+nothing announces.
 
-**(c) is the dangerous one**, because unlike `/runs` it does not fail loudly. It
-degrades cache hit rate and raises token spend, and nothing announces it.
+`037_shared_brain_rls.sql` rewrites the policy to admit shared rows explicitly,
+for reads and for contributions:
+
+```sql
+USING       (tenant_id = current_setting('app.current_tenant_id')::uuid
+             OR (is_shared AND tenant_id IS NULL))
+WITH CHECK  (same)
+```
+
+Proven under the unprivileged role: tenant A sees its own row **and** the shared
+row, and does not see tenant B's; contributing a shared row succeeds; planting a
+row in tenant B's account is refused and does not land. `selector_cache_aliases`
+was deliberately left alone — its `tenant_id` is `NOT NULL` and it has no
+`is_shared` column, so an alias always belongs to one tenant and its policy was
+already correct.
+
+Nothing about *what* is shared changed. Promotion is still gated by
+`tenants.global_brain_opt_in` in `shared-pool.service.ts`, and a shared row still
+carries selectors and attribution, never tenant data. The migration only makes
+the database agree with a sharing decision the product had already made.
 
 ## 4. The order, when it is time
 
 Sequencing matters more than any individual step here: getting it wrong locks
 the product out of its own database.
 
-1. Fix (b) and (c) — the two policy/design problems — and ship them.
+1. Fix (b), the API-key lookup. (c) is already shipped as migration 037.
 2. Convert the ~57 queries (a), in tranches by area, each independently
    shippable and each verifiable by running the affected surface.
 3. `FORCE` the remaining tenant tables (they are already ENABLEd, so this only
