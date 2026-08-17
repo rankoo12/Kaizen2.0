@@ -120,10 +120,29 @@ export function MenuBar({ menus, status }: any) {
   );
 }
 
-export function Sidebar({ active, onNav, counts, onSettings, onLights, onToggle, suites = [], user, activeJobs = [], onOpenJob }: any) {
+export function Sidebar({ active, onNav, counts, onSettings, onLights, onToggle, suites = [], user, activeJobs = [], onOpenJob, onCreateSuite }: any) {
   const [suitesOpen, setSuitesOpen] = uS(true);
+  /* Naming a new suite happens in the list itself. Sending the user to another
+     screen to make one is why there was no way to create a suite from here at
+     all — the only paths were the authoring screen and the analyze dialog. */
+  const [naming, setNaming] = uS(false);
+  const [newName, setNewName] = uS('');
+  const [saving, setSaving] = uS(false);
   /** Suites with a live analysis, so a row can carry a dot without a second scan. */
   const liveSuites = new Set(activeJobs.map((j: any) => j.suiteId));
+
+  async function submitNewSuite() {
+    const name = newName.trim();
+    if (!name || saving) return;
+    setSaving(true);
+    const ok = await onCreateSuite?.(name);
+    setSaving(false);
+    // A failed create keeps the name on screen — retyping it is the last thing a
+    // user whose suite just vanished wants to do.
+    if (ok === false) return;
+    setNewName('');
+    setNaming(false);
+  }
   return (
     <div className="sidebar">
       <div style={{ display: 'flex', alignItems: 'center' }}>
@@ -149,6 +168,12 @@ export function Sidebar({ active, onNav, counts, onSettings, onLights, onToggle,
                   <Ico size={16} />{n.label}
                   {counts[n.id] != null && <span className="side-count">{counts[n.id]}</span>}
                 </button>
+                {isTests && onCreateSuite && (
+                  <button className="btn icon ghost" title="New suite" style={{ width: 20, height: 20, flex: 'none', marginLeft: 2 }}
+                    onClick={() => { setSuitesOpen(true); setNaming(true); }}>
+                    <I.plus size={11} />
+                  </button>
+                )}
                 {isTests && (
                   <button className="btn icon ghost" title={suitesOpen ? 'Hide suites' : 'Show suites'} style={{ width: 20, height: 20, flex: 'none', marginLeft: 2 }}
                     onClick={() => setSuitesOpen(!suitesOpen)}>
@@ -156,6 +181,20 @@ export function Sidebar({ active, onNav, counts, onSettings, onLights, onToggle,
                   </button>
                 )}
               </div>
+              {/* First in the list, where the eye already is after pressing +. */}
+              {isTests && suitesOpen && naming && (
+                <div className="rise" style={{ padding: '2px 8px 2px 26px' }}>
+                  <input className="field" autoFocus value={newName} disabled={saving}
+                    onChange={(e) => setNewName(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === 'Enter') void submitNewSuite();
+                      if (e.key === 'Escape') { setNaming(false); setNewName(''); }
+                    }}
+                    onBlur={() => { if (!newName.trim()) setNaming(false); }}
+                    placeholder="New suite name"
+                    style={{ width: '100%', height: 24, fontSize: 12 }} />
+                </div>
+              )}
               {isTests && suitesOpen && suites.map((s: any) => {
                 const SIco = I[s.icon] || I.suites;
                 return (
