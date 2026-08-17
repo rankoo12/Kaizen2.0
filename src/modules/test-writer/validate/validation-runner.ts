@@ -5,7 +5,8 @@ import { generateFormData } from '../../test-data/generate';
 import type { RunJobPayload } from '../../../queue';
 import type { StepAST } from '../../../types';
 import type { IObservability } from '../../observability/interfaces';
-import type { OracleHarvest, ScenarioRejection } from '../../../types/test-writer';
+import type { Finding, OracleHarvest, ScenarioRejection } from '../../../types/test-writer';
+import { appDefectFinding, sideChannelFinding } from '../findings';
 import type { WrittenScenario } from '../write/scenario-writer';
 import { seedSelectors } from './selector-seeder';
 import { auditRunOracles, planVacuityProbe, type AuditObservation } from './oracle-audit';
@@ -43,6 +44,11 @@ export type ValidationOutcome = {
   harvest: Record<string, OracleHarvest>;
   /** Non-fatal oracle-audit notes per scenario (weak anchors, sign-in doubts). */
   auditFindings: Record<string, string[]>;
+  /**
+   * What this validation phase noticed about the APP rather than about the
+   * tests. Spec: docs/specs/test-writer/spec-findings-and-coverage.md
+   */
+  findings: Finding[];
 };
 
 export class ValidationRunner {
@@ -74,7 +80,9 @@ export class ValidationRunner {
      */
     signinAssertionProves?: boolean;
   }): Promise<ValidationOutcome> {
-    const outcome: ValidationOutcome = { proposed: [], rejected: [], harvest: {}, auditFindings: {} };
+    const outcome: ValidationOutcome = {
+      proposed: [], rejected: [], harvest: {}, auditFindings: {}, findings: [],
+    };
     if (params.scenarios.length === 0) return outcome;
 
     let cursor = 0;
@@ -309,6 +317,18 @@ export class ValidationRunner {
         healed: status === 'healed',
       });
       if (audit.findings.length > 0) outcome.auditFindings[scenario.name] = audit.findings;
+      // The test passed. That does not mean the page was healthy while it did.
+      if (harvest) {
+        const sideChannel = sideChannelFinding({
+          scenarioName: scenario.name,
+          runId,
+          caseId: created.id,
+          finalUrl: harvest.finalUrl,
+          consoleErrorCount: harvest.consoleErrorCount ?? 0,
+          httpErrorCount: harvest.httpErrorCount ?? 0,
+        });
+        if (sideChannel) outcome.findings.push(sideChannel);
+      }
       this.obs.increment('testwriter.scenario_validated', { state: validationState });
     } else {
       await pool.query(
@@ -318,6 +338,26 @@ export class ValidationRunner {
       outcome.rejected.push({
         name: scenario.name, stage: 'validation', reason: verdict.reason, runId,
       });
+      // Everything reaching validation already passed the quality judge. So a
+      // red run here has two possible readings, and the pipeline has only ever
+      // recorded one of them: "our test is wrong". When the failure is
+      // assertion-class — the element was found and the app simply did not do
+      // what the test expected — the other reading is at least as likely, and
+      // it is the one the customer needs. Without this, a scenario that probes
+      // for an injection and goes red BECAUSE THE APP IS VULNERABLE is filed as
+      // Kaizen's mistake and deleted.
+      const failure = await this.firstFailure(runId);
+      if (status === 'failed' && failure
+          && ASSERTION_FAILURE_CLASSES.has(failure.failureClass ?? '')) {
+        outcome.findings.push(appDefectFinding({
+          scenarioName: scenario.name,
+          runId,
+          caseId: created.id,
+          steps: scenario.steps.map((st) => st.text),
+          reason: `It failed at step ${failure.stepIndex + 1}.`,
+        }));
+        this.obs.increment('testwriter.possible_app_defect');
+      }
       this.obs.increment('testwriter.scenario_validation_failed');
     }
   }

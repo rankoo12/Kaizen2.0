@@ -250,6 +250,42 @@ export type OracleHarvest = {
   httpErrorCount?: number;
 };
 
+/**
+ * Something worth telling the customer that is NOT a test.
+ * Spec: docs/specs/test-writer/spec-findings-and-coverage.md §1
+ *
+ * A QA engineer who spends a day on your app and writes no tests has still had a
+ * useful day — they hand you what they found. The pipeline already observes all
+ * of this (broken pages, unlabelled controls, an unverified auth boundary) and
+ * has been discarding it, so a job that proposed nothing returned nothing.
+ */
+export type FindingKind =
+  | 'crawl_error_page'
+  | 'empty_accessible_name'
+  | 'possible_app_defect'
+  | 'unverified_auth_partition'
+  | 'console_or_network_errors'
+  | 'broken_link';
+
+export type Finding = {
+  kind: FindingKind;
+  severity: 'info' | 'low' | 'medium' | 'high';
+  /** Customer-facing and specific. Names what a person recognises. */
+  title: string;
+  /** What and where, carrying the technical precision the title leaves out. */
+  detail: string;
+  /** Enough to reconstruct the observation — never hand-wavy. */
+  evidence: {
+    url?: string;
+    elementRef?: string;
+    runId?: string;
+    /** Lets the UI open the run under its real name rather than a generic one. */
+    caseId?: string;
+    repro?: string[];
+  };
+  source: 'recon' | 'comprehend' | 'validate';
+};
+
 export type ScenarioRejection = {
   name: string;
   stage: 'safety' | 'schema' | 'render' | 'compile' | 'dedup' | 'judge' | 'validation' | 'consent';

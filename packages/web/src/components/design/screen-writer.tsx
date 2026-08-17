@@ -9,7 +9,7 @@ import { Toolbar, Stat, Disclose } from './chrome';
 import { I } from './icons';
 import { useGenerationJob, useSuiteJobs } from './use-generation-job';
 import { ARCHETYPE_SKELETONS } from './writer-catalog';
-import type { GenerationJob, PlannedScenario, ScenarioRejection } from '@/types/api';
+import type { Finding, GenerationJob, PlannedScenario, ScenarioRejection } from '@/types/api';
 
 const { useState, useMemo } = React;
 
@@ -316,6 +316,56 @@ function PlanFace({ job, onApprove, onDiscard, busy, consent, onEnableConsent }:
   );
 }
 
+const SEVERITY_TONE: Record<Finding['severity'], string> = {
+  high: 'var(--fail)', medium: 'var(--warn)', low: 'var(--idle)', info: 'var(--idle)',
+};
+
+/**
+ * What Kaizen found that is not a test.
+ *
+ * This exists because a job that proposes nothing used to render as a blank
+ * shrug, while the pipeline privately held a 500ing page, five unlabelled
+ * buttons and an unverified login boundary. A QA engineer has a good day on a
+ * day like that — they hand you the list.
+ */
+function FindingsSection({ findings, onOpenRun }: {
+  findings: Finding[];
+  onOpenRun: (caseId: string, runId: string) => void;
+}) {
+  if (findings.length === 0) return null;
+  return (
+    <div>
+      <div className="label" style={{ marginBottom: 8 }}>
+        What Kaizen found — {findings.length} {findings.length === 1 ? 'thing' : 'things'} worth your attention
+      </div>
+      <div className="list">
+        {findings.map((f, i) => (
+          <div key={`${f.kind}-${i}`} className="row" style={{ padding: '11px 14px', alignItems: 'flex-start' }}>
+            <div style={{ flex: 1, minWidth: 0 }}>
+              <div className="row-t">{f.title}</div>
+              <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.5, marginTop: 3 }}>
+                {f.detail}
+              </div>
+              {f.evidence.repro && f.evidence.repro.length > 0 && (
+                <Disclose title="Steps to reproduce">
+                  <ol style={{ margin: 0, paddingLeft: 18, fontSize: 11.5, color: 'var(--text-2)', lineHeight: 1.7 }}>
+                    {f.evidence.repro.map((step, j) => <li key={j}>{step}</li>)}
+                  </ol>
+                </Disclose>
+              )}
+            </div>
+            <Chip text={f.severity.toUpperCase()} tone={SEVERITY_TONE[f.severity]} />
+            {f.evidence.runId && (
+              <button className="btn" style={{ flex: 'none' }}
+                onClick={() => onOpenRun(f.evidence.caseId ?? '', f.evidence.runId!)}>See it run</button>
+            )}
+          </div>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 // ─── DELIVERY face ───────────────────────────────────────────────────────────
 
 function DeliveryFace({ job, drafts, onAcceptAll, onAccept, onDismiss, onOpenRun, busy }: {
@@ -335,6 +385,7 @@ function DeliveryFace({ job, drafts, onAcceptAll, onAccept, onDismiss, onOpenRun
   // presented as PROVEN. Only a clean audit on a clean run earns that word.
   const proven = drafts.filter((d) => d.validationState === 'validated');
   const unproven = drafts.filter((d) => d.validationState !== 'validated');
+  const findings = job.report?.findings ?? [];
 
   return (
     <div style={{ display: 'grid', gap: 14 }}>
@@ -418,14 +469,19 @@ function DeliveryFace({ job, drafts, onAcceptAll, onAccept, onDismiss, onOpenRun
       {drafts.length === 0 && (
         <div className="card" style={{ padding: '20px 16px', textAlign: 'center' }}>
           <div style={{ fontSize: 13, fontWeight: 600, marginBottom: 6 }}>
-            Kaizen didn&apos;t propose anything this time
+            {findings.length > 0
+              ? `No tests this time — but Kaizen found ${findings.length} ${findings.length === 1 ? 'thing' : 'things'} worth your attention`
+              : 'Kaizen didn’t propose anything this time'}
           </div>
           <div style={{ fontSize: 12, color: 'var(--text-2)', lineHeight: 1.55 }}>
-            It wrote tests and rejected them rather than propose something weak.
-            The reasons are below — steering notes on a fresh plan usually fix this.
+            {findings.length > 0
+              ? 'It wrote tests and rejected them rather than propose something weak. What it noticed about your app is below.'
+              : 'It wrote tests and rejected them rather than propose something weak. The reasons are below — steering notes on a fresh plan usually fix this.'}
           </div>
         </div>
       )}
+
+      <FindingsSection findings={findings} onOpenRun={onOpenRun} />
 
       {rejected.length > 0 && (
         <div className="card" style={{ padding: '0 16px' }}>

@@ -83,6 +83,17 @@ export type CrawlReport = {
   /** URLs discovered but not visited because the page budget was exhausted. */
   urlsSkippedByBudget: number;
   /**
+   * Pages that answered 4xx/5xx or would not load at all. Recorded rather than
+   * merely skipped: a site that is broken and a site that is small look
+   * identical from a page count alone.
+   * Spec: docs/specs/test-writer/spec-findings-and-coverage.md
+   */
+  errorPages: Array<{
+    url: string; status: number | null; reason: string;
+    /** The page whose link led here. Null for the crawl root. */
+    linkedFrom?: string | null;
+  }>;
+  /**
    * Signed-in exploration outcome. Present only on authenticated jobs; the
    * shape lives in recon/crawler.ts (AuthCrawlReport) and is mirrored into
    * generation_jobs.report.auth.
