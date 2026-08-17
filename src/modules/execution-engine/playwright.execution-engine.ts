@@ -298,6 +298,42 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
     }
   }
 
+  /**
+   * "Visible" the way a person means it, not the way the DOM does.
+   *
+   * Playwright's isVisible is: non-empty box, not display:none, not
+   * visibility:hidden. That passes an off-canvas drawer's links (translated
+   * -300px, aria-hidden="true") — saucedemo's closed menu — so "verify the
+   * Logout link is visible" held BEFORE the menu was opened, and the vacuity
+   * probe rightly threw the test out. The engine's semantics were the bug, not
+   * the test. On top of Playwright's check: not inside an aria-hidden subtree,
+   * not fully off the page horizontally, not opacity 0 anywhere up the chain.
+   * Below-the-fold content stays visible — a user scrolls to it; a drawer at
+   * x = -300 is not something a user can scroll to.
+   */
+  private async isPerceptible(page: PlaywrightPageLike, selector: string): Promise<boolean> {
+    const basic = await page.isVisible(selector).catch(() => false);
+    if (!basic) return false;
+    try {
+      const perceptible = await page.$eval(selector, (el: Element) => {
+        if (el.closest('[aria-hidden="true"]')) return false;
+        const r = el.getBoundingClientRect();
+        const vw = window.innerWidth || document.documentElement.clientWidth;
+        if (r.width > 0 && (r.right <= 0 || r.left >= vw)) return false;
+        let e: Element | null = el;
+        for (let depth = 0; e && depth < 40; depth++, e = e.parentElement) {
+          if (getComputedStyle(e).opacity === '0') return false;
+        }
+        return true;
+      });
+      // Only an explicit false overrides Playwright; anything else means the
+      // probe could not run in this page and Playwright's answer stands.
+      return perceptible !== false;
+    } catch {
+      return true;
+    }
+  }
+
   private async executeAssertNotVisible(
     step: StepAST,
     selectorSet: SelectorSet,
@@ -320,7 +356,7 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
       .toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP.has(w));
 
     for (const entry of selectorSet.selectors) {
-      const visible = await page.isVisible(entry.selector).catch(() => false);
+      const visible = await this.isPerceptible(page, entry.selector);
       if (!visible) continue;
       const descriptor = (await page.$eval(entry.selector, (el: Element) => {
         const e = el as HTMLElement;
@@ -516,7 +552,7 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
       }
 
       case 'assert_visible': {
-        const visible = await page.isVisible(selector);
+        const visible = await this.isPerceptible(page, selector);
         if (!visible) throw new Error(`Element not visible: ${selector}`);
         break;
       }

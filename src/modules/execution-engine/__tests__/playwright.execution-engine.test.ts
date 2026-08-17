@@ -338,10 +338,20 @@ describe('PlaywrightExecutionEngine', () => {
 
     it('passes when the element is visible', async () => {
       mockPage.isVisible.mockResolvedValueOnce(true);
+      mockPage.$eval.mockResolvedValueOnce(true); // perceptibility probe: on-page, not aria-hidden
 
       const result = await engine.executeStep(assertStep, selectorSet, mockPage);
 
       expect(result.status).toBe('passed');
+    });
+
+    // An off-canvas drawer's links are "visible" to Playwright (non-empty box,
+    // no display:none) while sitting at x = -300 under aria-hidden="true". A
+    // person cannot see them, and neither may an assertion.
+    it('fails when Playwright says visible but the element is off-page or aria-hidden', async () => {
+      mockPage.isVisible.mockResolvedValueOnce(true);
+      mockPage.$eval.mockResolvedValueOnce(false); // perceptibility probe says no
+      await expect(engine.executeStep(assertStep, selectorSet, mockPage)).rejects.toThrow(/not visible/);
     });
 
     it('throws when the element is not visible', async () => {
@@ -574,14 +584,21 @@ describe('PlaywrightExecutionEngine', () => {
       mockPage.isVisible.mockResolvedValueOnce(false);
       expect((await engine.executeStep(mkStep('assert_not_visible'), oneSelector('#gone'), mockPage)).status).toBe('passed');
     });
+    it('assert_not_visible passes when the element is only "visible" off-canvas / aria-hidden', async () => {
+      mockPage.isVisible.mockResolvedValueOnce(true);
+      mockPage.$eval.mockResolvedValueOnce(false); // perceptibility probe: not something a person can see
+      expect((await engine.executeStep(mkStep('assert_not_visible'), oneSelector('#drawer-link'), mockPage)).status).toBe('passed');
+    });
     it('assert_not_visible throws when a genuinely-matching element is visible', async () => {
       mockPage.isVisible.mockResolvedValueOnce(true);
+      mockPage.$eval.mockResolvedValueOnce(true); // perceptibility probe
       mockPage.$eval.mockResolvedValueOnce('input text the thing placeholder'); // descriptor contains "thing"
       await expect(engine.executeStep(mkStep('assert_not_visible'), oneSelector('#here'), mockPage)).rejects.toThrow(/assert_not_visible failed/);
     });
 
     it('assert_not_visible passes when the visible resolved element does NOT match the target (resolver stretched)', async () => {
       mockPage.isVisible.mockResolvedValueOnce(true);
+      mockPage.$eval.mockResolvedValueOnce(true); // perceptibility probe
       mockPage.$eval.mockResolvedValueOnce('button enable'); // no "thing" → unrelated pick → target absent
       expect((await engine.executeStep(mkStep('assert_not_visible'), oneSelector('#enable'), mockPage)).status).toBe('passed');
     });
