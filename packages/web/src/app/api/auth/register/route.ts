@@ -6,6 +6,7 @@ import {
   ACCESS_COOKIE_OPTIONS,
   REFRESH_COOKIE_OPTIONS,
 } from '@/lib/cookies';
+import { claimsFromAccessToken } from '@/lib/session-claims';
 
 const API_URL = process.env.KAIZEN_API_URL ?? 'http://localhost:3000';
 
@@ -49,5 +50,9 @@ export async function POST(request: Request) {
   cookieStore.set(ACCESS_COOKIE, accessToken, ACCESS_COOKIE_OPTIONS);
   cookieStore.set(REFRESH_COOKIE, refreshToken, REFRESH_COOKIE_OPTIONS);
 
-  return NextResponse.json({ user, tenantId: tenant.id }, { status: 201 });
+  // A registering user owns the tenant they just created; read it from the token
+  // rather than assuming, so all four session routes answer the same way.
+  const { role } = claimsFromAccessToken(accessToken);
+
+  return NextResponse.json({ user, tenantId: tenant.id, role }, { status: 201 });
 }

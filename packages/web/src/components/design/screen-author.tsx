@@ -111,21 +111,24 @@ function StepEditor({ steps, setSteps }: { steps: string[]; setSteps: (s: string
   );
 }
 
-export function AuthorScreen({ suites, defaultSuiteId, editCaseId, onBack, onCreated, onSuitesChanged, showToast }: {
+export function AuthorScreen({ suites, defaultSuiteId, editCaseId, template, onBack, onCreated, onSuitesChanged, showToast }: {
   suites: DesignSuite[];
   defaultSuiteId?: string | null;
   /** When set, the screen edits that test instead of creating a new one. */
   editCaseId?: string | null;
+  /** Prefill for a new test — a starting shape, fully editable. Ignored in edit mode. */
+  template?: { name: string; url: string; steps: string[] } | null;
   onBack: () => void;
   /** Called with the new case id, and the run id when the run was enqueued. */
   onCreated: (caseId: string, runId: string | null) => void;
   onSuitesChanged: () => void;
   showToast: (msg: string, kind?: string) => void;
 }) {
-  const [name, setName] = uSa('');
-  const [url, setUrl] = uSa('https://');
+  const seed = editCaseId ? null : template;
+  const [name, setName] = uSa(seed?.name ?? '');
+  const [url, setUrl] = uSa(seed?.url || 'https://');
   const [suiteId, setSuiteId] = uSa(defaultSuiteId || suites[0]?.id || '');
-  const [steps, setSteps] = uSa<string[]>(['navigate to https://']);
+  const [steps, setSteps] = uSa<string[]>(seed?.steps ?? ['navigate to https://']);
   const [busy, setBusy] = uSa<null | 'save' | 'run'>(null);
   const [newSuite, setNewSuite] = uSa<string | null>(null);
   const [loading, setLoading] = uSa(!!editCaseId);

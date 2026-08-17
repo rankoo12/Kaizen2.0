@@ -379,7 +379,7 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
 
     const job = await withTenantTransaction(tenantId, async (client) => {
       const { rows } = await client.query(
-        `SELECT id, suite_id, target_url, scope, status, options, test_plan, report, error,
+        `SELECT id, suite_id, target_url, scope, login_case_id, status, options, test_plan, report, error,
                 created_at, started_at, finished_at
          FROM generation_jobs WHERE id = $1 AND tenant_id = $2`,
         [jobId, tenantId],
@@ -535,6 +535,7 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
 
 function mapJob(row: {
   id: string; suite_id: string; target_url: string; scope: string; status: string;
+  login_case_id?: string | null;
   options: unknown; test_plan: unknown; report: unknown; error: string | null;
   created_at: Date; started_at: Date | null; finished_at: Date | null;
 }) {
@@ -543,6 +544,9 @@ function mapJob(row: {
     suiteId: row.suite_id,
     targetUrl: row.target_url,
     scope: row.scope,
+    // The recipe that was used, so a job blocked on sign-in can point at the test
+    // that needs fixing rather than leaving the user to guess which one it was.
+    loginCaseId: row.login_case_id ?? null,
     status: row.status,
     options: row.options,
     testPlan: row.test_plan,

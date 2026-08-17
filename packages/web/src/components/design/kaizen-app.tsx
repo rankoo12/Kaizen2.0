@@ -14,9 +14,12 @@ import { BrainScreen } from './screen-brain';
 import { UsageScreen } from './screen-usage';
 import { WriterScreen } from './screen-writer';
 import { AnalysesScreen } from './screen-analyses';
-import { AnalyzeSheet } from './writer-analyze-sheet';
+import { AnalyzeSheet, type AnalyzeDraft } from './writer-analyze-sheet';
 import { useDesignData, type DesignCase } from './use-design-data';
 import { useAuth } from '@/context/auth-context';
+
+/** Prefill handed to the authoring screen when a new test starts from a template. */
+type AuthorTemplate = { name: string; url: string; steps: string[] };
 
 const { useState, useEffect, useCallback } = React;
 
@@ -36,7 +39,8 @@ const GROUP_KEY = 'kaizen.groupBySuite';
 
 export default function KaizenApp() {
   const { suites, cases, stats, user, refetch } = useDesignData();
-  const { logout } = useAuth();
+  const { logout, user: authUser } = useAuth();
+  const role = authUser?.role ?? null;
   const [screen, setScreen] = useState('tests');
   const [suite, setSuite] = useState<string | null>(null);
   const [focus, setFocus] = useState<Focus | null>(null);
@@ -49,6 +53,10 @@ export default function KaizenApp() {
   /** Which Test Writer job the writer screen is showing. */
   const [writerFocus, setWriterFocus] = useState<{ suiteId: string; jobId: string } | null>(null);
   const [analyzeOpen, setAnalyzeOpen] = useState(false);
+  /** The analyze form, parked while the user goes to author a sign-in test. */
+  const [analyzeDraft, setAnalyzeDraft] = useState<AnalyzeDraft | null>(null);
+  /** Prefill for a brand-new test — currently only the sign-in recipe template. */
+  const [authorTemplate, setAuthorTemplate] = useState<AuthorTemplate | null>(null);
 
   // Appearance + grouping are per-device preferences, so they live in localStorage
   // rather than on the tenant (the API has nowhere to put them).
@@ -93,6 +101,20 @@ export default function KaizenApp() {
     /* The list is fetched once, so coming back from a run you'd just watched finish still
        showed it as RUNNING with the previous run's cost. Re-read on arrival. */
     if (s === 'tests') refetch();
+  };
+
+  /** Leaving the authoring screen returns to the analyze form when one was parked
+   *  there — otherwise the user who went to write a sign-in test would have to
+   *  find their way back to a dialog they had half filled in. */
+  const returnToAnalyze = () => {
+    setAuthorTemplate(null);
+    if (analyzeDraft) {
+      setScreen('tests');
+      setAnalyzeOpen(true);
+      refetch();
+      return;
+    }
+    go('tests', suite);
   };
 
   const showToast = useCallback((message: string, kind = 'info') => {
@@ -296,7 +318,8 @@ export default function KaizenApp() {
         }} />
     ) : screen === 'author' ? (
       <AuthorScreen suites={suites} defaultSuiteId={suite} editCaseId={editing}
-        onBack={() => { setEditing(null); go('tests', suite); }}
+        template={authorTemplate}
+        onBack={() => { setEditing(null); returnToAnalyze(); }}
         onSuitesChanged={refetch} showToast={showToast}
         onCreated={(caseId, runId) => {
           refetch();
@@ -305,6 +328,17 @@ export default function KaizenApp() {
           // so an edited test doesn't land on a run titled "New test".
           const known = cases.find((c) => c.id === caseId)?.name;
           setEditing(null);
+          // A test authored to unblock an analyze sends the user back to that
+          // decision with it already chosen. Watching it run first is the right
+          // instinct and stays one click away — but the analysis was the errand.
+          if (authorTemplate && analyzeDraft) {
+            setAnalyzeDraft({ ...analyzeDraft, loginCaseId: caseId });
+            setAuthorTemplate(null);
+            setAnalyzeOpen(true);
+            setScreen('tests');
+            showToast('Sign-in test created and selected. Worth running it once before you rely on it.', 'info');
+            return;
+          }
           setFocus({ caseId, runId, name: known ?? 'New test' });
           setScreen('run');
         }} />
@@ -340,6 +374,7 @@ export default function KaizenApp() {
             setFocus({ caseId, runId, name: known ?? 'Proving run' });
             setScreen('run');
           }}
+          onOpenCase={editCase}
           onAnalyzeAgain={() => setAnalyzeOpen(true)}
           onCasesChanged={refetch}
           showToast={showToast} />
@@ -388,10 +423,23 @@ export default function KaizenApp() {
       {analyzeOpen && (
         <AnalyzeSheet suites={suites} defaultSuiteId={suite}
           defaultUrl={cases.find((c) => !suite || c.suiteId === suite)?.baseUrl}
-          onClose={() => setAnalyzeOpen(false)}
+          role={role} draft={analyzeDraft}
+          onClose={() => { setAnalyzeOpen(false); setAnalyzeDraft(null); }}
           showToast={showToast}
+          onCreateLoginTest={(draft, template) => {
+            // Park the form, not discard it: the user is leaving mid-decision to
+            // author the prerequisite, and coming back to a blank sheet would
+            // make the flagship feature feel like a maze.
+            setAnalyzeDraft(draft);
+            setAnalyzeOpen(false);
+            setEditing(null);
+            setAuthorTemplate(template);
+            if (draft.suiteId) setSuite(draft.suiteId);
+            setScreen('author');
+          }}
           onStarted={(suiteId, jobId) => {
             setAnalyzeOpen(false);
+            setAnalyzeDraft(null);
             setWriterFocus({ suiteId, jobId });
             setSuite(suiteId);
             setScreen('writer');

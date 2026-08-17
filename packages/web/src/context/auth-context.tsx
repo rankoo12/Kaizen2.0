@@ -17,7 +17,21 @@ export type AuthUser = {
   displayName: string;
   avatarUrl: string | null;
   tenantId: string;
+  /** Membership role in the current tenant, from the access token's claims.
+   *  Presentation only — it decides what a control explains, never what the
+   *  API permits. Null when the token predates this field or could not be read. */
+  role: MembershipRole | null;
 };
+
+/** Mirrors the API's membership roles. */
+export type MembershipRole = 'owner' | 'admin' | 'member' | 'viewer';
+
+/** Grants Kaizen treats as administrative — signed-in exploration among them.
+ *  Written as a positive list rather than a rank comparison, matching the API:
+ *  a rank check would admit an unknown or missing role by accident. */
+export function isWorkspaceAdmin(role: MembershipRole | null | undefined): boolean {
+  return role === 'admin' || role === 'owner';
+}
 
 type AuthContextValue = {
   user: AuthUser | null;
@@ -52,8 +66,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
     fetch('/api/auth/me')
       .then(async (res) => {
         if (res.ok) {
-          const { user: u, tenantId } = await res.json();
-          setUser({ ...u, tenantId });
+          const { user: u, tenantId, role } = await res.json();
+          setUser({ ...u, tenantId, role: role ?? null });
         }
       })
       .catch(() => {
@@ -75,8 +89,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error(data.message ?? 'Something went wrong. Please try again.');
     }
 
-    const { user: u, tenantId } = await res.json();
-    setUser({ ...u, tenantId });
+    const { user: u, tenantId, role } = await res.json();
+    setUser({ ...u, tenantId, role: role ?? null });
   }, []);
 
   const loginAsDemo = useCallback(async () => {
@@ -93,8 +107,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
       throw new Error(data.message ?? 'Could not open the demo. Please try again.');
     }
 
-    const { user: u, tenantId } = await res.json();
-    setUser({ ...u, tenantId });
+    const { user: u, tenantId, role } = await res.json();
+    setUser({ ...u, tenantId, role: role ?? null });
   }, []);
 
   const register = useCallback(
@@ -116,8 +130,8 @@ export function AuthProvider({ children }: { children: React.ReactNode }) {
         throw new Error(data.message ?? 'Something went wrong. Please try again.');
       }
 
-      const { user: u, tenantId } = await res.json();
-      setUser({ ...u, tenantId });
+      const { user: u, tenantId, role } = await res.json();
+      setUser({ ...u, tenantId, role: role ?? null });
     },
     [],
   );

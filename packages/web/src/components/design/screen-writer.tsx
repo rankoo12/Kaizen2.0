@@ -115,12 +115,19 @@ function elapsed(job: GenerationJob): string {
 function ProgressFace({ job }: { job: GenerationJob }) {
   const active = phaseIndex(job);
   const progress = job.report?.progress;
+  const authScope = job.scope === 'authenticated';
+  // An authenticated crawl signs in before the loop starts, so the first page
+  // count IS the evidence that sign-in succeeded. Saying "signed in" before one
+  // arrives would be a claim the job has not yet earned.
+  const signingIn = authScope && progress?.phase === 'recon' && !progress.pagesCrawled;
   // Counts are shown only when the pipeline actually reported them — an invented
   // percentage on a job whose denominator is unknowable would be theater.
   const detail =
-    progress?.phase === 'recon' && progress.pagesCrawled
-      ? `${progress.pagesCrawled} pages so far`
-      : progress?.phase === 'write' && progress.scenariosTotal
+    signingIn
+      ? 'signing in…'
+      : progress?.phase === 'recon' && progress.pagesCrawled
+        ? `${authScope ? 'signed in · ' : ''}${progress.pagesCrawled} pages so far`
+        : progress?.phase === 'write' && progress.scenariosTotal
         ? `${progress.scenariosWritten ?? 0} of ${progress.scenariosTotal} written`
         : progress?.phase === 'validate' && progress.validationRunsTotal
           ? `${progress.validationRunsDone ?? 0} of ${progress.validationRunsTotal} proven`
@@ -386,6 +393,7 @@ function DeliveryFace({ job, drafts, onAcceptAll, onAccept, onDismiss, onOpenRun
   const proven = drafts.filter((d) => d.validationState === 'validated');
   const unproven = drafts.filter((d) => d.validationState !== 'validated');
   const findings = job.report?.findings ?? [];
+  const auth = job.report?.auth ?? null;
 
   return (
     <div style={{ display: 'grid', gap: 14 }}>
@@ -394,7 +402,64 @@ function DeliveryFace({ job, drafts, onAcceptAll, onAccept, onDismiss, onOpenRun
         <Stat label="NEEDS REVIEW" value={unproven.length} sub="see why on each" tone={unproven.length ? 'var(--warn)' : undefined} />
         <Stat label="REJECTED" value={rejected.length} sub="with reasons" />
         <Stat label="PROPOSED" value={validate?.proposed ?? drafts.length} sub="in this delivery" />
+        {auth && (
+          <Stat label="BEHIND SIGN-IN" value={auth.pagesBehindAuth} sub="pages explored"
+            tone="var(--accent)" />
+        )}
       </div>
+
+      {/* What Kaizen did while holding a session. The scariest fact about the
+          feature — a robot signed into my system — becomes the most reassuring
+          one only if everything it touched is on the page. Spec §11.4 */}
+      {auth && (
+        <div className="card" style={{ padding: '0 16px' }}>
+          <Disclose title={`Signed-in exploration — ${auth.signInCount} ${auth.signInCount === 1 ? 'sign-in' : 'sign-ins'}, ${auth.pagesBehindAuth} pages behind the login`}>
+            <div style={{ display: 'grid', gap: 6, fontSize: 11.5, color: 'var(--text-2)', lineHeight: 1.55 }}>
+              <div>
+                Signed in with {auth.loginSteps.passed} of {auth.loginSteps.total} recipe steps passing
+                {auth.sessionVerification
+                  ? `, confirmed by ${auth.sessionVerification === 'assertion+heuristic'
+                      ? 'the recipe’s own assertion' : 'page heuristics'}.`
+                  : ', never confirmed.'}
+              </div>
+              {auth.sessionEndingBlocked > 0 && (
+                <div>
+                  Refused {auth.sessionEndingBlocked} sign-out {auth.sessionEndingBlocked === 1 ? 'link' : 'links'} —
+                  Kaizen never ends the session it was lent.
+                </div>
+              )}
+              {auth.captureSuppressed > 0 && (
+                <div>
+                  {auth.captureSuppressed} sensitive {auth.captureSuppressed === 1 ? 'page was' : 'pages were'} recorded
+                  as address and title only — reading them is itself the exposure.
+                </div>
+              )}
+              {auth.probesSuppressed > 0 && (
+                <div>{auth.probesSuppressed} pages were read without probing controls.</div>
+              )}
+              {auth.reloginCount > 0 && (
+                <div>
+                  The session dropped and was renewed {auth.reloginCount === 1 ? 'once' : `${auth.reloginCount} times`} during exploration.
+                </div>
+              )}
+              {auth.publicPartitionUnverified && (
+                <div style={{ color: 'var(--warn)' }}>
+                  No public analysis has ever run on this suite, so “behind sign-in” is a
+                  conservative default rather than something Kaizen observed. One public run
+                  settles it in both directions.
+                </div>
+              )}
+            </div>
+          </Disclose>
+        </div>
+      )}
+
+      {auth?.endedEarly === 'session_lost' && (
+        <div className="card" style={{ padding: '12px 16px', fontSize: 12, color: 'var(--warn)', lineHeight: 1.55 }}>
+          The session was lost part-way through and could not be restored, so exploration stopped
+          early. What Kaizen saw before that is below — but this is not a complete picture of the app.
+        </div>
+      )}
 
       {proven.length > 0 && (
         <div className="card" style={{ padding: '13px 16px', display: 'flex', alignItems: 'center', gap: 12 }}>
@@ -508,22 +573,45 @@ function DeliveryFace({ job, drafts, onAcceptAll, onAccept, onDismiss, onOpenRun
 
 // ─── HALTED face ─────────────────────────────────────────────────────────────
 
-function HaltedFace({ job, onRetry }: { job: GenerationJob; onRetry: () => void }) {
+function HaltedFace({ job, onRetry, onOpenCase, onOpenRun }: {
+  job: GenerationJob; onRetry: () => void; onOpenCase?: (caseId: string) => void;
+  onOpenRun: (caseId: string, runId: string) => void;
+}) {
   const blocked = job.status === 'blocked';
+  const authBlock = job.report?.auth?.blockedReason ?? null;
+  // A sign-in failure is not an anti-bot wall, and telling a user their site
+  // fought Kaizen off when their login test simply broke sends them to fix the
+  // wrong thing. The remedy is the recipe, so the button goes there.
+  const signInFailed = authBlock === 'login_failed' || authBlock === 'login_challenge';
+  const findings = job.report?.findings ?? [];
   return (
-    <div className="card" style={{ padding: '22px 20px', textAlign: 'center' }}>
-      <div style={{ fontSize: 20, marginBottom: 8 }}>{blocked ? '⃠' : '⚠'}</div>
-      <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
-        {blocked ? 'Kaizen couldn’t get in' : 'The analysis stopped'}
+    <div style={{ display: 'grid', gap: 14 }}>
+      <div className="card" style={{ padding: '22px 20px', textAlign: 'center' }}>
+        <div style={{ fontSize: 20, marginBottom: 8 }}>{blocked ? '⃠' : '⚠'}</div>
+        <div style={{ fontSize: 14, fontWeight: 600, marginBottom: 8 }}>
+          {signInFailed ? 'Kaizen couldn’t sign in'
+            : blocked ? 'Kaizen couldn’t get in' : 'The analysis stopped'}
+        </div>
+        <div style={{ fontSize: 12.5, color: 'var(--text-2)', lineHeight: 1.6, maxWidth: 520, margin: '0 auto' }}>
+          {job.error ?? 'Something broke mid-job.'}
+          {blocked && !signInFailed && ' Kaizen never tries to defeat anti-bot challenges — that’s your site’s call.'}
+          {!blocked && ' Nothing was left half-done: drafts only appear after a green proof.'}
+        </div>
+        <div style={{ display: 'flex', gap: 8, justifyContent: 'center', marginTop: 16 }}>
+          {signInFailed && job.loginCaseId && onOpenCase && (
+            <button className="btn lg" onClick={() => onOpenCase(job.loginCaseId!)}>
+              Open the sign-in test
+            </button>
+          )}
+          <button className="btn lg pri" onClick={onRetry}>
+            <I.sparkle size={13} />Try a different URL
+          </button>
+        </div>
       </div>
-      <div style={{ fontSize: 12.5, color: 'var(--text-2)', lineHeight: 1.6, maxWidth: 520, margin: '0 auto' }}>
-        {job.error ?? 'Something broke mid-job.'}
-        {blocked && ' Kaizen never tries to defeat anti-bot challenges — that’s your site’s call.'}
-        {!blocked && ' Nothing was left half-done: drafts only appear after a green proof.'}
-      </div>
-      <button className="btn lg pri" style={{ marginTop: 16 }} onClick={onRetry}>
-        <I.sparkle size={13} />Try a different URL
-      </button>
+      {/* A job must never return nothing, and the job that stopped early is the
+          one with least to show for the user's spend — so what it DID see has to
+          survive the halt. Spec: spec-findings-and-coverage.md §0, §3.1 */}
+      <FindingsSection findings={findings} onOpenRun={onOpenRun} />
     </div>
   );
 }
@@ -590,12 +678,14 @@ function HistoryStrip({ suiteId, currentJobId, onPick }: {
   );
 }
 
-export function WriterScreen({ suiteId, jobId: initialJobId, suiteName, onBack, onOpenRun, onAnalyzeAgain, showToast, onCasesChanged }: {
+export function WriterScreen({ suiteId, jobId: initialJobId, suiteName, onBack, onOpenRun, onOpenCase, onAnalyzeAgain, showToast, onCasesChanged }: {
   suiteId: string;
   jobId: string;
   suiteName: string;
   onBack: () => void;
   onOpenRun: (caseId: string, runId: string) => void;
+  /** Opens a test in the editor — the way out of a failed sign-in recipe. */
+  onOpenCase?: (caseId: string) => void;
   onAnalyzeAgain: () => void;
   showToast?: (message: string, kind?: string) => void;
   onCasesChanged?: () => void;
@@ -712,7 +802,8 @@ export function WriterScreen({ suiteId, jobId: initialJobId, suiteName, onBack, 
         ? <DeliveryFace job={job} drafts={drafts} busy={busy}
             onAcceptAll={acceptAll} onAccept={accept} onDismiss={dismiss} onOpenRun={onOpenRun} />
         : job.status === 'failed' || job.status === 'blocked'
-          ? <HaltedFace job={job} onRetry={onAnalyzeAgain} />
+          ? <HaltedFace job={job} onRetry={onAnalyzeAgain} onOpenCase={onOpenCase}
+              onOpenRun={onOpenRun} />
           : <ProgressFace job={job} />;
 
   return (
