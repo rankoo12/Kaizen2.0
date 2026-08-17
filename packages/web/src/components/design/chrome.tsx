@@ -4,6 +4,7 @@
    typed on purpose to mirror the design's dynamic patterns. */
 /* eslint-disable @typescript-eslint/no-explicit-any */
 import * as React from 'react';
+import { createPortal } from 'react-dom';
 import { I } from './icons';
 import { NAV, SOURCES, fmt } from './data';
 import { CountUp } from './game';
@@ -259,16 +260,36 @@ export function Sidebar({ active, onNav, counts, onSettings, onLights, onToggle,
   );
 }
 
-export function Menu({ items, onClose, style }: any) {
+/**
+ * `anchor`: the element the menu hangs off. When given, the menu is rendered
+ * into document.body at a fixed position under the anchor's right edge — so a
+ * list whose `.list` container clips overflow (every row list does, for the
+ * rounded corners) can no longer cut the bottom items off. Without an anchor
+ * it stays an absolutely-positioned child, as before, for callers whose parent
+ * does not clip. Any scroll or resize closes it: a fixed menu that stayed put
+ * while its row scrolled away would float over the wrong test.
+ */
+export function Menu({ items, onClose, style, anchor }: any) {
   const ref = uR<HTMLDivElement>(null);
+  const [pos, setPos] = uS<{ top: number; right: number } | null>(null);
   uE(() => {
     const h = (e: MouseEvent) => { if (ref.current && !ref.current.contains(e.target as Node)) onClose(); };
     const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
     const t = setTimeout(() => { document.addEventListener('mousedown', h); document.addEventListener('keydown', k); }, 0);
     return () => { clearTimeout(t); document.removeEventListener('mousedown', h); document.removeEventListener('keydown', k); };
   }, [onClose]);
-  return (
-    <div className="popover" ref={ref} style={{ minWidth: 188, ...style }}>
+  uE(() => {
+    if (!anchor) return;
+    const r = anchor.getBoundingClientRect();
+    setPos({ top: r.bottom + 4, right: Math.max(8, window.innerWidth - r.right) });
+    const close = () => onClose();
+    window.addEventListener('scroll', close, true);
+    window.addEventListener('resize', close);
+    return () => { window.removeEventListener('scroll', close, true); window.removeEventListener('resize', close); };
+  }, [anchor, onClose]);
+  const body = (
+    <div className="popover" ref={ref}
+      style={{ minWidth: 188, ...style, ...(anchor ? { position: 'fixed', top: pos?.top ?? -9999, right: pos?.right ?? 0, left: 'auto' } : {}) }}>
       {items.map((it: any, k: number) => it === '-' ? <div className="menu-sep" key={k} /> : (
         <button className="menu-item" key={k} onClick={() => { onClose(); it.onClick && it.onClick(); }}
           style={it.danger ? { color: 'var(--fail)' } : undefined}>
@@ -278,6 +299,7 @@ export function Menu({ items, onClose, style }: any) {
       ))}
     </div>
   );
+  return anchor && typeof document !== 'undefined' ? createPortal(body, document.body) : body;
 }
 
 export function Sheet({ title, children, footer, onClose, width }: any) {
