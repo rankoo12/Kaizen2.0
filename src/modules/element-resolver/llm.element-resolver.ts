@@ -5,7 +5,7 @@ import type { ILLMGateway } from '../llm-gateway/interfaces';
 import type { IObservability } from '../observability/interfaces';
 import type { ISharedPoolService } from '../shared-pool/interfaces';
 import type { Redis } from 'ioredis';
-import { getPool } from '../../db/pool';
+import { tenantPool, tenantQuery } from '../../db/transaction';
 import { appendOutcome, computeConfidence } from './confidence';
 import { toVectorSQL } from '../../utils/vector';
 import { filterCandidatesByAction } from './action-role-filter';
@@ -457,14 +457,14 @@ export class LLMElementResolver implements IElementResolver {
     }
   }
 
-  async recordSuccess(targetHash: string, domain: string, selectorUsed: string): Promise<void> {
+  async recordSuccess(targetHash: string, domain: string, selectorUsed: string, tenantId?: string): Promise<void> {
     this.observability.increment('resolver.record_success', { domain });
-    await this.updateOutcomeWindow(targetHash, domain, true, selectorUsed);
+    await this.updateOutcomeWindow(targetHash, domain, true, selectorUsed, tenantId);
   }
 
-  async recordFailure(targetHash: string, domain: string, selectorAttempted: string): Promise<void> {
+  async recordFailure(targetHash: string, domain: string, selectorAttempted: string, tenantId?: string): Promise<void> {
     this.observability.increment('resolver.record_failure', { domain });
-    await this.updateOutcomeWindow(targetHash, domain, false, selectorAttempted);
+    await this.updateOutcomeWindow(targetHash, domain, false, selectorAttempted, tenantId);
   }
 
   // ─── Private helpers ───────────────────────────────────────────────────────
@@ -490,7 +490,8 @@ export class LLMElementResolver implements IElementResolver {
       const embedding = await this.llmGateway.generateEmbedding(text);
       const embeddingSQL = toVectorSQL(embedding);
 
-      const { rows } = await getPool().query<{ selectors: SelectorEntry[]; similarity: number }>(
+      const { rows } = await tenantQuery<{ selectors: SelectorEntry[]; similarity: number }>(
+        tenantId,
         `SELECT selectors,
                 1 - (element_embedding <=> $1::vector) AS similarity
          FROM selector_cache
@@ -867,12 +868,12 @@ export class LLMElementResolver implements IElementResolver {
     ];
 
     try {
-      await getPool().query(sql, params);
+      await tenantQuery(context.tenantId, sql, params);
     } catch (firstError: any) {
       if (isTransient(firstError)) {
         this.observability.increment('resolver.cache_write_retry');
         await new Promise((r) => setTimeout(r, 100));
-        await getPool().query(sql, params);
+        await tenantQuery(context.tenantId, sql, params);
       } else {
         throw firstError;
       }
@@ -884,9 +885,17 @@ export class LLMElementResolver implements IElementResolver {
     domain: string,
     success: boolean,
     _selector: string,
+    tenantId?: string,
   ): Promise<void> {
+    // No tenant means no row we can name. Better to skip the bookkeeping than to
+    // run an un-scoped update that, under RLS, updates nothing while looking
+    // like it did — the metric below is what makes that visible.
+    if (!tenantId) {
+      this.observability.increment('resolver.outcome_skipped_no_tenant');
+      return;
+    }
     try {
-      const pool = getPool();
+      const pool = tenantPool(tenantId);
 
       const { rows } = await pool.query<{ outcome_window: boolean[] }>(
         `SELECT outcome_window FROM selector_cache

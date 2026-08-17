@@ -17,6 +17,8 @@ const mockConnect = jest.fn();
 jest.mock('../../../db/pool', () => ({
   getPool: () => ({ query: mockQuery, connect: mockConnect }),
 }));
+// Tenant helpers route to the pool mock above — see src/db/__mocks__/transaction.ts
+jest.mock('../../../db/transaction');
 
 function makeService() {
   return new TenantService();

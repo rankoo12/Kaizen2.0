@@ -63,11 +63,11 @@ export class CompositeElementResolver implements IElementResolver {
     }
   }
 
-  async recordSuccess(contentHash: string, domain: string, selectorUsed: string): Promise<void> {
-    await Promise.all(this.resolvers.map((r) => r.recordSuccess(contentHash, domain, selectorUsed)));
+  async recordSuccess(contentHash: string, domain: string, selectorUsed: string, tenantId?: string): Promise<void> {
+    await Promise.all(this.resolvers.map((r) => r.recordSuccess(contentHash, domain, selectorUsed, tenantId)));
   }
 
-  async recordFailure(contentHash: string, domain: string, selectorAttempted: string): Promise<void> {
-    await Promise.all(this.resolvers.map((r) => r.recordFailure(contentHash, domain, selectorAttempted)));
+  async recordFailure(contentHash: string, domain: string, selectorAttempted: string, tenantId?: string): Promise<void> {
+    await Promise.all(this.resolvers.map((r) => r.recordFailure(contentHash, domain, selectorAttempted, tenantId)));
   }
 }

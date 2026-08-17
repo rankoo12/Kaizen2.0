@@ -1,6 +1,6 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
-import { getPool } from '../../db/pool';
+import { tenantQuery } from '../../db/transaction';
 import { generateRawKey, hashKey, requireApiKey, requireScope, requireAuth } from '../middleware/auth';
 import { AuthService } from '../../modules/identity/auth.service';
 import { UserService } from '../../modules/identity/user.service';
@@ -244,7 +244,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
       const keyPrefix = rawKey.slice(0, 18);
       const { scope, description, expiresAt } = body.data;
 
-      const { rows } = await getPool().query<{ id: string; created_at: Date }>(
+      const { rows } = await tenantQuery<{ id: string; created_at: Date }>(
+        request.tenantId,
         `INSERT INTO api_keys (tenant_id, key_hash, key_prefix, scope, description, expires_at)
          VALUES ($1, $2, $3, $4, $5, $6) RETURNING id, created_at`,
         [request.tenantId, keyHash, keyPrefix, scope, description ?? null, expiresAt ?? null],
@@ -260,7 +261,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     '/auth/keys',
     { preHandler: [requireApiKey, requireScope('admin')] },
     async (request, reply) => {
-      const { rows } = await getPool().query(
+      const { rows } = await tenantQuery(
+        request.tenantId,
         `SELECT id, key_prefix, scope, description, expires_at, last_used_at, created_at
          FROM api_keys WHERE tenant_id = $1 ORDER BY created_at DESC`,
         [request.tenantId],
@@ -274,7 +276,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
     { preHandler: [requireApiKey, requireScope('admin')] },
     async (request, reply) => {
       const { id } = request.params as { id: string };
-      const { rowCount } = await getPool().query(
+      const { rowCount } = await tenantQuery(
+        request.tenantId,
         `DELETE FROM api_keys WHERE id = $1 AND tenant_id = $2`,
         [id, request.tenantId],
       );
@@ -292,7 +295,8 @@ export async function authRoutes(app: FastifyInstance): Promise<void> {
         return reply.status(400).send({ error: 'Invalid request body', details: body.error.issues });
       }
       await sharedPool.setOptIn(request.tenantId, body.data.optIn);
-      const { rows } = await getPool().query<{ global_brain_opt_in: boolean }>(
+      const { rows } = await tenantQuery<{ global_brain_opt_in: boolean }>(
+        request.tenantId,
         `SELECT global_brain_opt_in FROM tenants WHERE id = $1`,
         [request.tenantId],
       );

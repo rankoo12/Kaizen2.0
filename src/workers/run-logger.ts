@@ -1,4 +1,4 @@
-import { getPool } from '../db/pool';
+import { tenantQuery } from '../db/transaction';
 import type { IObservability } from '../modules/observability/interfaces';
 import type { RunEventLevel, RunEventPhase, RunEventRow } from '../modules/event-bus/interfaces';
 
@@ -84,7 +84,8 @@ export class RunLogger {
     });
 
     try {
-      await getPool().query(
+      await tenantQuery(
+        this.tenantId,
         `INSERT INTO run_events
            (tenant_id, run_id, step_index, seq, level, phase, message, data)
          VALUES ${tuples.join(', ')}`,

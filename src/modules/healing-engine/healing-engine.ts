@@ -1,7 +1,7 @@
 import type { IHealingEngine, IHealingStrategy } from './interfaces';
 import type { ClassifiedFailure, HealingContext, HealingResult } from '../../types';
 import type { IObservability } from '../observability/interfaces';
-import { getPool } from '../../db/pool';
+import { tenantQuery } from '../../db/transaction';
 
 const MAX_ATTEMPTS_PER_STEP = 3;
 
@@ -80,7 +80,8 @@ export class HealingEngine implements IHealingEngine {
     if (!failure.stepResultId) return;
 
     try {
-      await getPool().query(
+      await tenantQuery(
+        context.tenantId,
         `INSERT INTO healing_events
            (tenant_id, step_result_id, failure_class, strategy_used, attempts, succeeded, new_selector, old_selector, duration_ms)
          VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,

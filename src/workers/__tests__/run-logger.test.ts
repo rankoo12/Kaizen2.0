@@ -3,6 +3,8 @@ import { RunLogger } from '../run-logger';
 // Mock the pg pool so flush() can be inspected without a database.
 const mockQuery = jest.fn().mockResolvedValue({ rows: [] });
 jest.mock('../../db/pool', () => ({ getPool: () => ({ query: mockQuery }) }));
+// Tenant helpers route to the pool mock above — see src/db/__mocks__/transaction.ts
+jest.mock('../../db/transaction');
 
 const obs = { log: jest.fn(), increment: jest.fn(), startSpan: jest.fn(), histogram: jest.fn() } as any;
 

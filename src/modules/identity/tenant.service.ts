@@ -4,6 +4,7 @@
 
 import { createHash, randomBytes } from 'crypto';
 import { getPool } from '../../db/pool';
+import { tenantPool, tenantQuery, withTenantTransaction } from '../../db/transaction';
 import type {
   ITenantService,
   CreateTenantParams,
@@ -198,23 +199,24 @@ export class TenantService implements ITenantService {
     // Spec: docs/specs/roadmap/spec-keys-quota-authorship.md §5
     const cycleEnd = new Date(now.getFullYear(), now.getMonth() + 1, 1);
 
+    const db = tenantPool(tenantId);
     const [runsResult, tokensResult, membersResult, budgetResult] = await Promise.all([
-      getPool().query<{ count: string }>(
+      db.query<{ count: string }>(
         `SELECT COUNT(*) AS count FROM runs
          WHERE tenant_id = $1 AND created_at >= $2`,
         [tenantId, monthStart],
       ),
-      getPool().query<{ total: string }>(
+      db.query<{ total: string }>(
         `SELECT COALESCE(SUM(quantity), 0) AS total FROM billing_events
          WHERE tenant_id = $1 AND event_type = 'LLM_CALL' AND created_at >= $2`,
         [tenantId, monthStart],
       ),
-      getPool().query<{ count: string }>(
+      db.query<{ count: string }>(
         `SELECT COUNT(*) AS count FROM memberships
          WHERE tenant_id = $1 AND deleted_at IS NULL AND accepted_at IS NOT NULL`,
         [tenantId],
       ),
-      getPool().query<{ llm_budget_tokens_monthly: string }>(
+      db.query<{ llm_budget_tokens_monthly: string }>(
         `SELECT llm_budget_tokens_monthly FROM tenants WHERE id = $1`,
         [tenantId],
       ),
@@ -247,9 +249,10 @@ export class TenantService implements ITenantService {
     const keyHash = hashKey(rawKey);
     const keyPrefix = rawKey.slice(0, 18);
 
-    const client = await getPool().connect();
-    try {
-      await client.query('BEGIN');
+    // The whole rotation runs as the tenant: api_keys is under row-level
+    // security, so a bare-pool transaction could neither delete the old keys
+    // nor insert the new one under an unprivileged runtime.
+    await withTenantTransaction(tenantId, async (client) => {
       // Revoke all existing keys for this tenant
       await client.query(`DELETE FROM api_keys WHERE tenant_id = $1`, [tenantId]);
       // Insert new key with admin scope
@@ -258,13 +261,7 @@ export class TenantService implements ITenantService {
          VALUES ($1, $2, $3, 'admin')`,
         [tenantId, keyHash, keyPrefix],
       );
-      await client.query('COMMIT');
-    } catch (err) {
-      await client.query('ROLLBACK');
-      throw err;
-    } finally {
-      client.release();
-    }
+    });
 
     return rawKey;
   }
@@ -280,10 +277,11 @@ export class TenantService implements ITenantService {
    * Spec: docs/specs/roadmap/spec-cost-history-and-case-stats.md §4.1
    */
   async getUsageHistory(tenantId: string, days: number): Promise<UsageHistoryPoint[]> {
-    const { rows } = await getPool().query<{
+    const { rows } = await tenantQuery<{
       day: string; runs: string; tokens: string;
       lookups: string; cache_hits: string; heals: string; failures: string;
     }>(
+      tenantId,
       `WITH calendar AS (
          SELECT generate_series(
                   (current_date - ($2::int - 1) * INTERVAL '1 day')::date,
@@ -352,7 +350,8 @@ export class TenantService implements ITenantService {
   async listApiKeys(tenantId: string): Promise<ApiKeyRow[]> {
     // key_hash is deliberately not selected: nothing outside authentication needs it,
     // and a hash that never leaves the database cannot leak through a log or a response.
-    const { rows } = await getPool().query<ApiKeyRow>(
+    const { rows } = await tenantQuery<ApiKeyRow>(
+      tenantId,
       `SELECT id, key_prefix, scope, description, created_at, last_used_at, expires_at
          FROM api_keys
         WHERE tenant_id = $1
@@ -371,7 +370,8 @@ export class TenantService implements ITenantService {
     // human to tell two keys apart in a list, far too little to reconstruct one.
     const keyPrefix = rawKey.slice(0, 18);
 
-    const { rows } = await getPool().query<ApiKeyRow>(
+    const { rows } = await tenantQuery<ApiKeyRow>(
+      tenantId,
       `INSERT INTO api_keys (tenant_id, key_hash, key_prefix, scope, description, expires_at)
        VALUES ($1, $2, $3, $4, $5, $6)
        RETURNING id, key_prefix, scope, description, created_at, last_used_at, expires_at`,
@@ -385,7 +385,8 @@ export class TenantService implements ITenantService {
   async revokeApiKey(tenantId: string, keyId: string): Promise<boolean> {
     // tenant_id in the WHERE, not just the id: without it any admin could revoke any
     // other workspace's key by guessing a uuid.
-    const { rowCount } = await getPool().query(
+    const { rowCount } = await tenantQuery(
+      tenantId,
       `DELETE FROM api_keys WHERE id = $1 AND tenant_id = $2`,
       [keyId, tenantId],
     );

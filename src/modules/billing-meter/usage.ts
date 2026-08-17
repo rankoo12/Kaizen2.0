@@ -1,7 +1,8 @@
-import { getPool } from '../../db/pool';
+import { tenantQuery } from '../../db/transaction';
 
 export async function usageThisMonth(tenantId: string): Promise<number> {
-  const { rows } = await getPool().query<{ total: string }>(
+  const { rows } = await tenantQuery<{ total: string }>(
+    tenantId,
     `SELECT COALESCE(SUM(quantity), 0)::text AS total
      FROM billing_events
      WHERE tenant_id = $1

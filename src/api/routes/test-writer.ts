@@ -20,8 +20,7 @@
 import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { requireAuth } from '../middleware/auth';
-import { withTenantTransaction } from '../../db/transaction';
-import { getPool } from '../../db/pool';
+import { withTenantTransaction, tenantQuery } from '../../db/transaction';
 import { createTestWriterQueue } from '../../queue';
 import { usageThisMonth } from '../../modules/billing-meter/usage';
 import { HARD_MAX_PAGES } from '../../modules/test-writer/interfaces';
@@ -116,9 +115,10 @@ async function checkLoginCase(
   loginCaseId: string,
   targetUrl: string,
 ): Promise<EligibilityError | null> {
-  const { rows } = await getPool().query<{
+  const { rows } = await tenantQuery<{
     status: string | null; base_url: string; steps: string[];
   }>(
+    tenantId,
     `SELECT c.status, c.base_url,
             COALESCE(ARRAY_AGG(ts.raw_text ORDER BY tcs.position)
                      FILTER (WHERE ts.raw_text IS NOT NULL), '{}') AS steps
@@ -263,8 +263,8 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
     // Same tenant token-budget gate as run triggers. Recon itself spends no
     // LLM tokens in P1, but the analyze contract includes generation phases —
     // gate up front so a job never starts work it cannot finish.
-    const { rows: budgetRows } = await getPool().query<{ llm_budget_tokens_monthly: string }>(
-      `SELECT llm_budget_tokens_monthly FROM tenants WHERE id = $1`, [tenantId]);
+    const { rows: budgetRows } = await tenantQuery<{ llm_budget_tokens_monthly: string }>(
+      tenantId, `SELECT llm_budget_tokens_monthly FROM tenants WHERE id = $1`, [tenantId]);
     const budget = Number(budgetRows[0]?.llm_budget_tokens_monthly ?? 0);
     if (budget <= 0) {
       return reply.status(402).send({
@@ -294,7 +294,8 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
       }
       try {
         const tenantBrief = await gateway.distillBrief(prepared.text, tenantId);
-        await getPool().query(
+        await tenantQuery(
+          tenantId,
           `UPDATE test_suites SET tenant_brief = $3 WHERE id = $1 AND tenant_id = $2`,
           [suiteId, tenantId, JSON.stringify(tenantBrief)],
         );
@@ -304,7 +305,8 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
     }
 
     if (typeof body.allowSyntheticData === 'boolean') {
-      await getPool().query(
+      await tenantQuery(
+        tenantId,
         `UPDATE test_suites SET allow_synthetic_data = $3 WHERE id = $1 AND tenant_id = $2`,
         [suiteId, tenantId, body.allowSyntheticData],
       );
@@ -314,7 +316,8 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
     // refuses an authenticated job that names no consenter, so this is a schema
     // guarantee rather than a convention this route happens to follow.
     const isAuth = body.scope === 'authenticated';
-    const { rows } = await getPool().query<{ id: string }>(
+    const { rows } = await tenantQuery<{ id: string }>(
+      tenantId,
       `INSERT INTO generation_jobs (
          tenant_id, suite_id, target_url, scope, auth_consent, login_case_id,
          auth_consented_by, auth_consented_at, options)
@@ -410,7 +413,8 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
     // One at a time keeps the site model coherent. The UI has enforced this for
     // analyze by hiding the button; Suggest is a one-click action in the middle
     // of authoring, so the API has to mean it.
-    const { rows: running } = await getPool().query<{ id: string }>(
+    const { rows: running } = await tenantQuery<{ id: string }>(
+      tenantId,
       `SELECT id FROM generation_jobs
         WHERE tenant_id = $1 AND suite_id = $2
           AND status IN ('queued', 'running', 'awaiting_plan_approval')
@@ -425,8 +429,8 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
       });
     }
 
-    const { rows: budgetRows } = await getPool().query<{ llm_budget_tokens_monthly: string }>(
-      `SELECT llm_budget_tokens_monthly FROM tenants WHERE id = $1`, [tenantId]);
+    const { rows: budgetRows } = await tenantQuery<{ llm_budget_tokens_monthly: string }>(
+      tenantId, `SELECT llm_budget_tokens_monthly FROM tenants WHERE id = $1`, [tenantId]);
     const budget = Number(budgetRows[0]?.llm_budget_tokens_monthly ?? 0);
     if (budget <= 0) {
       return reply.status(402).send({
@@ -485,7 +489,8 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
     };
 
     const isAuth = body.scope === 'authenticated';
-    const { rows } = await getPool().query<{ id: string }>(
+    const { rows } = await tenantQuery<{ id: string }>(
+      tenantId,
       `INSERT INTO generation_jobs (
          tenant_id, suite_id, target_url, scope, auth_consent, login_case_id,
          auth_consented_by, auth_consented_at, options)
@@ -529,11 +534,12 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
     }
     const { tenantId } = request;
 
-    const { rows } = await getPool().query<{
+    const { rows } = await tenantQuery<{
       status: string; suite_id: string; target_url: string; scope: string;
       auth_consent: boolean; login_case_id: string | null;
       options: Record<string, unknown>; test_plan: { scenarios?: Array<{ name: string }> } | null;
     }>(
+      tenantId,
       `SELECT status, suite_id, target_url, scope, auth_consent, login_case_id, options, test_plan
        FROM generation_jobs WHERE id = $1 AND tenant_id = $2`,
       [jobId, tenantId],
@@ -568,7 +574,8 @@ export async function testWriterRoutes(app: FastifyInstance): Promise<void> {
       .filter((name) => !approved.includes(name))
       .map((name) => ({ name, reason: 'user_deselected' }));
 
-    await getPool().query(
+    await tenantQuery(
+      tenantId,
       `UPDATE generation_jobs
           SET plan_approved_at = now(),
               plan_notes = $2,

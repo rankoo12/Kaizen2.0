@@ -64,7 +64,12 @@ export async function requireApiKey(
       scope: 'read_only' | 'execute' | 'admin';
       expires_at: Date | null;
     }>(
-      `SELECT tenant_id, scope, expires_at FROM api_keys WHERE key_hash = $1 LIMIT 1`,
+      // Through a SECURITY DEFINER function, not a direct SELECT: this is the
+      // one read that must happen BEFORE a tenant is known, so the row policy
+      // ("show rows for the current tenant") can never admit it. The function is
+      // the single audited door — hash in, tenant/scope/expiry out, nothing
+      // else. Migration 038; runbook §3(b).
+      `SELECT tenant_id, scope, expires_at FROM api_key_lookup($1)`,
       [keyHash],
     );
 
@@ -75,7 +80,7 @@ export async function requireApiKey(
       return reply.status(401).send({ error: 'API key has expired' });
     }
 
-    void getPool().query(`UPDATE api_keys SET last_used_at = now() WHERE key_hash = $1`, [keyHash]);
+    void getPool().query(`SELECT api_key_touch($1)`, [keyHash]);
 
     request.tenantId = key.tenant_id;
     request.keyScope = key.scope;

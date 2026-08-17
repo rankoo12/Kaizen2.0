@@ -29,12 +29,18 @@ export interface IElementResolver {
   /**
    * Report a successful selector use. Updates confidence score and outcome_window.
    * @param targetHash step.targetHash — shared across all steps targeting the same element.
+   * @param tenantId whose cache row this is. The row lives under row-level
+   *   security keyed on tenant, so an update that names hash + domain but no
+   *   tenant cannot express which row it means — under an unprivileged runtime
+   *   it updates nothing. Optional only so implementations that never touch the
+   *   database (archetype, composite fan-out) need not carry it.
    */
-  recordSuccess(targetHash: string, domain: string, selectorUsed: string): Promise<void>;
+  recordSuccess(targetHash: string, domain: string, selectorUsed: string, tenantId?: string): Promise<void>;
 
   /**
    * Report a selector failure. Triggers score decay; may mark entry as Degraded.
    * @param targetHash step.targetHash — shared across all steps targeting the same element.
+   * @param tenantId see recordSuccess.
    */
-  recordFailure(targetHash: string, domain: string, selectorAttempted: string): Promise<void>;
+  recordFailure(targetHash: string, domain: string, selectorAttempted: string, tenantId?: string): Promise<void>;
 }

@@ -2,7 +2,7 @@ import type { IHealingStrategy } from '../interfaces';
 import type { ClassifiedFailure, HealingContext, HealingAttempt, AXNode } from '../../../types';
 import type { ILLMGateway } from '../../llm-gateway/interfaces';
 import type { IObservability } from '../../observability/interfaces';
-import { getPool } from '../../../db/pool';
+import { tenantQuery } from '../../../db/transaction';
 import { toVectorSQL } from '../../../utils/vector';
 
 type PageLike = {
@@ -61,10 +61,11 @@ export class ElementSimilarityStrategy implements IHealingStrategy {
         const embedding = await this.llmGateway.generateEmbedding(text);
         const embeddingSQL = toVectorSQL(embedding);
 
-        const { rows } = await getPool().query<{
+        const { rows } = await tenantQuery<{
           selectors: string;
           similarity: number;
         }>(
+          context.tenantId,
           `SELECT selectors, 1 - (element_embedding <=> $1::vector) AS similarity
            FROM selector_cache
            WHERE tenant_id = $2

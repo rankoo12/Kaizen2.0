@@ -3,7 +3,7 @@ import type { ClassifiedFailure, HealingContext, HealingAttempt } from '../../..
 import type { ILLMGateway } from '../../llm-gateway/interfaces';
 import type { IDOMPruner } from '../../dom-pruner/interfaces';
 import type { IObservability } from '../../observability/interfaces';
-import { getPool } from '../../../db/pool';
+import { tenantQuery } from '../../../db/transaction';
 import { toVectorSQL } from '../../../utils/vector';
 import type { Redis } from 'ioredis';
 
@@ -134,7 +134,8 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
       const selectorsJson = JSON.stringify([
         { selector: healed.selector, strategy: healed.strategy, confidence: healed.confidence ?? 0.9 },
       ]);
-      await getPool().query(
+      await tenantQuery(
+        context.tenantId,
         `UPDATE selector_cache
          SET selectors         = $1::jsonb,
              step_embedding    = $2::vector,

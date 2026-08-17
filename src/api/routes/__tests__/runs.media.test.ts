@@ -8,6 +8,8 @@ import { getPool } from '../../../db/pool';
 jest.mock('../../../db/pool', () => ({
   getPool: jest.fn(() => ({ query: jest.fn() })),
 }));
+// Tenant helpers route to the pool mock above — see src/db/__mocks__/transaction.ts
+jest.mock('../../../db/transaction');
 
 // Auth middleware — every guard authenticates as tenant-1 and passes through, so
 // these tests exercise the route's own tenant-scoping / authorization logic.

@@ -2,7 +2,7 @@ import type { FastifyInstance } from 'fastify';
 import { z } from 'zod';
 import { createHash } from 'crypto';
 import { Redis } from 'ioredis';
-import { getPool } from '../../db/pool';
+import { tenantPool, tenantQuery } from '../../db/transaction';
 import { createRunQueue } from '../../queue';
 import { cancelKey } from '../../workers/cancel-keys';
 import { requireAuth, requireApiKey, requireScope, requireTenant } from '../middleware/auth';
@@ -58,7 +58,8 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
     // Enforce the tenant's monthly LLM token budget before spending on compilation
     // (mirrors POST /cases/:caseId/run). Without this the direct API path is a
     // budget bypass.
-    const { rows: budgetRows } = await getPool().query<{ llm_budget_tokens_monthly: string }>(
+    const { rows: budgetRows } = await tenantQuery<{ llm_budget_tokens_monthly: string }>(
+      tenantId,
       `SELECT llm_budget_tokens_monthly FROM tenants WHERE id = $1`,
       [tenantId],
     );
@@ -83,7 +84,7 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
     const compiledSteps = await compiler.compileMany(steps);
 
     // Persist run record
-    const pool = getPool();
+    const pool = tenantPool(request.tenantId);
     const { rows } = await pool.query(
       // total_steps is stamped here because this is the only moment the run's own
       // length is known for certain. It can't be read back off the case later —
@@ -143,7 +144,7 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
     const where = conditions.join(' AND ');
     values.push(limit, offset);
 
-    const pool = getPool();
+    const pool = tenantPool(request.tenantId);
     const { rows } = await pool.query(
       `SELECT r.id, r.case_id, r.suite_id, r.status, r.triggered_by,
               r.created_at, r.completed_at, r.environment_url, r.total_steps,
@@ -202,7 +203,7 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
   });
 
   app.get<{ Params: { id: string } }>('/runs/:id', { preHandler: [requireTenant] }, async (request, reply) => {
-    const pool = getPool();
+    const pool = tenantPool(request.tenantId);
     const { rows } = await pool.query(
       `SELECT id, tenant_id, status, triggered_by, started_at, completed_at, environment_url,
               total_steps, created_at
@@ -288,7 +289,7 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
    * Spec: docs/specs/tests-ux/spec-run-report-view.md
    */
   app.get<{ Params: { id: string } }>('/runs/:id/report', { preHandler: [requireTenant] }, async (request, reply) => {
-    const pool = getPool();
+    const pool = tenantPool(request.tenantId);
     const runId = request.params.id;
 
     const { rows: runRows } = await pool.query(
@@ -374,7 +375,7 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
 
       const { verdict } = parsed.data;
       const { runId, stepId } = request.params;
-      const pool = getPool();
+      const pool = tenantPool(request.tenantId);
 
       // Fetch the step result.
       // content_hash    — links to compiled_ast_cache (cleared on verdict=failed so
@@ -569,7 +570,7 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
 
       const { candidateKaizenId } = parsed.data;
       const { runId, stepId } = request.params;
-      const pool = getPool();
+      const pool = tenantPool(request.tenantId);
 
       // 1. Fetch step_results and find the candidate
       const { rows } = await pool.query(
@@ -698,7 +699,7 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
    */
   app.post<{ Params: { id: string } }>('/runs/:id/cancel', { preHandler: [requireTenant] }, async (request, reply) => {
     const { id: runId } = request.params;
-    const pool = getPool();
+    const pool = tenantPool(request.tenantId);
 
     const { rows } = await pool.query(
       `SELECT id, status FROM runs WHERE id = $1 AND tenant_id = $2`,
@@ -761,7 +762,8 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
     if (key.includes('..')) return reply.status(400).send({ error: 'Invalid key' });
 
     // Authorize: only keys produced by this tenant's runs are downloadable.
-    const { rows } = await getPool().query(
+    const { rows } = await tenantQuery(
+      request.tenantId,
       `SELECT 1 FROM step_results WHERE screenshot_key = $1 AND tenant_id = $2 LIMIT 1`,
       [key, request.tenantId],
     );
