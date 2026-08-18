@@ -1,7 +1,7 @@
 # Spec: Screen discovery — pages that are reached by clicking, not by URL
 
 **Created:** 2026-08-18
-**Updated:** 2026-08-18 — §1.3 newness rule from run 2; §4 runs 1–7
+**Updated:** 2026-08-18 — §1.3 newness rule from run 2; §4 runs 1–8
 **Status:** Approved by the founder (2026-08-18, "go"); building in PR #101
 **Owner:** test-writer
 **Amends:** `spec-recon-crawler.md` §2 (BFS), §4.1 (classifier); `spec-planner-per-page.md` §1.1 (dossiers)
@@ -116,6 +116,7 @@ as pages (they are).
 | kaizen 5 — delta sees state + removals, aria-expanded not a screen | 7 | 6 | 11 | 7 | 0 | 136k | 7 min |
 | kaizen 6 — AssertionNoAction | 7 | 6 | 16 | 7 | **7** | 205k | 8 min |
 | kaizen 7 — **Claude as the model** (spec-llm-inbox) | 7 | 6 | 20 | 10 | 6 | 0 (140k est.) | 23 min |
+| kaizen 8 — label-named reveals, stretch guard | 7 | 6 | 16 | **14** | **9** | 0 (99k est.) | 16 min |
 
 Run 7 read: with the judge answering the calls, the plan is the plan I would write (create a test
 and see its row, cancel without saving, stepless save refused, search with no match, filters to

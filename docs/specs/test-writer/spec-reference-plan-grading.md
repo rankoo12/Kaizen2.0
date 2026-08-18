@@ -85,3 +85,15 @@ by hand against the judge's own criteria — spec-planner-per-page.md §5.
 | run | covered (of 32) | good / weak / wrong of delivered |
 |---|---|---|
 | 6 | 14, 16, 18 (+ partial 28, 27) ≈ 3–5 | 3 / 3 / 1 of 7 |
+| 8 (Claude as the model) | 6, 11, 12, 14, 16, 18, 25, 26, 28 + cancel-draft, Save & Run ≈ 10 of 32 | 12 / 2 / 0 of 14 |
+
+Run 8, graded: create a test (Blank → name → Target URL → Save → Save gone → row with the name)
+is the flagship flow and it is proven; Save & Run in the empty suite, Run now, Run suite, the
+runs/tests filters (chip selected + a wrong-status row absent), search-to-empty on tests and on the
+Brain, Members tab (Tokens gone, members listed), Global scope — all tests I would keep. "Cancel a
+draft" is labelled needs-review because its oracles are absences (correct label; keep the test).
+"Needs review chip" was flaky on timing. Missing, and why: everything that opens a row (open test,
+edit, delete, open run, timeline, re-run) — rows are `<div onClick>` with no role, invisible to
+the survey; suite create/rename/delete and Analyze-with-URL — not planned this run (the planner
+gives ≤3 per page and the sidebar's New-suite input is chrome); sign-out / redirect — the login
+recipe's domain.
