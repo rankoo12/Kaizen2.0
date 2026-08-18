@@ -18,6 +18,7 @@ import { ScenarioWriter, type WrittenScenario } from './write/scenario-writer';
 import { dedupeScenarios } from './write/dedup';
 import { judgeWithRepair } from './write/judge-round';
 import { ValidationRunner } from './validate/validation-runner';
+import { withSigninWitness } from './validate/signin-witness';
 import { FORM_DATA_TOKENS } from '../test-data/generate';
 import { LearnedCompiler } from '../test-compiler/learned.compiler';
 import type { ILLMGateway } from '../llm-gateway/interfaces';
@@ -473,11 +474,24 @@ async function runGenerationPhases(
   // ── DEDUP (kind-aware, against each other and the suite's existing cases)
   // Loaded before dedup rather than at VALIDATE, because dedup needs to know
   // which leading steps are sign-in boilerplate in order to ignore them.
-  const loginPrefix = job.scope === 'authenticated' && job.login_case_id
-    ? await loadLoginSteps(payload.tenantId, job.login_case_id, deps)
-    : undefined;
+  const reconAuth = (job.report as { recon?: { auth?: { loginPageUrl?: string | null; landedUrl?: string | null } } } | null)
+    ?.recon?.auth ?? null;
+  let signinWitness: string | null = null;
+  let loginPrefixSteps: LoginStep[] | undefined;
+  if (job.scope === 'authenticated' && job.login_case_id) {
+    const loaded = await loadLoginSteps(payload.tenantId, job.login_case_id, deps);
+    // A recipe that ends on the Login click gets the witness recon observed
+    // (spec-validation-trust §5): the landing url, as a final assert_url.
+    const witnessed = withSigninWitness(loaded, reconAuth);
+    loginPrefixSteps = witnessed.prefix;
+    signinWitness = witnessed.witness;
+    if (signinWitness) {
+      deps.obs.increment('testwriter.signin_witness_appended');
+      deps.obs.log('info', 'testwriter.signin_witness', { jobId: payload.jobId, witness: signinWitness });
+    }
+  }
   const existing = await loadExistingCaseSteps(
-    payload.tenantId, payload.suiteId, (loginPrefix ?? []).map((s) => s.rawText),
+    payload.tenantId, payload.suiteId, (loginPrefixSteps ?? []).map((s) => s.rawText),
   );
   const dedup = dedupeScenarios(
     written.map((w) => ({
@@ -534,13 +548,13 @@ async function runGenerationPhases(
     validate: payload.options.validate,
     // Authenticated drafts are self-contained: the sign-in steps ride along so
     // each proving run signs in for itself, from a cold browser (spec §6.2, §7).
-    loginPrefix,
+    loginPrefix: loginPrefixSteps,
     // Whether the recipe's own final assertion can actually witness a session.
     // Fail-closed on the LABEL, not the work: a recipe that verifies something
     // visible to signed-out visitors still runs, but nothing it carries may be
     // called proven (spec-validation-trust §5).
-    signinAssertionProves: loginPrefix
-      ? await signinAssertionIsPrivate(payload.tenantId, payload.suiteId, loginPrefix, deps)
+    signinAssertionProves: loginPrefixSteps
+      ? await signinAssertionIsPrivate(payload.tenantId, payload.suiteId, loginPrefixSteps, deps)
       : true,
   });
 
@@ -575,6 +589,7 @@ async function runGenerationPhases(
       validated: validation.proposed.filter((p) => p.validated).length,
       unvalidated: validation.proposed.filter((p) => !p.validated).length,
       ...(validation.signinProbe ? { signinProbe: validation.signinProbe } : {}),
+      ...(signinWitness ? { signinWitness } : {}),
     },
     rejected: [...rejected, ...validation.rejected],
     harvest: validation.harvest,

@@ -60,6 +60,14 @@ export type ReconCrawlerDeps = {
 /** What the authenticated crawl reports back. Absent on public jobs. */
 export type AuthCrawlReport = {
   sessionVerification: 'assertion+heuristic' | 'heuristic' | null;
+  /**
+   * Where the sign-in recipe started and where it landed. A recipe with no
+   * final assertion leaves the pipeline nothing to prove a session with; the
+   * landing URL is the witness recon actually observed.
+   * Spec: spec-validation-trust.md §5 (amended 2026-08-18)
+   */
+  loginPageUrl?: string | null;
+  landedUrl?: string | null;
   loginSteps: { total: number; passed: number };
   reloginCount: number;
   signInCount: number;
@@ -177,6 +185,8 @@ export class ReconCrawler {
         return false;
       }
       auth.sessionVerification = result.sessionVerification;
+      auth.loginPageUrl = result.loginPageUrl;
+      auth.landedUrl = result.landedUrl;
       loginPageUrl = result.loginPageUrl;
       return true;
     };

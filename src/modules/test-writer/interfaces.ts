@@ -101,6 +101,8 @@ export type CrawlReport = {
    */
   auth?: {
     sessionVerification: 'assertion+heuristic' | 'heuristic' | null;
+    loginPageUrl?: string | null;
+    landedUrl?: string | null;
     loginSteps: { total: number; passed: number };
     reloginCount: number;
     signInCount: number;
