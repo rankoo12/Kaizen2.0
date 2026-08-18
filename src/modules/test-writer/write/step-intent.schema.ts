@@ -71,7 +71,7 @@ export const StepIntentSchema: z.ZodType<StepIntent> = z.discriminatedUnion('act
     captureAs: z.string().min(1).max(40).default('selectedItem'),
   }),
   z.object({
-    action: z.enum(['assert_visible', 'assert_not_visible', 'assert_enabled', 'assert_disabled', 'assert_checked']),
+    action: z.enum(['assert_visible', 'assert_not_visible', 'assert_enabled', 'assert_disabled', 'assert_checked', 'assert_not_checked']),
     target: anyTarget,
   }),
   z.object({
@@ -105,7 +105,7 @@ const STATE_CHANGING = new Set([
 
 const ASSERTIONS = new Set([
   'assert_visible', 'assert_not_visible', 'assert_enabled', 'assert_disabled',
-  'assert_checked', 'assert_text', 'assert_not_text', 'assert_url',
+  'assert_checked', 'assert_not_checked', 'assert_text', 'assert_not_text', 'assert_url',
   'assert_title', 'assert_attribute', 'assert_count',
 ]);
 
@@ -161,7 +161,9 @@ export function runSchemaGate(
 
   const steps: StepIntent[] = [];
   rawSteps.forEach((raw, index) => {
-    const parsed = StepIntentSchema.safeParse(recoverTruncatedIds(raw, validElementIds));
+    const parsed = StepIntentSchema.safeParse(
+      trimLongAssertion(recoverTruncatedIds(raw, validElementIds)),
+    );
     if (!parsed.success) {
       const detail = parsed.error.issues.map((i) => `${i.path.join('.')}: ${i.message}`).join('; ');
       errors.push(`step ${index + 1}: invalid intent (${detail})`);
@@ -273,6 +275,19 @@ export function runSchemaGate(
     errors.push('scenario does not end with an assertion — it would prove nothing');
   }
 
+  // "Navigate somewhere and read the text" is a legitimate test for a page with
+  // no controls, and an escape hatch everywhere else. Offered alongside a full
+  // element list it answered twelve different plans on the-internet with
+  // "navigate to the home page, verify 'Welcome to the-internet' is shown".
+  // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2.2
+  if (validElementIds.size > 0 && !steps.some((s) => STATE_CHANGING.has(s.action))) {
+    errors.push(
+      'this scenario never interacts with anything — it navigates and reads text, on pages that '
+      + `have ${validElementIds.size} usable controls. Use them: click, type, select or check `
+      + 'something, then assert what that produced.',
+    );
+  }
+
   errors.push(...findUnfalsifiableOracles(steps));
 
   return errors.length > 0 ? { ok: false, errors } : { ok: true, steps };
@@ -297,7 +312,12 @@ function findUnfalsifiableOracles(steps: StepIntent[]): string[] {
       inForceUrl = step.url;
       return;
     }
-    if (step.action === 'type' || step.action === 'select') {
+    // `select` deliberately excluded. Reading back the option you chose is the
+    // ONLY oracle a dropdown has — the page now shows "Option 1" where it showed
+    // "Please select an option", and a broken select fails it. Lumping it in
+    // with `type` killed the one good dropdown test the-internet offers.
+    // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2.2
+    if (step.action === 'type') {
       const target = 'target' in step ? step.target : undefined;
       typed.push({
         index,
@@ -364,6 +384,27 @@ function findUnfalsifiableOracles(steps: StepIntent[]): string[] {
  * a dropped hex digit spent two writer calls on saucedemo to reject a scenario
  * whose every other step was grounded.
  */
+/**
+ * A text assertion that quotes a whole paragraph is still a valid assertion —
+ * it is a substring check, so the first sentence of it proves the same thing.
+ * Rejecting the scenario over the length is the worse answer: the-internet run
+ * 2 lost a sound status-codes test because the model quoted 260 characters of
+ * page text at it.
+ * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2.2
+ */
+export function trimLongAssertion(raw: unknown): unknown {
+  if (!raw || typeof raw !== 'object') return raw;
+  const step = raw as Record<string, unknown>;
+  if (step.action !== 'assert_text' && step.action !== 'assert_not_text') return raw;
+  if (typeof step.value !== 'string' || step.value.length <= 200) return raw;
+
+  // Cut at a sentence end when there is one, else at a word boundary.
+  const head = step.value.slice(0, 200);
+  const sentence = head.search(/[.!?]\s/);
+  const cut = sentence > 40 ? head.slice(0, sentence + 1) : head.slice(0, head.lastIndexOf(' '));
+  return { ...step, value: cut.trim() };
+}
+
 export function recoverTruncatedIds(raw: unknown, validElementIds: Set<string>): unknown {
   if (!raw || typeof raw !== 'object') return raw;
   const step = { ...(raw as Record<string, unknown>) };

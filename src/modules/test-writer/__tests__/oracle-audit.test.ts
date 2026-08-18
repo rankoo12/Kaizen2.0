@@ -210,7 +210,7 @@ describe('selector helpers', () => {
  * what PERFORMS the scenario.
  * Spec: docs/specs/test-writer/spec-validation-trust.md §3
  */
-import { planVacuityProbe } from '../validate/oracle-audit';
+import { planVacuityProbe, isPageLoadOnly } from '../validate/oracle-audit';
 
 describe('planVacuityProbe', () => {
   it('keeps navigations and drops the actions, for the shape that shipped', () => {
@@ -238,5 +238,30 @@ describe('planVacuityProbe', () => {
   it('refuses to probe a scenario that does not end on an assertion', () => {
     expect(planVacuityProbe(['navigate', 'click'])).toBeNull();
     expect(planVacuityProbe([])).toBeNull();
+  });
+});
+
+describe('isPageLoadOnly', () => {
+  /**
+   * "Hover Interaction" ran `navigate → verify text` green and was labelled
+   * PROVEN while hovering nothing. Spec: spec-oracle-delta-and-fidelity.md §2.2
+   */
+  it('flags a test that navigates and only reads what is there', () => {
+    expect(isPageLoadOnly(['navigate', 'assert_text'])).toBe(true);
+    expect(isPageLoadOnly(['navigate', 'assert_visible', 'assert_visible'])).toBe(true);
+  });
+
+  it('is not fooled by waits and scrolls', () => {
+    expect(isPageLoadOnly(['navigate', 'wait', 'scroll', 'assert_text'])).toBe(true);
+  });
+
+  it('does not flag a test that acts on the page', () => {
+    expect(isPageLoadOnly(['navigate', 'click', 'assert_visible'])).toBe(false);
+    expect(isPageLoadOnly(['navigate', 'hover', 'assert_visible'])).toBe(false);
+  });
+
+  it('does not flag a redirect check — there, arriving IS the action', () => {
+    expect(isPageLoadOnly(['navigate', 'assert_url'])).toBe(false);
+    expect(isPageLoadOnly(['navigate', 'assert_title'])).toBe(false);
   });
 });

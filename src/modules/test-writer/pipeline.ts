@@ -468,7 +468,12 @@ async function runGenerationPhases(
       // on, and that url must be the one it can navigate to.
       grounding: grounding.map((g) => ({ ...g, pageUrl: navigableUrl(g.pageUrl) })),
       formSummaries,
-      pageText,
+      // ONLY when there is nothing to click. Offered alongside a full element
+      // list it became an escape hatch: the-internet run 2 answered twelve
+      // different plans with "navigate to the home page, verify the text
+      // 'Welcome to the-internet' is shown", and dedup ate eleven of them.
+      // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2.2
+      pageText: grounding.length === 0 ? pageText : [],
       pagePath: targetPages.map(navigableUrl),
       seedTokens: [...FORM_DATA_TOKENS],
       steeringNotes: job.plan_notes,

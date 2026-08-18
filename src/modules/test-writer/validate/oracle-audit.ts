@@ -118,6 +118,29 @@ export function planVacuityProbe(
   return { keptBodyIndexes, terminalIndex };
 }
 
+/**
+ * A scenario that performs no action cannot be PROVEN by running it.
+ *
+ * "Hover Interaction" shipped as `navigate → verify the text 'Hover over the
+ * image' is shown`, ran green and was labelled PROVEN — while hovering
+ * nothing. Its green run proves the page loads and nothing else; the vacuity
+ * probe cannot catch it because there are no actions to remove. The one
+ * exception is a test ABOUT the navigation: "navigate to /secure → verify the
+ * url contains /login" is a real redirect check whose whole point is that
+ * arriving is the action.
+ * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2.2
+ */
+export function isPageLoadOnly(actions: string[]): boolean {
+  const body = actions.filter((a) => a !== 'wait' && a !== 'scroll');
+  if (body.length === 0) return false;
+  const interacts = body.some((a) => !a.startsWith('assert_') && a !== 'navigate' && a !== 'reload'
+    && a !== 'go_back' && a !== 'go_forward' && a !== 'switch_tab' && a !== 'close_tab');
+  if (interacts) return false;
+  // Navigation-driven oracles: the destination is the observation.
+  const aboutTheTrip = body.some((a) => a === 'assert_url' || a === 'assert_title');
+  return !aboutTheTrip;
+}
+
 /** Compare an assertion's claim against the element it actually resolved to. */
 function isUnfaithful(targetDescription: string, selector: string): boolean {
   const identity = parseSelectorIdentity(selector);

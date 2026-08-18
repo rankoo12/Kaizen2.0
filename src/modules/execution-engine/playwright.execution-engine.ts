@@ -575,6 +575,16 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
         break;
       }
 
+      // The other half of every checkbox test. Without it the writer improvised
+      // "verify the checkbox 1 is unchecked is not visible" and the run died.
+      // isChecked throws on a non-checkable element; that is a failure too, and
+      // must not read as "unchecked".
+      case 'assert_not_checked': {
+        const checked = await page.isChecked(selector, { timeout: ACTION_TIMEOUT_MS });
+        if (checked) throw new Error(`assert_not_checked failed: element is checked: ${selector}`);
+        break;
+      }
+
       case 'assert_attribute': {
         // value is "attribute=expectedValue" (e.g. "href=/login", "class=active").
         // With no "=", assert the attribute is merely present.

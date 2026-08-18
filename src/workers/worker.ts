@@ -726,12 +726,16 @@ async function executeStep(
   if (deltaScoped) {
     const elements = delta.last!.elements;
     const pick = pickDeltaMatch(step.targetDescription ?? '', elements);
+    // The whole delta rides as candidates and the pick is marked, so the run
+    // page shows "what changed" with the chosen element highlighted — a person
+    // can check the choice, not just read an opaque [data-kz-delta] selector.
     selectorSet = pick
       ? {
           selectors: [{ selector: `[data-kz-delta="${pick.marker}"]`, strategy: 'css' as const, confidence: 0.9 }],
-          fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null,
+          fromCache: false, cacheSource: null, resolutionSource: 'delta', similarityScore: null,
+          llmPickedKaizenId: pick.marker,
           candidates: elements.slice(0, 10).map((el) => ({
-            kaizenId: el.marker, role: el.role, name: el.name || el.text,
+            kaizenId: el.marker, role: el.role, name: el.text || el.name,
             selector: `[data-kz-delta="${el.marker}"]`,
           })),
         }
@@ -870,7 +874,7 @@ async function executeStep(
   // Assertions must never be persisted to the selector cache — re-verify every run.
   const ASSERTION_ACTIONS = new Set([
     'assert_text', 'assert_not_text', 'assert_visible', 'assert_not_visible',
-    'assert_url', 'assert_title', 'assert_enabled', 'assert_disabled', 'assert_checked',
+    'assert_url', 'assert_title', 'assert_enabled', 'assert_disabled', 'assert_checked', 'assert_not_checked',
     'assert_count', 'assert_attribute',
   ]);
   const isAssertion = ASSERTION_ACTIONS.has(step.action);

@@ -9,7 +9,7 @@ import type { Finding, OracleHarvest, ScenarioRejection } from '../../../types/t
 import { appDefectFinding, sideChannelFinding } from '../findings';
 import type { WrittenScenario } from '../write/scenario-writer';
 import { seedSelectors } from './selector-seeder';
-import { auditRunOracles, planVacuityProbe, type AuditObservation } from './oracle-audit';
+import { auditRunOracles, planVacuityProbe, isPageLoadOnly, type AuditObservation } from './oracle-audit';
 
 /**
  * VALIDATE — never propose an unproven test.
@@ -328,10 +328,21 @@ export class ValidationRunner {
         );
       }
 
+      // No action, no proof: a green run of "navigate, read text" says the
+      // page loads. It is a fine smoke check, and it must not wear the same
+      // label as a test that exercised something.
+      const pageLoadOnly = isPageLoadOnly(scenario.steps.map((s) => s.ast.action));
+      if (pageLoadOnly) {
+        this.obs.increment('testwriter.oracle_page_load_only');
+        (outcome.auditFindings[scenario.name] ??= []).push(
+          'page_load_only: this test performs no action, so a green run only shows the page loads',
+        );
+      }
+
       const signinUnproven = audit.unprovenSignin
         || (prefix.length > 0 && params.signinAssertionProves === false);
       const validationState = signinUnproven ? 'unproven_signin'
-        : vacuous ? 'vacuous_oracle'
+        : vacuous || pageLoadOnly ? 'vacuous_oracle'
           : auditFailed ? 'weak_oracle'
             : status === 'healed' ? 'healed'
               : flaky ? 'flaky'

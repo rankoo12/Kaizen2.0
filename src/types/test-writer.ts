@@ -154,7 +154,8 @@ export type StepIntent =
   // ── Group semantics: pick one of many, capture what was picked ──
   | { action: 'click_random'; description: string; captureAs: string }
   // ── Assertions ──
-  | { action: 'assert_visible' | 'assert_not_visible' | 'assert_enabled' | 'assert_disabled' | 'assert_checked';
+  | { action: 'assert_visible' | 'assert_not_visible' | 'assert_enabled' | 'assert_disabled'
+      | 'assert_checked' | 'assert_not_checked';
       target: StepIntentTarget }
   | { action: 'assert_text' | 'assert_not_text'; value: string; target?: StepIntentTarget }
   | { action: 'assert_url' | 'assert_title'; value: string }

@@ -547,6 +547,17 @@ describe('PlaywrightExecutionEngine', () => {
       await expect(engine.executeStep(mkStep('assert_checked'), oneSelector(), mockPage)).rejects.toThrow(/assert_checked failed/);
     });
 
+    // The other half of every checkbox test — the-internet /checkboxes died for
+    // want of it. A non-checkable element is a failure, never "unchecked".
+    it('assert_not_checked passes when unchecked, throws when checked or when the element is not checkable', async () => {
+      mockPage.isChecked.mockResolvedValueOnce(false);
+      expect((await engine.executeStep(mkStep('assert_not_checked'), oneSelector(), mockPage)).status).toBe('passed');
+      mockPage.isChecked.mockResolvedValueOnce(true);
+      await expect(engine.executeStep(mkStep('assert_not_checked'), oneSelector(), mockPage)).rejects.toThrow(/assert_not_checked failed/);
+      mockPage.isChecked.mockRejectedValueOnce(new Error('Not a checkbox or radio button'));
+      await expect(engine.executeStep(mkStep('assert_not_checked'), oneSelector(), mockPage)).rejects.toThrow(/Not a checkbox/);
+    });
+
     it('assert_attribute passes when the attribute contains the expected value, throws otherwise', async () => {
       mockPage.getAttribute.mockResolvedValueOnce('/login?ref=home');
       expect((await engine.executeStep(mkStep('assert_attribute', { value: 'href=/login' }), oneSelector('a'), mockPage)).status).toBe('passed');
