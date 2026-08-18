@@ -108,6 +108,32 @@ describe('walk — the diff that defines a delta', () => {
     expect(after[0].attrs['data-kz-delta']).toBe('kz-d-0');
   });
 
+  it('a filter that only HIDES rows is a change (removed), not "nothing changed"', () => {
+    const before = [el('button', 'All', { 'aria-pressed': 'true' }), el('button', 'Failed', { 'aria-pressed': 'false' }),
+      el('div', 'run 1 passed'), el('div', 'run 2 failed'), el('div', 'run 3 passed')];
+    mountPage(before);
+    const { keys } = walk({ baseline: null, cap: 0 });
+
+    // Kaizen's Runs view after "Failed": the passed rows are gone, and the
+    // Failed button is now the pressed one — that button is the delta.
+    const after = [el('button', 'All', { 'aria-pressed': 'false' }), el('button', 'Failed', { 'aria-pressed': 'true' }),
+      el('div', 'run 2 failed')];
+    mountPage(after);
+    const r = walk({ baseline: keys, cap: 40 });
+    expect(r.removed).toBe(4);       // two rows + the two buttons in their old states
+    expect(r.elements.map((e) => e.text)).toEqual(['All', 'Failed']);
+  });
+
+  it('a Save button that becomes enabled is the delta', () => {
+    const before = [el('input', '', { name: 'title' }), el('button', 'Save', { 'aria-disabled': 'true' })];
+    mountPage(before);
+    const { keys } = walk({ baseline: null, cap: 0 });
+    const after = [el('input', '', { name: 'title' }, { value: 'x' }), el('button', 'Save', { 'aria-disabled': 'false' })];
+    mountPage(after);
+    const r = walk({ baseline: keys, cap: 40 });
+    expect(r.elements.map((e) => e.text || e.name)).toEqual(['x', 'Save']);
+  });
+
   it('counts text that changed in place — the result line an alert wrote', () => {
     const before = [el('button', 'Click for JS Alert'), el('p', '', { id: 'result' })];
     mountPage(before);

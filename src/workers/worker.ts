@@ -51,7 +51,7 @@ import { RunLogger } from './run-logger';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
 import { PageChallengeDetector } from '../modules/execution-engine/challenge-detector';
 import {
-  captureDelta, captureDeltaBaseline, isDeltaScoped, pickDeltaMatch, summariseDelta,
+  captureDeltaFull, captureDeltaBaseline, isDeltaScoped, pickDeltaMatch, summariseDelta,
   STATE_CHANGING_ACTIONS, DELTA_CLEARING_ACTIONS, type DeltaSnapshot,
 } from '../modules/execution-engine/delta';
 import { HealingEngine } from '../modules/healing-engine/healing-engine';
@@ -74,7 +74,7 @@ import { createRedisConnection, RUNS_QUEUE_NAME, SCREENSHOTS_QUEUE_NAME, PERSIST
 import type { RunJobPayload } from '../queue';
 import type { StepAST, ClassifiedFailure, SelectorSet, SelectorEntry, RunContext } from '../types';
 import { isSecretStep, redactStepText, REDACTED } from '../modules/test-writer/secret-steps';
-import { settleAfterNavigation } from '../modules/execution-engine/settle';
+import { settleAfterNavigation, settleDom } from '../modules/execution-engine/settle';
 
 // ─── Module Setup ─────────────────────────────────────────────────────────────
 
@@ -690,9 +690,25 @@ async function executeStep(
   if (deltaScoped && delta.last!.elements.length === 0 && delta.baseline) {
     // Re-diff first: content that renders asynchronously (a spinner finishing,
     // an SPA route settling) can arrive between the action and this assertion.
-    delta.last = { ...delta.last!, elements: await captureDelta(page, delta.baseline) };
+    // Let the DOM go quiet before looking — an app that fetches after a click
+    // has not answered yet the instant the click returns.
+    await settleDom(page);
+    const again = await captureDeltaFull(page, delta.baseline);
+    delta.last = { ...delta.last!, elements: again.elements, removed: again.removed };
   }
-  if (deltaScoped && delta.last!.elements.length === 0) {
+  // Nothing appeared but something DISAPPEARED (a filter hid rows, a banner was
+  // dismissed): the action worked; there is just no new element to scope to.
+  // Resolve the assertion against the whole page instead of declaring the
+  // action a no-op — and say so in the log.
+  const onlyRemovals = deltaScoped && delta.last!.elements.length === 0 && (delta.last!.removed ?? 0) > 0;
+  if (onlyRemovals) {
+    obs.increment('worker.delta_oracle_only_removals');
+    runLog?.log('resolve',
+      `after "${delta.last!.afterStep}" ${delta.last!.removed} element(s) disappeared and nothing appeared — `
+      + 'checking the assertion against the whole page',
+      { stepIndex, data: { removed: delta.last!.removed } });
+  }
+  if (deltaScoped && !onlyRemovals && delta.last!.elements.length === 0) {
     const dialogOnly = delta.last!.dialogAccepted;
     const reason = dialogOnly
       ? `the only thing "${delta.last!.afterStep}" produced was a browser dialog, which Kaizen `
@@ -723,7 +739,7 @@ async function executeStep(
   // ── Resolve selectors ─────────────────────────────────────────────────────
   // navigate and press_key act on the page/keyboard, not a specific DOM element.
   let selectorSet: SelectorSet;
-  if (deltaScoped) {
+  if (deltaScoped && !onlyRemovals) {
     const elements = delta.last!.elements;
     const pick = pickDeltaMatch(step.targetDescription ?? '', elements);
     // The whole delta rides as candidates and the pick is marked, so the run
@@ -926,9 +942,13 @@ async function executeStep(
       delta.baseline = null;
       delta.last = null;
     } else if (STATE_CHANGING_ACTIONS.has(step.action) && delta.baseline) {
-      const changed = await captureDelta(page, delta.baseline);
+      // The click has returned; the app may still be rendering what it did.
+      await settleDom(page);
+      const after = await captureDeltaFull(page, delta.baseline);
+      const changed = after.elements;
       delta.last = {
         elements: changed,
+        removed: after.removed,
         afterStep: step.rawText,
         dialogAccepted: delta.dialogs.count > dialogsBefore,
       };

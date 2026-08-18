@@ -66,6 +66,7 @@ export function viewSwitchCandidates(survey: CandidateNode[]): CandidateNode[] {
     if (!inNav) continue;
     if ((attrs['type'] ?? '').toLowerCase() === 'submit') continue;
     if ('aria-haspopup' in attrs) continue;                    // opens a menu — a probe
+    if ('aria-expanded' in attrs) continue;                    // a disclosure (File / View menus) — a probe
     const lower = name.toLowerCase();
     if (matchesAny(lower, SESSION_ENDING)) continue;
     if (matchesAny(lower, NOT_A_VIEW)) continue;

@@ -53,6 +53,7 @@ describe('viewSwitchCandidates — §1.2', () => {
       node({ role: 'button', name: 'Go', attributes: { ...nav, type: 'submit' } }),
       node({ role: 'button', name: 'New Test', attributes: nav }),
       node({ role: 'button', name: 'Account', attributes: { ...nav, 'aria-haspopup': 'true' } }),
+      node({ role: 'button', name: 'File', attributes: { ...nav, 'aria-expanded': 'false' } }),
       node({ role: 'button', name: '', attributes: nav }),
       node({ role: 'button', name: 'Runs', attributes: nav }),
     ];

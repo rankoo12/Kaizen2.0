@@ -37,6 +37,13 @@ export type DeltaElement = {
 
 export type DeltaSnapshot = {
   elements: DeltaElement[];
+  /**
+   * Elements that were on the page before the action and are gone after it. A
+   * filter that hides rows, a dismissed banner, a deleted item: nothing was
+   * added, yet the action plainly did something. Without this the oracle called
+   * every filter on Kaizen's own Runs view "nothing changed".
+   */
+  removed?: number;
   /** The step whose action produced this delta — quoted in failure messages. */
   afterStep: string;
   /**
@@ -89,7 +96,7 @@ export type WalkArg = {
   cap: number;
 };
 
-export type WalkResult = { keys: string[]; elements: DeltaElement[] };
+export type WalkResult = { keys: string[]; elements: DeltaElement[]; removed: number };
 
 /**
  * The single browser-side pass, run twice: once to record the page, once to
@@ -97,13 +104,17 @@ export type WalkResult = { keys: string[]; elements: DeltaElement[] };
  * computed identically by construction — and no `new Function`, which a page
  * with a strict CSP would refuse.
  *
- * A key is `tag|role|ownText|href|value`. Two decisions matter:
+ * A key is `tag|role|ownText|href|value|state`. Two decisions matter:
  *  - OWN text, not innerText: with innerText every ancestor of a new node also
  *    "changes", and the delta grows up the tree until it contains <body> — at
  *    which point restricting resolution to it means nothing.
  *  - Identity is CONTENT, not node identity, so the diff survives a navigation:
  *    submitting a login form re-renders the same page plus a flash message, and
  *    only the flash comes back as new.
+ *  - STATE is part of identity: aria-pressed / aria-selected / aria-checked /
+ *    aria-expanded / aria-current and disabled. A filter button that becomes
+ *    pressed, a tab that becomes selected, a Save that becomes enabled — each is
+ *    the change the action produced, and the element the assertion is about.
  *  - A REORDER is a change too. Sorting a table leaves the multiset of keys
  *    identical, so the first version of this reported "nothing changed" on a
  *    sort that worked. When nothing was added, the ordered sequence is compared
@@ -116,7 +127,7 @@ export function walk(arg: WalkArg): WalkResult {
   const keys: string[] = [];
   const elements: DeltaElement[] = [];
   const root = document.body;
-  if (!root) return { keys, elements };
+  if (!root) return { keys, elements, removed: 0 };
 
   const before: Record<string, number> = {};
   if (arg.baseline) for (const key of arg.baseline) before[key] = (before[key] ?? 0) + 1;
@@ -152,7 +163,14 @@ export function walk(arg: WalkArg): WalkResult {
 
     const value = tag === 'input' || tag === 'textarea'
       ? ((el as HTMLInputElement).value ?? '') : '';
-    const key = `${tag}|${el.getAttribute('role') ?? ''}|${own}|${el.getAttribute('href') ?? ''}|${value}`;
+    let state = '';
+    for (const a of ['aria-pressed', 'aria-selected', 'aria-checked', 'aria-expanded', 'aria-current', 'aria-disabled']) {
+      const v = el.getAttribute(a);
+      if (v !== null) state += a.slice(5, 8) + '=' + v + ';';
+    }
+    if ((el as HTMLButtonElement).disabled === true) state += 'dis;';
+    if (tag === 'input' && (el as HTMLInputElement).checked) state += 'chk;';
+    const key = `${tag}|${el.getAttribute('role') ?? ''}|${own}|${el.getAttribute('href') ?? ''}|${value}|${state}`;
 
     if (!arg.baseline) { keys.push(key); continue; }
     ordered.push({ el, key, own, value, interactive, tag });
@@ -181,7 +199,17 @@ export function walk(arg: WalkArg): WalkResult {
     }
   }
 
-  return { keys, elements };
+  // What was there before and is not now — counted, not marked: there is no
+  // element left to point at, but "nothing changed" would be a lie.
+  let removed = 0;
+  if (arg.baseline) {
+    for (const key in before) {
+      const gone = before[key] - (seen[key] ?? 0);
+      if (gone > 0) removed += gone;
+    }
+  }
+
+  return { keys, elements, removed };
 
   function describe(el: HTMLElement, marker: string, own: string, value: string, interactive: boolean, tag: string): DeltaElement {
     const name = el.getAttribute('aria-label') || el.getAttribute('placeholder')
@@ -220,13 +248,20 @@ export async function captureDeltaBaseline(page: unknown): Promise<string[]> {
 export async function captureDelta(
   page: unknown, baseline: string[], cap = 40,
 ): Promise<DeltaElement[]> {
+  return (await captureDeltaFull(page, baseline, cap)).elements;
+}
+
+/** As captureDelta, with the count of elements that disappeared. */
+export async function captureDeltaFull(
+  page: unknown, baseline: string[], cap = 40,
+): Promise<{ elements: DeltaElement[]; removed: number }> {
   try {
     const result = await (page as EvaluatingPage).evaluate<WalkResult, WalkArg>(
       walk, { baseline, cap },
     );
-    return result.elements;
+    return { elements: result.elements, removed: result.removed ?? 0 };
   } catch {
-    return [];
+    return { elements: [], removed: 0 };
   }
 }
 
