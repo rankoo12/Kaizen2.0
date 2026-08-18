@@ -22,7 +22,7 @@ const API = process.env.KAIZEN_API ?? 'http://localhost:3000';
 const TARGET = process.env.KAIZEN_TARGET ?? 'https://the-internet.herokuapp.com/';
 const OUT_DIR = join(__dirname, 'results');
 
-type Args = { pages: number; tests: number; brief: string; label: string };
+type Args = { pages: number; tests: number; brief: string; label: string; target: string; login: string | null };
 function parseArgs(): Args {
   const a = process.argv.slice(2);
   const get = (k: string, d: string) => { const i = a.indexOf(`--${k}`); return i >= 0 ? a[i + 1] : d; };
@@ -31,6 +31,11 @@ function parseArgs(): Args {
     tests: Number(get('tests', '30')),
     brief: get('brief', join(__dirname, 'brief.the-internet.txt')),
     label: get('label', 'run'),
+    target: get('target', TARGET),
+    // --login "step one|step two|…": creates an ACTIVE sign-in test in the fresh
+    // suite and runs the analyze in authenticated scope with consent. The steps
+    // are plain English, exactly as a user types them.
+    login: get('login', ''),
   };
 }
 
@@ -97,13 +102,27 @@ async function main(): Promise<void> {
     body: JSON.stringify({ name: `bench ${args.label} ${new Date().toISOString().slice(0, 16)}` }),
   }));
 
+  // Authenticated scope: the sign-in recipe is a real, active test in the suite.
+  let auth: { loginCaseId: string } | null = null;
+  if (args.login) {
+    const steps = args.login.split('|').map((x) => x.trim()).filter(Boolean);
+    const created = await json<{ case: { id: string } }>(await fetch(`${API}/suites/${suite.id}/cases`, {
+      method: 'POST', headers: h,
+      body: JSON.stringify({ name: 'Sign in (bench recipe)', baseUrl: args.target, steps }),
+    }));
+    auth = { loginCaseId: created.case.id };
+    process.stdout.write(`sign-in recipe ${auth.loginCaseId}: ${steps.join(' → ')}
+`);
+  }
+
   const t0 = Date.now();
   const started = await json<{ jobId?: string; job?: { id: string } }>(await fetch(`${API}/suites/${suite.id}/analyze`, {
     method: 'POST', headers: h,
     body: JSON.stringify({
-      targetUrl: TARGET,
+      targetUrl: args.target,
       initBrief: readFileSync(args.brief, 'utf8'),
       allowSyntheticData: true,
+      ...(auth ? { scope: 'authenticated', loginCaseId: auth.loginCaseId, authConsent: true } : {}),
       options: { maxPages: args.pages, maxScenarios: args.tests, planApproval: 'auto' },
     }),
   }));
@@ -137,7 +156,7 @@ async function main(): Promise<void> {
   const vacuous = Object.values(audits).filter((n) => n.some((s) => /vacuous|page_load_only/.test(s))).length;
 
   // Which planned scenarios reached delivery, per page.
-  const pageOf = (s: { targetPages: string[] }) => (s.targetPages[0] ?? '').replace(TARGET.replace(/\/$/, ''), '') || '/';
+  const pageOf = (s: { targetPages: string[] }) => (s.targetPages[0] ?? '').replace(args.target.replace(/\/$/, ''), '') || '/';
   const perPage = new Map<string, { planned: number; delivered: number; names: string[] }>();
   for (const s of planned) {
     const p = pageOf(s);

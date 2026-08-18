@@ -1,0 +1,50 @@
+PURPOSE
+Kaizen is an AI-powered UI test automation product. A user creates a suite, writes tests
+in plain English steps, runs them against a website, reads the run's step-by-step results
+(screenshots, which element was used, whether it self-healed), and can ask the Test Writer
+to analyze a site and propose tests. This is the product's own dashboard.
+
+ROLES
+One signed-in user, the demo account, reached by pressing the "Demo user" button on the
+sign-in page. It is a workspace owner. There is no anonymous access beyond the sign-in
+and register pages.
+
+CRITICAL FLOWS
+- Sign in via "Demo user" -> lands on the Tests page listing suites.
+- Create a suite: the "New suite" action asks for a name and creates it; the new suite
+  appears in the list and can be opened.
+- Inside a suite, create a test: give it a name and one or more English steps such as
+  'navigate to https://the-internet.herokuapp.com/login' and 'verify the text "Login
+  Page" is shown'; the test appears in the suite.
+- Run a test from its row or its page; a run appears with a status that moves from queued
+  to running to passed or failed; opening the run shows each step with a status and an
+  after-screenshot.
+- Run a whole suite with "Run suite"; each active test gets a run.
+- The Runs page lists runs newest first, with a filter; opening one shows the timeline.
+- Edit a test's steps and save; the saved steps show on the test's page.
+- Delete a test from its row menu (confirmation required) and it disappears from the list.
+- The Analyze / Test Writer sheet: enter a site URL and options and start; the job shows
+  progress phases; when it finishes, proposed tests appear with an Accept action.
+- Settings: workspace name and members; API keys page lists keys and can create one.
+
+BUSINESS RULES
+- Every screen requires being signed in; visiting /tests signed out redirects to /login.
+- A test must have at least one step to be saved.
+- The Runs feed never shows a Test Writer proving run.
+- The sidebar navigation (Tests, Runs, Analyses, Settings) appears on every signed-in
+  screen; it is navigation, not the subject of a test.
+
+PRIORITIES
+Suite and test CRUD, running a test and reading its results, run status transitions, the
+runs list and its filter, the Analyze flow's start-and-progress, sign-in redirect for
+protected pages.
+
+CAUTIONS
+- /settings/api-keys and /settings/billing hold secrets and money: never create, reveal,
+  or revoke anything there; read-only.
+- Do not delete suites (they may hold real tests); deleting a single test that this run
+  created is fine.
+- Never accept or dismiss a Test Writer draft that already exists; only inspect.
+- Do not start more than one Analyze job in a test.
+- Do not change workspace name or invite members.
+- All data in this workspace is throwaway demo data — synthetic data consent is safe.
