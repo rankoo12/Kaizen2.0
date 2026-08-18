@@ -324,7 +324,7 @@ work happens once, during the crawl, instead of twice.
 ## 6. Cost, metering & consent
 
 - Pre-flight tenant budget 402 gate (unchanged). Per-job token cap.
-- Caps: `maxScenarios` ≤ 10, ≤ 10 steps/scenario, 1 repair round, 2-run validation
+- Caps: `maxScenarios` ≤ 30 for analyze (raised from 10 on 2026-08-18 — a 40-widget site cannot be covered in ten; cost is linear per scenario), ≤ 5 for scoped suggest, ≤ 10 steps/scenario, 1 repair round, 2-run validation
   concurrency, 5-min run timeout.
 - **Metering fixes shipped with P2**: `generateEmbedding` emits billing events
   (openai.gateway.ts:324 currently emits nothing — also correct

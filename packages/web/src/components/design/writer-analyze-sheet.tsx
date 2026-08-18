@@ -597,9 +597,9 @@ export function AnalyzeSheet({
           )}
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
             <span className="label" style={{ width: 130 }}>Tests to plan</span>
-            <input className="field" type="number" min={1} max={suggest ? 5 : 10} value={maxScenarios}
+            <input className="field" type="number" min={1} max={suggest ? 5 : 30} value={maxScenarios}
               onChange={(e) => setMaxScenarios(
-                Math.min(suggest ? 5 : 10, Math.max(1, Number(e.target.value) || 1)))}
+                Math.min(suggest ? 5 : 30, Math.max(1, Number(e.target.value) || 1)))}
               style={{ width: 70, fontSize: 12.5 }} />
           </div>
           <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
