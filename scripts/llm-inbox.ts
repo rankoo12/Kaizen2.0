@@ -59,6 +59,7 @@ function purposeOf(system: string): string {
   if (/principal QA reviewer|judge/i.test(s)) return 'judgeScenarios';
   if (/classif/i.test(s)) return 'classifyPage';
   if (/brief/i.test(s)) return 'synthesizeAppBrief';
+  if (/Pick the UI element/i.test(s)) return 'resolveElement';
   if (/compile|StepAST|step into/i.test(s)) return 'compileStep';
   if (/resolve|candidate/i.test(s)) return 'resolveElement';
   return 'unknown';

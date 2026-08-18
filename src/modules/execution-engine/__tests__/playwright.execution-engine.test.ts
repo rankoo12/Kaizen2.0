@@ -623,6 +623,13 @@ describe('PlaywrightExecutionEngine', () => {
       mockPage.$eval.mockResolvedValueOnce('button enable'); // no "thing" → unrelated pick → target absent
       expect((await engine.executeStep(mkStep('assert_not_visible'), oneSelector('#enable'), mockPage)).status).toBe('passed');
     });
+    it('assert_not_visible: the role noun in the target is not a match — "the Save button" vs a visible "File" button', async () => {
+      mockPage.isVisible.mockResolvedValueOnce(true);
+      mockPage.$eval.mockResolvedValueOnce(true);
+      mockPage.$eval.mockResolvedValueOnce('button   file'); // tag "button" overlaps only the noun
+      const step = mkStep('assert_not_visible', { targetDescription: 'the "Save" button' });
+      expect((await engine.executeStep(step, oneSelector('role=button[name="File"]'), mockPage)).status).toBe('passed');
+    });
     it('assert_not_text passes when the text is absent', async () => {
       mockPage.$eval.mockResolvedValue(false);
       expect((await engine.executeStep(mkStep('assert_not_text', { value: 'Out of stock', targetDescription: null }), bodySet, mockPage)).status).toBe('passed');

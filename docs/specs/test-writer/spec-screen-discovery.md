@@ -1,7 +1,7 @@
 # Spec: Screen discovery — pages that are reached by clicking, not by URL
 
 **Created:** 2026-08-18
-**Updated:** 2026-08-18 — §1.3 newness rule from run 2; §4 runs 1–6
+**Updated:** 2026-08-18 — §1.3 newness rule from run 2; §4 runs 1–7
 **Status:** Approved by the founder (2026-08-18, "go"); building in PR #101
 **Owner:** test-writer
 **Amends:** `spec-recon-crawler.md` §2 (BFS), §4.1 (classifier); `spec-planner-per-page.md` §1.1 (dossiers)
@@ -115,6 +115,18 @@ as pages (they are).
 | kaizen 4 — actions/toggles are not views, nav is chrome, DOM settle | 10 | 9 | 15 | 4 | 0 | 185k | 11 min |
 | kaizen 5 — delta sees state + removals, aria-expanded not a screen | 7 | 6 | 11 | 7 | 0 | 136k | 7 min |
 | kaizen 6 — AssertionNoAction | 7 | 6 | 16 | 7 | **7** | 205k | 8 min |
+| kaizen 7 — **Claude as the model** (spec-llm-inbox) | 7 | 6 | 20 | 10 | 6 | 0 (140k est.) | 23 min |
+
+Run 7 read: with the judge answering the calls, the plan is the plan I would write (create a test
+and see its row, cancel without saving, stepless save refused, search with no match, filters to
+empty states, run one / run suite, analysis start) — twenty scenarios with concrete outcomes. Nine
+died at validation on the SAME two machinery defects: (a) the New Test sheet's "Target URL" field
+never reached the writer, because probe-revealed elements were named `aria-label / innerText /
+placeholder` and a `<label>`-named input got no name — so every create test omitted the required
+URL and Kaizen refused with a toast; (b) `assert_not_visible`'s stretch guard counted the role noun
+("button") as a distinctive word, so "the Save button is gone" resolved to the menubar's "File" and
+failed. Both fixed for run 8. This is the point of the inbox: it separates the model from the
+machinery, and the machinery was the limit.
 
 Run 6, graded as a senior QA engineer would: **good** — run a single test and watch its status
 change; run a suite and watch the entries change; the Runs filters Active/Failed/Healed each

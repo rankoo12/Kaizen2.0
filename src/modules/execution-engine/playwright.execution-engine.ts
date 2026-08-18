@@ -354,7 +354,13 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
     // GENUINE match from a stretch by requiring the visible element's own
     // role/type/name/text to overlap a distinctive word from the target — else
     // the described target is absent and the assertion holds.
-    const STOP = new Set(['the', 'a', 'an', 'is', 'are', 'be', 'not', 'no', 'on', 'of', 'in', 'to', 'and', 'that', 'this', 'it', 'should', 'still', 'gone', 'removed', 'disappear', 'visible', 'shown', 'present']);
+    // Role nouns are NOT distinctive: `the "Save" button` must not count the
+    // menubar's "File" as a genuine match because both are <button>s. Kaizen's
+    // own dashboard failed nine of nine "the Save button is gone" checks that
+    // way — the sheet had closed, Save was gone, and the guard said "visible".
+    const STOP = new Set(['the', 'a', 'an', 'is', 'are', 'be', 'not', 'no', 'on', 'of', 'in', 'to', 'and', 'that', 'this', 'it', 'should', 'still', 'gone', 'removed', 'disappear', 'visible', 'shown', 'present',
+      'button', 'link', 'field', 'textbox', 'input', 'checkbox', 'radio', 'dropdown', 'select', 'combobox', 'menu', 'item',
+      'element', 'tab', 'box', 'option', 'icon', 'image', 'control', 'row', 'text', 'label', 'heading', 'dialog', 'sheet', 'panel']);
     const targetWords = (step.targetDescription ?? '')
       .toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP.has(w));
 
