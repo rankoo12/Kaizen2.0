@@ -290,6 +290,11 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
       '8. NEW TABS — an element marked "opens a NEW TAB" leaves the current tab where it was. The step',
       '   right after clicking it MUST be {"action":"switch_tab","value":"new"}; only then assert the',
       '   destination (title, url). Asserting on the old tab is a guaranteed failure.',
+      '9. STAY ON THE PLAN — write the behaviour the PLAN OUTLINE describes, on the TARGET PAGE named',
+      '   below. Elements marked SITE-WIDE are the nav and footer: they appear on every page, so a',
+      '   scenario built out of them tests nothing about this one and will be rejected. Use them only',
+      '   to GET somewhere. Start with {"action":"navigate","url":"<the target page>"} — never assume',
+      '   the browser is already there.',
       UNTRUSTED_PREAMBLE,
       '',
       'Return only valid JSON matching exactly:',
@@ -301,12 +306,15 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
     const groundingLines = input.grounding.map((g) =>
       `${g.id} :: ${g.role} "${g.name}" :: ${g.kind} :: on ${g.pageUrl}` +
       (g.revealedBy ? ` :: revealed by "${g.revealedBy}"` : '') +
-      (g.opensNewTab ? ' :: opens a NEW TAB' : ''));
+      (g.opensNewTab ? ' :: opens a NEW TAB' : '') +
+      (g.chrome ? ' :: SITE-WIDE (nav/footer) — context, not what this page is about' : ''));
 
     const user = [
       `PLANNED SCENARIO: ${input.plan.name}`,
       `kind=${input.plan.kind} priority=${input.plan.priority}`,
       `rationale: ${input.plan.rationale}`,
+      input.plan.outline ? `PLAN OUTLINE (what this test must do): ${input.plan.outline}` : '',
+      input.plan.targetPages.length ? `TARGET PAGE(S): ${input.plan.targetPages.join(', ')}` : '',
       input.archetype ? `\nARCHETYPE TO FOLLOW:\n${input.archetype}` : '',
       input.pagePath.length ? `\nOBSERVED PAGE PATH: ${input.pagePath.join(' -> ')}` : '',
       `\nSEED TOKENS: ${input.seedTokens.map((t) => `{{${t}}}`).join(' ')}`,
@@ -349,7 +357,7 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
   async judgeScenarios(input: JudgeInput, tenantId: string): Promise<JudgeVerdict[]> {
     const system = [
       'You are a principal QA engineer reviewing machine-generated end-to-end UI tests before they are',
-      'allowed to spend execution budget. Judge each scenario on four dimensions.',
+      'allowed to spend execution budget. Judge each scenario on five dimensions.',
       '',
       'D1 meaningful_oracle (HARD) — at least one assertion whose truth is CAUSED by the actions before it.',
       '   Pre-state test: "would every assertion already pass on the page the scenario STARTED from,',
@@ -386,15 +394,20 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
       'D2 negative_sharpness (HARD) — for negative tests: exactly ONE invalid condition, and the assertion',
       '   states the PRESENCE of a rejection signal, not merely the absence of success. Non-negative',
       '   scenarios pass this dimension automatically.',
+      'D5 plan_fidelity (HARD) — the steps exercise the behaviour the PLAN OUTLINE describes, on the',
+      '   page the plan named. A scenario that drifts onto site-wide navigation or footer links (the',
+      '   ones present on every page) is not the test that was approved, however well it would run.',
+      '   The outline and the target pages are given with each scenario; judge against them.',
       'D3 realism (SOFT) — a task a real user sets out to accomplish, nameable as a user story;',
       '   not page-poking or a crawler-style sweep.',
       'D4 marginal_value (SOFT) — adds coverage the rest of this batch does not already have.',
       '',
-      'Verdict rule: PROPOSE when both HARD dimensions pass and at most one SOFT fails.',
+      'Verdict rule: PROPOSE when all three HARD dimensions pass and at most one SOFT fails.',
       'REVISE when the ACTIONS are a real user task but a HARD dimension fails only because the',
       '   ORACLE is weak (asserts the wrong thing, or something already true) — a REVISE is sent back',
-      '   for one rewrite, so its reason must say what to assert instead. Also REVISE when both HARD',
-      '   pass but both SOFT fail.',
+      '   for one rewrite, so its reason must say what to assert instead. Also REVISE when the scenario',
+      '   drifted from the plan but the plan is still writable from the elements it was given, and when',
+      '   both HARD dimensions pass but both SOFT fail.',
       'REJECT when the scenario exercises nothing that a better assertion could rescue: no state',
       '   change at all, page-poking, or a premise the app does not support.',
       'Lint findings are advisory evidence — weigh them, do not obey them blindly.',
@@ -402,7 +415,7 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
       '',
       'Return only valid JSON matching exactly:',
       '{"verdicts":[{"planRef":"...","verdict":"PROPOSE|REVISE|REJECT",',
-      ' "dimensions":[{"dimension":"meaningful_oracle|negative_sharpness|realism|marginal_value",',
+      ' "dimensions":[{"dimension":"meaningful_oracle|negative_sharpness|plan_fidelity|realism|marginal_value",',
       '   "pass":true,"reason":"one sentence"}]}]}',
       'Judge every scenario given, in the order supplied.',
     ].join('\n');
@@ -412,12 +425,14 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
       `name: ${s.name}`,
       `kind: ${s.kind}`,
       `rationale: ${s.rationale}`,
+      s.outline ? `plan outline: ${s.outline}` : '',
+      s.targetPages?.length ? `planned for page(s): ${s.targetPages.join(', ')}` : '',
       'steps:',
       ...s.steps.map((step, n) => `  ${n + 1}. ${step}`),
       input.lintFindings[s.planRef]?.length
         ? `lint findings: ${input.lintFindings[s.planRef].join('; ')}`
         : 'lint findings: none',
-    ].join('\n')).join('\n\n');
+    ].filter(Boolean).join('\n')).join('\n\n');
 
     // FRONTIER, deliberately. Probed 2026-08-17 with the five saucedemo shapes
     // (cart-with-capture, remove, open-menu, sort-by-url, static-heading): the

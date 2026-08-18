@@ -1,9 +1,10 @@
 # Spec: Oracle delta + scenario fidelity — what the-internet run taught us
 
 **Created:** 2026-08-18
-**Updated:** 2026-08-18 — §1 and §5 built (Batch 1a); as-built notes and the real-browser
-measurement recorded below
-**Status:** §1 + §5 built; §2 next (Batch 1b); §3/§4 planned
+**Updated:** 2026-08-18 — §1 and §5 built (Batch 1a) with the real-browser measurement below;
+§2 built (Batch 1b) except the page-text item, which moves to Batch 2 with §3
+**Status:** Batch 1 built (§1, §2, §5); Batch 2 (§3, §4 trailing slash, page text) and Batch 3
+(§4 401 + finding collapse) planned
 **Owner:** test-writer / worker
 **Evidence:** the-internet.herokuapp.com, prod, 2026-08-18: 50 pages, 30 planned → 10 proposed
 (1 proven, 9 needs review), 18 rejected, 116.6k tokens. Founder review of all 10 proposed +
@@ -124,6 +125,32 @@ the login negatives resolve to the flash text instead of its "×" button.
 - **The writer is told what Kaizen cannot see:** downloaded files, native dialogs' contents (they
   are auto-accepted), and iframes' internals (unless a frame step exists). No test may assert on
   those.
+
+### 2.1 As built (2026-08-18)
+
+- **Chrome is computed, not stored.** `getGroundingElements` derives it in the same query: an
+  element whose role+name appears on ≥ 60 % of the suite's crawled pages (and ≥ 5 pages crawled)
+  is chrome. Read-side means it is always consistent with the current crawl and needs no migration
+  or second write pass. Chrome also ranks **last** within its kind under the per-page cap, so when
+  the cap bites it is the page's own controls that survive.
+- The writer prompt marks those rows `:: SITE-WIDE (nav/footer) — context, not what this page is
+  about`, and HARD RULE 9 tells the model to stay on the plan and to start with a `navigate`.
+- **The planner is not changed:** it never sees elements (it plans from page purposes and
+  capabilities), so there is nothing there to mark. The drift happened in WRITE, and that is where
+  the marker, the judge dimension and the gate now sit.
+- **`checkChromeOnly` is a repair instruction, not a rejection** — consistent with
+  spec-judge-repair-loop: the scenario gets one more attempt, on the frontier tier, with the
+  page's own controls named for it ("for example: searchbox \"Search\"…"). Only a second failure
+  ends the scenario.
+- **Judge D5 `plan_fidelity` is HARD** and the judge body now carries `plan outline:` and
+  `planned for page(s):` per scenario. The verdict rule becomes "PROPOSE when all three HARD
+  dimensions pass"; a drift that is still writable from the given elements is a REVISE, so it
+  rides the existing rewrite round rather than dying.
+- **`prependNavigate`** runs after the schema gate and before render, so the sentence a human
+  reviews and the AST the worker runs both contain it. A Tier-2 negative's `failStepIndex` moves
+  with the inserted step.
+- **Page text for control-less pages moves to Batch 2**, with the nearby-text names (§3): both are
+  changes to what recon captures, and they belong in one pass.
 
 ## 3. Names for the nameless (recon)
 

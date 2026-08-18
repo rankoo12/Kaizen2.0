@@ -124,6 +124,66 @@ export function checkKnownEntityBinding(
 }
 
 /**
+ * A scenario that only ever touches the nav bar and the footer is not a test of
+ * the page it was planned for — those elements are on every page. This is how
+ * "Manipulate input text and submit" shipped as a click on the site-wide
+ * "Elemental Selenium" footer link and passed.
+ *
+ * Returned as a repair instruction rather than a rejection: the writer gets one
+ * more attempt, on the frontier tier, with the page's own controls in front of
+ * it. Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+ */
+export function checkChromeOnly(
+  steps: StepIntent[],
+  elements: Map<string, GroundingElement>,
+): string[] {
+  const touched: GroundingElement[] = [];
+  for (const step of steps) {
+    if (step.action.startsWith('assert_')) continue;
+    const target = 'target' in step ? step.target : undefined;
+    if (!target || target.kind !== 'element') continue;
+    const element = elements.get(target.elementId);
+    if (element) touched.push(element);
+  }
+  if (touched.length === 0 || touched.some((el) => !el.chrome)) return [];
+
+  const pageSpecific = [...elements.values()].filter((el) => !el.chrome).slice(0, 8);
+  return [
+    'every element this scenario interacts with is site-wide navigation or footer '
+    + `(${touched.map((el) => `"${el.name}"`).join(', ')}), which appears on every page — so the `
+    + 'scenario tests nothing about the page it was planned for. Use the controls that belong to '
+    + 'that page'
+    + (pageSpecific.length
+      ? `, for example: ${pageSpecific.map((el) => `${el.role} "${el.name}"`).join(', ')}.`
+      : '. If that page has no controls of its own, assert its text instead.'),
+  ];
+}
+
+/**
+ * A scenario that does not say where it starts runs wherever the previous test
+ * left the browser — in practice, the site's home page. Two proving runs died
+ * that way. The plan already names the page, so the step can simply be added.
+ *
+ * `failStepIndex` is body-relative, so a Tier-2 negative's expected failure
+ * point moves with it.
+ * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+ */
+export function prependNavigate(
+  steps: StepIntent[],
+  plan: PlannedScenario,
+  expectation: ScenarioExpectation,
+): { steps: StepIntent[]; expectation: ScenarioExpectation } {
+  const url = plan.targetPages[0];
+  if (!url || steps[0]?.action === 'navigate') return { steps, expectation };
+  return {
+    steps: [{ action: 'navigate', url }, ...steps],
+    expectation: expectation.outcome === 'fail'
+      ? { ...expectation, failStepIndex: expectation.failStepIndex + 1 }
+      : expectation,
+  };
+}
+
+/**
  * Best-effort one-line rendering of steps that did NOT pass the schema gate —
  * the canonical renderer needs valid intents, and these by definition are not.
  * Enough for a human to see what the model tried ("type in the Cart link").
@@ -241,10 +301,34 @@ export class ScenarioWriter {
         continue;
       }
 
+      // A scenario built entirely out of the nav bar and the footer is not a
+      // test of the page it was planned for. One rewrite, on the frontier tier,
+      // with the page's own controls named for it.
+      const chromeErrors = checkChromeOnly(gate.steps, elements);
+      if (chromeErrors.length > 0) {
+        repairErrors = chromeErrors;
+        this.obs.increment('testwriter.write_chrome_only_reject', { attempt: String(attempt) });
+        continue;
+      }
+
       const kind: 'positive' | 'negative' = generated.kind === 'negative' ? 'negative' : 'positive';
 
+      const rawExpectation: ScenarioExpectation =
+        generated.expectation?.outcome === 'fail'
+          ? {
+              outcome: 'fail',
+              failStepIndex: Number(generated.expectation.failStepIndex ?? 0),
+              reason: String(generated.expectation.reason ?? ''),
+            }
+          : { outcome: 'pass' };
+
+      // Say where the test starts. Without this the run begins wherever the
+      // browser happens to be — the site's home page — and the first click
+      // resolves against the wrong page.
+      const { steps: intents, expectation } = prependNavigate(gate.steps, plan, rawExpectation);
+
       // Safety: decided on intents (action + element name), not on prose.
-      const safety = classifyScenarioSafety(gate.steps, elements, {
+      const safety = classifyScenarioSafety(intents, elements, {
         safeMode: params.safeMode,
         stopBeforeMoney: plan.source.kind === 'catalog'
           && getArchetype(plan.source.archetypeKey)?.safety === 'stop-before-money',
@@ -259,7 +343,7 @@ export class ScenarioWriter {
 
       let steps: RenderedStep[];
       try {
-        steps = renderScenario(gate.steps, elements);
+        steps = renderScenario(intents, elements);
       } catch (err) {
         return {
           ok: false,
@@ -271,28 +355,19 @@ export class ScenarioWriter {
         };
       }
 
-      const expectation: ScenarioExpectation =
-        generated.expectation?.outcome === 'fail'
-          ? {
-              outcome: 'fail',
-              failStepIndex: Number(generated.expectation.failStepIndex ?? 0),
-              reason: String(generated.expectation.reason ?? ''),
-            }
-          : { outcome: 'pass' };
-
       return {
         ok: true,
         scenario: {
           plan,
           name: String(generated.name ?? plan.name).slice(0, 300),
           kind,
-          intents: gate.steps,
+          intents,
           steps,
           expectation,
           rationale: String(generated.rationale ?? plan.rationale).slice(0, 500),
-          lintFindings: lintScenario(gate.steps, kind),
+          lintFindings: lintScenario(intents, kind),
           needsConsent: safety.verdict === 'needs-consent',
-          selectorSeeds: collectSelectorSeeds(gate.steps, steps, elements),
+          selectorSeeds: collectSelectorSeeds(intents, steps, elements),
         },
       };
     }

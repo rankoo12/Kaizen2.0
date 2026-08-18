@@ -394,7 +394,7 @@ export class SiteModelRepository {
       const { rows } = await client.query<{
         id: string; page_url: string; role: string; name: string;
         kind: string; revealed_by: string | null; selector: string | null; rn: string;
-        target: string | null;
+        target: string | null; chrome: boolean | null;
       }>(
         // The per-page cap is ROUND-ROBIN ACROSS KINDS, not a flat alphabetical
         // slice. Ordering by (kind, name) and cutting at 40 sorted 'button'
@@ -407,16 +407,42 @@ export class SiteModelRepository {
         // Ranking within each kind first and interleaving guarantees the scarce
         // kinds survive: you cannot write a form test without an input, and the
         // 41st button is worth far less than the 1st text field.
-        `SELECT id, page_url, role, name, kind, revealed_by, selector, target, rn FROM (
-           SELECT id, page_url, role, name, kind, revealed_by, selector, target,
+        // SITE CHROME is computed here rather than stored: an element whose
+        // role+name appears on 60% or more of the crawled pages is the nav or
+        // the footer, and it is context for every page rather than the subject
+        // of any. Read-side, so it is always consistent with the current crawl
+        // and needs no migration or second write pass.
+        // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+        `WITH crawled AS (
+           SELECT count(*)::numeric AS n FROM site_pages
+           WHERE tenant_id = $1 AND suite_id = $2
+         ),
+         site_wide AS (
+           SELECT pe.role, pe.name
+           FROM page_elements pe
+           JOIN site_pages sp ON sp.id = pe.page_id
+           WHERE pe.tenant_id = $1 AND sp.suite_id = $2 AND pe.name <> ''
+           GROUP BY pe.role, pe.name
+           HAVING (SELECT n FROM crawled) >= 5
+              AND count(DISTINCT pe.page_id) >= 0.6 * (SELECT n FROM crawled)
+         )
+         SELECT id, page_url, role, name, kind, revealed_by, selector, target, chrome, rn FROM (
+           SELECT id, page_url, role, name, kind, revealed_by, selector, target, chrome,
                   ROW_NUMBER() OVER (PARTITION BY page_id ORDER BY kind_rank, kind, name) AS rn
            FROM (
              SELECT pe.id, sp.url_normalized AS page_url, pe.role, pe.name, pe.kind,
                     pe.revealed_by, pe.selector, pe.page_id,
                     pe.attributes->>'target' AS target,
-                    ROW_NUMBER() OVER (PARTITION BY pe.page_id, pe.kind ORDER BY pe.name) AS kind_rank
+                    (sw.name IS NOT NULL) AS chrome,
+                    -- Site-wide chrome ranks LAST within its kind: when the cap
+                    -- bites, the page's own controls are the ones worth keeping.
+                    ROW_NUMBER() OVER (
+                      PARTITION BY pe.page_id, pe.kind
+                      ORDER BY (sw.name IS NOT NULL), pe.name
+                    ) AS kind_rank
              FROM page_elements pe
              JOIN site_pages sp ON sp.id = pe.page_id
+             LEFT JOIN site_wide sw ON sw.role = pe.role AND sw.name = pe.name
              WHERE pe.tenant_id = $1 AND sp.suite_id = $2
                AND sp.url_normalized = ANY($3::text[])
                AND pe.name <> ''
@@ -440,6 +466,7 @@ export class SiteModelRepository {
         revealedBy: r.revealed_by,
         selector: r.selector,
         opensNewTab: r.target === '_blank',
+        chrome: r.chrome === true,
       }));
     });
   }

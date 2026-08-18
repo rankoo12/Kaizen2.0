@@ -1,8 +1,10 @@
-import { ScenarioWriter, summariseRawSteps } from '../write/scenario-writer';
+import { ScenarioWriter, summariseRawSteps, checkChromeOnly, prependNavigate } from '../write/scenario-writer';
 import { groundingNotes } from '../write/grounding-notes';
 import type { ITestWriterGateway } from '../../llm-gateway/testwriter.interfaces';
 import type { IObservability } from '../../observability/interfaces';
-import type { GroundingElement, PlannedScenario, WriteInput } from '../../../types/test-writer';
+import type {
+  GroundingElement, PlannedScenario, ScenarioExpectation, StepIntent, WriteInput,
+} from '../../../types/test-writer';
 
 /**
  * Spec: docs/specs/test-writer/spec-judge-repair-loop.md §2.4, §2.5
@@ -136,5 +138,81 @@ describe('summariseRawSteps', () => {
       'garbage', 'null',
     ]);
     expect(summariseRawSteps('not an array', elements)).toEqual([]);
+  });
+});
+
+describe('checkChromeOnly', () => {
+  /**
+   * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+   * The nav bar and the footer are on every page, so a scenario made only of
+   * them tests nothing about the page it was planned for — however green it runs.
+   */
+  const FOOTER = { ...element('55555555-5555-4555-8555-555555555555', 'link', 'Elemental Selenium'), chrome: true };
+  const HOME = { ...element('66666666-6666-4666-8666-666666666666', 'link', 'Home'), chrome: true };
+  const elements = new Map([
+    [FOOTER.id, FOOTER], [HOME.id, HOME], [SEARCH_BOX.id, SEARCH_BOX],
+  ]);
+
+  it('objects when every interaction is site-wide, and names what to use instead', () => {
+    const steps: StepIntent[] = [
+      { action: 'click', target: { kind: 'element', elementId: HOME.id } },
+      { action: 'click', target: { kind: 'element', elementId: FOOTER.id } },
+      { action: 'assert_title', value: 'Selenium' },
+    ];
+    const errors = checkChromeOnly(steps, elements);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/site-wide navigation or footer/);
+    expect(errors[0]).toMatch(/searchbox "Search"/);
+  });
+
+  it('is silent as soon as one interaction belongs to the page', () => {
+    const steps: StepIntent[] = [
+      { action: 'click', target: { kind: 'element', elementId: HOME.id } },
+      { action: 'type', target: { kind: 'element', elementId: SEARCH_BOX.id }, value: 'x' },
+    ];
+    expect(checkChromeOnly(steps, elements)).toEqual([]);
+  });
+
+  it('ignores assertions — checking a site-wide element is not the same as testing it', () => {
+    const steps: StepIntent[] = [
+      { action: 'type', target: { kind: 'element', elementId: SEARCH_BOX.id }, value: 'x' },
+      { action: 'assert_visible', target: { kind: 'element', elementId: FOOTER.id } },
+    ];
+    expect(checkChromeOnly(steps, elements)).toEqual([]);
+  });
+
+  it('says nothing about a scenario that interacts with nothing at all', () => {
+    expect(checkChromeOnly([{ action: 'assert_title', value: 'x' }], elements)).toEqual([]);
+  });
+});
+
+describe('prependNavigate', () => {
+  /**
+   * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+   * A test that never says where it starts runs wherever the browser was left.
+   */
+  const pass: ScenarioExpectation = { outcome: 'pass' };
+  const click: StepIntent = { action: 'click', target: { kind: 'element', elementId: CART_LINK.id } };
+
+  it('starts the scenario on the page it was planned for', () => {
+    const result = prependNavigate([click], plan, pass);
+    expect(result.steps[0]).toEqual({ action: 'navigate', url: 'https://shop.test/inventory' });
+    expect(result.steps).toHaveLength(2);
+  });
+
+  it('leaves a scenario that already navigates alone', () => {
+    const steps: StepIntent[] = [{ action: 'navigate', url: 'https://shop.test/cart' }, click];
+    expect(prependNavigate(steps, plan, pass).steps).toEqual(steps);
+  });
+
+  it('moves the expected failure point with the steps', () => {
+    const expectation: ScenarioExpectation = { outcome: 'fail', failStepIndex: 2, reason: 'rejected' };
+    const result = prependNavigate([click], plan, expectation);
+    expect(result.expectation).toEqual({ outcome: 'fail', failStepIndex: 3, reason: 'rejected' });
+  });
+
+  it('does nothing when the plan names no page', () => {
+    const noPages = { ...plan, targetPages: [] };
+    expect(prependNavigate([click], noPages, pass).steps).toEqual([click]);
   });
 });
