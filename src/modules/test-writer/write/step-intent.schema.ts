@@ -97,6 +97,10 @@ export const StepIntentSchema: z.ZodType<StepIntent> = z.discriminatedUnion('act
 const STATE_CHANGING = new Set([
   'click', 'double_click', 'right_click', 'type', 'select', 'check', 'uncheck',
   'clear', 'press_key', 'click_random', 'drag_and_drop', 'upload',
+  // Hover reveals captions, menus and tooltips — a whole class of pages exists
+  // to test it, and treating it as inert made every one of them unwritable.
+  // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+  'hover',
 ]);
 
 const ASSERTIONS = new Set([

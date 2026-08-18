@@ -517,6 +517,10 @@ async function runGenerationPhases(
       scenarios: batch.map((w) => ({
         planRef: w.plan.name, name: w.name, kind: w.kind,
         steps: w.steps.map((s) => s.text), rationale: w.rationale,
+        // What was approved, next to what was written — the judge cannot ask
+        // "is this the test the plan promised?" without it.
+        // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+        outline: w.plan.outline, targetPages: w.plan.targetPages,
       })),
       lintFindings: Object.fromEntries(batch.map((w) => [w.plan.name, w.lintFindings])),
     }, payload.tenantId),

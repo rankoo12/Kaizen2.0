@@ -199,6 +199,14 @@ export type GroundingElement = {
    * saucedemo social-link tests asserted the old tab's title and failed.
    */
   opensNewTab?: boolean;
+  /**
+   * This element appears on most pages of the site — a nav bar, a footer link.
+   * It is CONTEXT, not the subject of any one page's tests. A scenario planned
+   * for /inputs that ends up clicking the footer's "Elemental Selenium" link has
+   * drifted, however green it runs.
+   * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+   */
+  chrome?: boolean;
 };
 
 export type WriteInput = {
@@ -243,6 +251,7 @@ export type WriteInput = {
 export type JudgeDimension =
   | 'meaningful_oracle'   // HARD — the pre-state test
   | 'negative_sharpness'  // HARD
+  | 'plan_fidelity'       // HARD — does it do what the plan said, on that page?
   | 'realism'             // SOFT
   | 'marginal_value';     // SOFT
 
@@ -260,6 +269,15 @@ export type JudgeInput = {
     /** Rendered canonical NL — what a human would read. */
     steps: string[];
     rationale: string;
+    /**
+     * What the plan said this scenario would do, and where. Without it the judge
+     * can only ask "is this a good test?" and never "is this the test that was
+     * approved?" — which is how a scenario planned for /inputs shipped as a
+     * click on the site-wide footer link.
+     * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+     */
+    outline?: string;
+    targetPages?: string[];
   }>;
   /** Advisory lint findings, per scenario planRef — the judge weighs them. */
   lintFindings: Record<string, string[]>;

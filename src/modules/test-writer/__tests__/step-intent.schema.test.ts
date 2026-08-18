@@ -81,6 +81,18 @@ describe('runSchemaGate — description-variant exemptions', () => {
     expect(result.ok).toBe(true);
   });
 
+  // the-internet /hovers, 2026-08-18: the caption under an avatar exists only
+  // while the pointer is over it. Treating hover as inert made every page whose
+  // whole subject is hover unwritable.
+  // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+  it('treats hover as a state change, so what it reveals can be asserted', () => {
+    const result = runSchemaGate([
+      { action: 'hover', target: { kind: 'element', elementId: ELEMENT_A } },
+      { action: 'assert_visible', target: { kind: 'description', description: 'the caption for the first user' } },
+    ], valid, 10);
+    expect(result.ok).toBe(true);
+  });
+
   it('allows a discover oracle directly after a state-changing action', () => {
     const result = runSchemaGate([
       { action: 'type', target: { kind: 'element', elementId: ELEMENT_A }, value: 'not-an-email' },
