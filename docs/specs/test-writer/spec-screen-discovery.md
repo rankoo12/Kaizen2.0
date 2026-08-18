@@ -1,7 +1,7 @@
 # Spec: Screen discovery — pages that are reached by clicking, not by URL
 
 **Created:** 2026-08-18
-**Updated:** 2026-08-18 — §1.3 newness rule from run 2
+**Updated:** 2026-08-18 — §1.3 newness rule from run 2; §4 runs 1–5
 **Status:** Approved by the founder (2026-08-18, "go"); building in PR #101
 **Owner:** test-writer
 **Amends:** `spec-recon-crawler.md` §2 (BFS), §4.1 (classifier); `spec-planner-per-page.md` §1.1 (dossiers)
@@ -107,6 +107,33 @@ as pages (they are).
 
 ## 4. Measured
 
-| run | pages crawled | screens | planned | proposed | proven | tokens |
-|---|---|---|---|---|---|---|
-| kaizen 1 (before) | 1 | — | 3 | 3 | 0 | 35k |
+| run | pages crawled | screens | planned | proposed | proven | tokens | time |
+|---|---|---|---|---|---|---|---|
+| kaizen 1 (before) | 1 | — | 3 | 3 | 0 | 35k | 2.5 min |
+| kaizen 2 — §1.1–1.5 as first built | 6 | 5 | 4 (+2 fill) | *(orphaned: a source edit reloaded the container mid-run)* | | | recon 5 min |
+| kaizen 3 — looser newness, one try per nav slug, seeded demo workspace | 12 | 11 | 7 (+5) | 6 | 0 | 184k | 25 min |
+| kaizen 4 — actions/toggles are not views, nav is chrome, DOM settle | 10 | 9 | 15 | 4 | 0 | 185k | 11 min |
+| kaizen 5 — delta sees state + removals, aria-expanded not a screen | 7 | 6 | 11 | 7 | 0 | 136k | 7 min |
+
+Run 5 read: the screen set is exactly the app (tests, both suites, runs, analyses, the-brain, usage);
+the filter tests now pass validation; and all seven proposed are `vacuous_oracle` because the
+probe's page-wide fallback for a description target passes trivially — fixed as `AssertionNoAction`
+(spec-oracle-delta-and-fidelity §1.2); run 6 measures it.
+
+Run 3 read: the plans reached the real screens (Runs filters, Run suite, The Brain search,
+Analyses start), and every one that reached the browser died on the delta oracle with "nothing on
+the page changed" — because `walk()` only recorded *added* elements, so a filter that hides rows and
+a button whose `aria-pressed` flips were "nothing". Also: "Run now" was clicked as a screen (a real
+run started) — the destructive lexicon knows "delete" but not "run"; the sidebar's items were not
+chrome (their names carry live counts, "Tests 0" → "Tests 6", so no name reached 60 %); recon
+captured the dashboard while it still read "Signing in…". Each is fixed in commits `81c0658` and
+`51e2387`; run 5 measures them.
+
+Every proposed test in runs 3–4 was `vacuous_oracle`, and correctly so: "type 'Happy Test Name' →
+Save → verify the new test in the list is visible" holds without the actions. The writer now asserts
+the literal it typed (rule 4).
+
+Kaizen's own UI, as findings for the design tool: the new-test name field is named by its
+placeholder ("Sign in with valid credentials"); the "Needs a human" filter's accessible name carries
+its hint ("Needs a human 2 tap to filter"); five icon buttons have no name; console errors on
+every screen.

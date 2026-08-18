@@ -1,6 +1,7 @@
 # Spec: Oracle delta + scenario fidelity — what the-internet run taught us
 
 **Created:** 2026-08-18
+**Updated:** 2026-08-18 — §1.2 from Kaizen-on-Kaizen (state, removals, settle, no-action)
 **Updated:** 2026-08-18 — §1 and §5 built (Batch 1a) with the real-browser measurement below;
 §2 built (Batch 1b); §3 and §4 built (Batch 2, which absorbed Batch 3's two report fixes); §2.2
 added from run 2 and built
@@ -103,6 +104,28 @@ the login negatives resolve to the flash text instead of its "×" button.
 >
 > Four of the five false passes in the run that prompted this spec are answered directly by that
 > table; the fifth (the download link) has no delta and now fails.
+
+### 1.2 What Kaizen-on-Kaizen taught (2026-08-18, runs 3–5 of `spec-screen-discovery.md`)
+
+- **State is identity.** The key gains `|state` (`aria-pressed/selected/checked/expanded/current`,
+  `aria-disabled`, `disabled`, `checked`). A filter button that becomes pressed, a tab that becomes
+  selected, a Save that becomes enabled — each is the element the action changed. Before this, a
+  filter on Kaizen's own Runs view was "nothing changed" (rows were only *hidden*, and hiding adds
+  nothing).
+- **Removals count.** `walk()` returns `removed` — baseline keys with fewer occurrences now. Nothing
+  added but something gone (rows filtered, a banner dismissed, an item deleted) is a change; the
+  assertion is then checked against the whole page with a log line saying why, instead of
+  `AssertionNothingChanged`.
+- **The DOM settles before the after-snapshot** (`settleDom`, 400 ms quiet / 2 s ceiling), and again
+  before the re-diff at assertion time. A click returns before the app that fetches has answered.
+- **A discover oracle with no action before it fails** — `AssertionNoAction`, "no action came before
+  this check on this page". Its definition is *what the previous action changed*; with none, page-wide
+  resolution passed on whatever it found. That is how the vacuity probe (navigates + assertions,
+  actions removed) called every delta-scoped test vacuous — seven of seven in run 5 — and how a test
+  could be green while checking nothing. Filed as the test's defect, never the app's; the validation
+  runner names it in plain words.
+- The delta oracle makes the vacuity probe redundant for description-target assertions by
+  construction; the probe still catches literal-value assertions that were true before the action.
 
 ## 2. Scenario fidelity (writer + judge)
 

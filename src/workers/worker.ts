@@ -686,6 +686,31 @@ async function executeStep(
   // was clicked. This assertion may only look at what the previous action
   // CHANGED. An empty delta is not "look harder", it is the answer: the action
   // did nothing. Spec: spec-oracle-delta-and-fidelity.md §1
+  // A discover oracle with NO action before it on this page has nothing to be
+  // about. "navigate → verify the error message is visible" resolved page-wide
+  // and passed on whatever it found — which is exactly how the vacuity probe
+  // (navigates + assertions, actions removed) called every delta-scoped test
+  // vacuous, and how a test could be green while checking nothing. The
+  // definition of the oracle is "what the previous action changed"; with no
+  // action, the honest answer is a failure that says so.
+  // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §1
+  if (delta.enabled && isDeltaScoped(step) && delta.last === null) {
+    const reason = 'no action came before this check on this page — there is nothing it could be verifying';
+    obs.increment('worker.delta_oracle_no_action');
+    const afterPng = secretStep ? null : await page.screenshot({ type: 'png' }).catch(() => null);
+    const afterKey = afterPng ? screenshots.keyFor(tenantId, runId, stepIndex, 'after') : null;
+    if (afterPng) {
+      void bus.publish({ kind: 'screenshot.upload', tenantId, runId, stepIndex, timing: 'after', png: afterPng, attempt });
+    }
+    void insertStepResult(
+      tenantId, runId, step, stepIndex, 'failed', null, afterKey,
+      Date.now() - stepStart, null, null, null, null, 0, null, 'AssertionNoAction', stepId,
+    );
+    runLog?.log('assert', `assertion failed — ${reason}`, { stepIndex, level: 'error' });
+    await runLog?.flush();
+    return { status: 'failed', healed: false, afterPng };
+  }
+
   const deltaScoped = delta.enabled && isDeltaScoped(step) && delta.last !== null;
   if (deltaScoped && delta.last!.elements.length === 0 && delta.baseline) {
     // Re-diff first: content that renders asynchronously (a spinner finishing,
