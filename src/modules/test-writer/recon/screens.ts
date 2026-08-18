@@ -1,5 +1,5 @@
 import type { CandidateNode } from '../../../types';
-import { DESTRUCTIVE_VERBS, SESSION_ENDING, isOpenerName, matchesAny } from './safety';
+import { SESSION_ENDING, isOpenerName, matchesAny } from './safety';
 
 /**
  * Screen discovery — pages that are reached by clicking, not by URL.
@@ -26,6 +26,29 @@ export const SCREEN_CANDIDATES_PER_PAGE = 12;
 const SWITCH_ROLES = new Set(['button', 'menuitem', 'link']);
 
 /**
+ * Names that are an ACTION or a UI toggle, not a view. Its own list rather than
+ * the crawler's destructive lexicon: that one bans "checkout" and "order",
+ * which in a sidebar are pages ("Checkout smoke", "Orders"), and misses "run",
+ * "refresh" and "hide sidebar" — run 3 of Kaizen-on-Kaizen clicked "Run now" as
+ * a screen and started a real run. Word-boundary matched, lowercase.
+ */
+export const NOT_A_VIEW = [
+  // commits and irreversibles
+  'submit', 'save', 'update', 'confirm', 'apply', 'accept', 'reject', 'approve', 'reset', 'clear',
+  'upload', 'download', 'install', 'send', 'post', 'pay', 'buy', 'purchase', 'delete', 'remove',
+  'transfer', 'withdraw', 'deactivate', 'publish', 'unpublish', 'cancel', 'subscribe', 'unsubscribe',
+  'add to cart', 'add to bag', 'invite', 'merge', 'deploy', 'import', 'export', 'generate',
+  // starts something
+  'run', 're-run', 'rerun', 'start', 'stop', 'execute', 'launch', 'trigger', 'retry', 'refresh',
+  'reload', 'sync', 'analyze', 'analyse', 'scan',
+  // window and layout toggles, and stepping controls
+  'close', 'hide', 'show', 'toggle', 'collapse', 'expand', 'minimise', 'minimize', 'maximise',
+  'maximize', 'fill the screen', 'fullscreen', 'zoom', 'back', 'next', 'previous', 'prev',
+  // account flows are the login recipe's business
+  'sign in', 'log in', 'login', 'sign up', 'signup', 'register',
+] as const;
+
+/**
  * Elements that look like they switch the view: hrefless, in a navigation
  * container or marked aria-current, named, and not something that commits,
  * opens a form, or ends the session.
@@ -45,7 +68,7 @@ export function viewSwitchCandidates(survey: CandidateNode[]): CandidateNode[] {
     if ('aria-haspopup' in attrs) continue;                    // opens a menu — a probe
     const lower = name.toLowerCase();
     if (matchesAny(lower, SESSION_ENDING)) continue;
-    if (matchesAny(lower, DESTRUCTIVE_VERBS)) continue;
+    if (matchesAny(lower, NOT_A_VIEW)) continue;
     if (isOpenerName(lower)) continue;                         // "New test" reveals a form — a probe
     const key = `${node.role}|${lower}`;
     if (seen.has(key)) continue;

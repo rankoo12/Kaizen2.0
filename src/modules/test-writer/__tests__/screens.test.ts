@@ -59,6 +59,23 @@ describe('viewSwitchCandidates — §1.2', () => {
     expect(viewSwitchCandidates(survey).map((c) => c.name)).toEqual(['Runs']);
   });
 
+  it('actions and layout toggles are not views; a suite named "Checkout smoke" is', () => {
+    const nav = { 'nav-context': 'nav-class' };
+    const survey = [
+      node({ role: 'button', name: 'Run now (⌘R)', attributes: nav }),
+      node({ role: 'button', name: 'Re-run', attributes: nav }),
+      node({ role: 'button', name: 'Refresh', attributes: nav }),
+      node({ role: 'button', name: 'Close', attributes: nav }),
+      node({ role: 'button', name: 'Hide sidebar (⌥⌘S)', attributes: nav }),
+      node({ role: 'button', name: 'Fill the screen', attributes: nav }),
+      node({ role: 'button', name: 'Analyze', attributes: nav }),
+      node({ role: 'button', name: 'Back', attributes: nav }),
+      node({ role: 'button', name: 'Checkout smoke 6', attributes: nav }),
+      node({ role: 'button', name: 'Orders', attributes: nav }),
+    ];
+    expect(viewSwitchCandidates(survey).map((c) => c.name)).toEqual(['Checkout smoke 6', 'Orders']);
+  });
+
   it('dedups by role and name and caps the list', () => {
     const survey = Array.from({ length: 30 }, (_, i) =>
       node({ role: 'button', name: `View ${i % 20}`, attributes: { 'nav-context': 'nav' } }));

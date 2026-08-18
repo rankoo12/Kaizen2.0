@@ -92,8 +92,8 @@ type Job = {
 
 async function main(): Promise<void> {
   const args = parseArgs();
-  const token = await getToken();
-  const h = { 'content-type': 'application/json', authorization: `Bearer ${token}` };
+  let token = await getToken();
+  let h = { 'content-type': 'application/json', authorization: `Bearer ${token}` };
 
   // A fresh suite per run: the ledger must not be polluted by an earlier run's
   // cases (dedup would silently eat repeats and hide the real number).
@@ -134,7 +134,15 @@ async function main(): Promise<void> {
   let lastPhase = '';
   for (;;) {
     await new Promise((r) => setTimeout(r, 5_000));
-    job = (await json<{ job: Job }>(await fetch(`${API}/testwriter/jobs/${jobId}`, { headers: h }))).job;
+    // Access tokens live 15 minutes; a screen-discovery crawl of a real app
+    // outlives one. Re-authenticate rather than lose the run's ledger.
+    let res = await fetch(`${API}/testwriter/jobs/${jobId}`, { headers: h });
+    if (res.status === 401) {
+      token = await getToken();
+      h = { ...h, authorization: `Bearer ${token}` };
+      res = await fetch(`${API}/testwriter/jobs/${jobId}`, { headers: h });
+    }
+    job = (await json<{ job: Job }>(res)).job;
     const phase = job.report?.progress?.phase ?? job.status;
     if (phase !== lastPhase) { process.stdout.write(`  ${Math.round((Date.now() - t0) / 1000)}s ${phase}\n`); lastPhase = phase; }
     if (['completed', 'failed', 'blocked', 'cancelled'].includes(job.status)) break;

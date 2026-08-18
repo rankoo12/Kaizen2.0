@@ -289,8 +289,11 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
             if (navTag === 'nav' || navTag === 'aside' || navTag === 'header') navContext = navTag;
             else if (['navigation', 'menubar', 'tablist', 'toolbar', 'menu'].includes(navRole)) navContext = navRole;
             else {
+              // Whole class/id tokens only. Bare "menu" and "tab" were dropped:
+              // "menu-item" is a popover entry (a probe's business) and a row
+              // action inside one became a "screen" that started a real run.
               const cls = `${typeof nav.className === 'string' ? nav.className : ''} ${nav.id || ''}`;
-              if (/(^|[\s_-])(sidebar|sidenav|side-nav|nav|navbar|menu|tabs?|tab-?bar|topbar|app-?bar)([\s_-]|$)/i.test(cls)) {
+              if (/(^|\s)(sidebar|sidenav|side-nav|nav|navbar|main-nav|primary-nav|site-nav|nav-menu|topbar|top-bar|appbar|app-bar|menubar|tabbar|tab-bar|tabs)(\s|$)/i.test(cls)) {
                 navContext = 'nav-class';
               }
             }

@@ -12,6 +12,7 @@ import { normalizeUrl, isSameOrigin, pathOf, stripFragment } from './url-normali
 import { fetchRobots, isAllowed } from './robots';
 import { acquireSession, isSessionLoss, type AuthSessionDeps, type LoginStep } from './auth-session';
 import { scrubCapture, scrubText } from './capture-scrub';
+import { settleDom } from '../../execution-engine/settle';
 import {
   viewSwitchCandidates, screenUrl, isNewScreen, fingerprint,
   type ReachHop, type ScreenFingerprint,
@@ -295,6 +296,9 @@ export class ReconCrawler {
           continue;
         }
         await page.waitForLoadState('networkidle', { timeout: 5_000 }).catch(() => {});
+        // An app that boots client-side is still rendering when networkidle
+        // returns; capture what it shows when it stops changing.
+        await settleDom(page);
 
         // A screen: the URL is only where it starts. Click the way there; a hop
         // that cannot be clicked means the screen is not reachable this way and
@@ -385,9 +389,14 @@ export class ReconCrawler {
           const parent = from ? fingerprints.get(from) : undefined;
           if (seenHashes.has(print.contentHash) || (parent && !isNewScreen(parent, print))) {
             obs.increment('testwriter.screen_unchanged');
+            obs.log('info', 'testwriter.screen_discarded', {
+              jobId: params.jobId, screen: url,
+              reason: seenHashes.has(print.contentHash) ? 'same as a captured view' : 'not materially different from its parent',
+            });
             report.screensDiscarded!++;
             continue;
           }
+          obs.log('info', 'testwriter.screen_kept', { jobId: params.jobId, screen: url, elements: survey.length });
           report.screensDiscovered!++;
         }
         fingerprints.set(landed, print);
@@ -545,8 +554,8 @@ async function reachScreen(page: any, hops: ReachHop[], timeoutMs: number): Prom
       } catch { /* try the looser match */ }
     }
     if (!clicked) return false;
-    await page.waitForTimeout(600);
     await page.waitForLoadState('networkidle', { timeout: 5_000 }).catch(() => {});
+    await settleDom(page);
   }
   return true;
 }

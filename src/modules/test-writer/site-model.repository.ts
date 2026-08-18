@@ -559,7 +559,15 @@ export class SiteModelRepository {
               AND count(DISTINCT pe.page_id) >= 0.6 * (SELECT n FROM crawled)
          )
          SELECT pe.page_id, pe.role, pe.name, pe.kind, pe.attributes->>'target' AS target,
-                (sw.name IS NOT NULL) AS chrome, pe.revealed_by
+                -- Site-wide by count, OR a control the survey saw inside the
+                -- site's navigation. The count rule alone missed Kaizen's own
+                -- sidebar: its items carry live counts ("Tests 0" → "Tests 6")
+                -- and some screens hide the sidebar, so no name reached 60%.
+                -- Tabs and toolbars are NOT chrome: they are the page's own.
+                (sw.name IS NOT NULL
+                  OR COALESCE(pe.attributes->>'nav-context', '') IN ('nav', 'aside', 'header', 'navigation', 'menubar', 'nav-class')
+                  OR pe.attributes ? 'aria-current') AS chrome,
+                pe.revealed_by
          FROM page_elements pe
          JOIN site_pages sp ON sp.id = pe.page_id
          LEFT JOIN site_wide sw ON sw.role = pe.role AND sw.name = pe.name
