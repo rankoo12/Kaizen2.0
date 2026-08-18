@@ -90,7 +90,7 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
         // Spec: docs/specs/test-writer/spec-recon-crawler.md §4.1
         for (const attr of [
           'id', 'name', 'placeholder', 'aria-label', 'aria-labelledby',
-          'type', 'href', 'title', 'data-testid', 'data-qa', 'data-test', 'role', 'draggable',
+          'type', 'href', 'title', 'data-testid', 'data-qa', 'data-test', 'role', 'draggable', 'target',
           'aria-expanded', 'aria-haspopup', 'aria-controls', 'download',
         ]) {
           const val = el.getAttribute(attr);

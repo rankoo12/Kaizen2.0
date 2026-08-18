@@ -1,6 +1,7 @@
 # Spec — RECON Crawler (Phase 1: smart exploration + interaction safety)
 
 Created: 2026-07-29
+Updated: 2026-08-18 — §4.0a derived names + new-tab links
 Branch: `feat/test-writer/p0-specs`
 Status: Draft — design agreed; implementation not started.
 
@@ -79,6 +80,23 @@ url_normalized)` — re-crawling upserts and refreshes `content_hash`.
 `recon/safety.ts`. Interactive exploration is allowed from day one **only**
 because every candidate interaction passes this classifier first. It is a hard
 gate in code, not prompt guidance.
+
+### 4.0a Element names and new-tab links (amended 2026-08-18)
+
+Two capture rules added after the saucedemo runs:
+
+- **Derived names.** A surveyed control with no accessible name gets one derived
+  from the developer's own handle — `aria-label` › `data-test` › `data-testid` ›
+  `data-qa` › `id` › `name` › `placeholder` › `title`, humanised
+  (`product_sort_container` → "product sort container"), never from hashes or
+  one-letter ids. Stored in `page_elements.name` with `attributes.nameSource =
+  'derived'`, so it becomes citable by WRITE (the grounding query drops
+  nameless rows) while the accessibility finding still counts it as unlabelled.
+  `recon/derived-name.ts`.
+- **`target` is captured.** The pruner records `target="_blank"`; grounding
+  exposes it as `opensNewTab`; the writer prompt marks the line "opens a NEW
+  TAB" and rule 8 requires `switch_tab "new"` right after the click; the schema
+  gate enforces it deterministically.
 
 ### 4.1 Classification
 

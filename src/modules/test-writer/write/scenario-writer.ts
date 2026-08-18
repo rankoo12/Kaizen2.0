@@ -183,6 +183,7 @@ export class ScenarioWriter {
     const elements = new Map(params.grounding.map((g) => [g.id, g]));
     const validIds = new Set(params.grounding.map((g) => g.id));
     const rolesById = new Map(params.grounding.map((g) => [g.id, g.role]));
+    const newTabIds = new Set(params.grounding.filter((g) => g.opensNewTab).map((g) => g.id));
 
     let repairErrors: string[] | undefined;
     // The last thing the model produced, for the rejection record (spec §2.5).
@@ -214,7 +215,7 @@ export class ScenarioWriter {
       }, params.tenantId);
 
       const gate = runSchemaGate(
-        generated.steps, validIds, params.maxSteps, rolesById, params.seedTokens,
+        generated.steps, validIds, params.maxSteps, rolesById, params.seedTokens, newTabIds,
       );
       if (!gate.ok) {
         repairErrors = gate.errors;
