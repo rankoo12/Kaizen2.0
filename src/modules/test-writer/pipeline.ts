@@ -4,7 +4,7 @@ import type { IObservability } from '../observability/interfaces';
 import type { ITestWriterGateway } from '../llm-gateway/testwriter.interfaces';
 import type { PlannedScenario, ScenarioRejection, TenantBrief } from '../../types/test-writer';
 import type { StepAST } from '../../types';
-import { reconFindings, rankFindings } from './findings';
+import { reconFindings, rankFindings, collapseFindings } from './findings';
 import type { Finding } from '../../types/test-writer';
 import type { CrawlReport, PageCapture } from './interfaces';
 import { DEFAULT_BUDGETS, HARD_MAX_PAGES } from './interfaces';
@@ -413,6 +413,12 @@ async function runGenerationPhases(
   const progress = makeProgressWriter(payload.tenantId, payload.jobId);
   await progress({ phase: 'write', scenariosWritten: 0, scenariosTotal: approved.length });
 
+  // Where a test must NAVIGATE, as opposed to how a page is identified. Loaded
+  // once: only pages whose observed URL differs from the normalized one appear.
+  // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §4
+  const navigable = await deps.repository.getNavigableUrls(payload.tenantId, payload.suiteId);
+  const navigableUrl = (url: string): string => navigable.get(url) ?? url;
+
   // ── WRITE (sequential: each call is small, and ordering keeps the report readable)
   for (const plan of approved) {
     // Sensitive pages are readable knowledge for COMPREHEND but are never
@@ -433,8 +439,19 @@ async function runGenerationPhases(
     const grounding = await deps.repository.getGroundingElements(
       payload.tenantId, payload.suiteId, targetPages,
     );
-    if (grounding.length === 0) {
-      rejected.push({ name: plan.name, stage: 'schema', reason: 'no observed elements on the target pages' });
+    // A page with no controls is not an untestable page. the-internet's 404,
+    // javascript_error and nested_frames pages carry nothing clickable and were
+    // all rejected here — while "navigate there and verify the text 'Not Found'
+    // is shown" is exactly the test a QA engineer writes for them.
+    // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+    const pageText = await deps.repository.getPageTexts(
+      payload.tenantId, payload.suiteId, targetPages,
+    );
+    if (grounding.length === 0 && pageText.length === 0) {
+      rejected.push({
+        name: plan.name, stage: 'schema',
+        reason: 'the target pages have neither observed elements nor readable text',
+      });
       continue;
     }
     const formSummaries = await deps.repository.getFormSummaries(
@@ -443,10 +460,16 @@ async function runGenerationPhases(
 
     const writeParams = {
       tenantId: payload.tenantId,
-      plan,
-      grounding,
+      // Identity did its job — grounding, forms and text were all fetched by the
+      // normalized URLs. From here on the plan is about NAVIGATION, so it
+      // carries the URLs the site actually serves.
+      plan: { ...plan, targetPages: targetPages.map(navigableUrl) },
+      // Same reason: the element list tells the model which page each control is
+      // on, and that url must be the one it can navigate to.
+      grounding: grounding.map((g) => ({ ...g, pageUrl: navigableUrl(g.pageUrl) })),
       formSummaries,
-      pagePath: targetPages,
+      pageText,
+      pagePath: targetPages.map(navigableUrl),
       seedTokens: [...FORM_DATA_TOKENS],
       steeringNotes: job.plan_notes,
       safeMode: payload.options.safeMode,
@@ -567,14 +590,14 @@ async function runGenerationPhases(
   // controls, and whatever validation learned about the app.
   // Spec: docs/specs/test-writer/spec-findings-and-coverage.md
   const recon = (job.report as { recon?: { errorPages?: Array<{ url: string; status: number | null; reason: string }>; auth?: { publicPartitionUnverified?: boolean } } } | null)?.recon;
-  const findings = rankFindings([
+  const findings = rankFindings(collapseFindings([
     ...await reconFindings(
       payload.tenantId, payload.suiteId,
       recon?.errorPages ?? [],
       recon?.auth?.publicPartitionUnverified === true,
     ).catch(() => []),
     ...validation.findings,
-  ]);
+  ]));
 
   const report = {
     ...(job.report ?? {}),

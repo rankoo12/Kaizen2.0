@@ -13,6 +13,15 @@ describe('deriveName', () => {
     expect(deriveName(null)).toBeNull();
     expect(deriveName({})).toBeNull();
   });
+  // the-internet's /checkboxes: `<input type="checkbox"> checkbox 1`. No label,
+  // no id, no data attribute — and yet every sighted user calls it "checkbox 1".
+  // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §3
+  it('uses the text a person reads next to the control, ahead of any developer handle', () => {
+    expect(deriveName({ 'nearby-text': 'checkbox 1' })).toBe('checkbox 1');
+    expect(deriveName({ 'nearby-text': 'checkbox 2', id: 'cb2' })).toBe('checkbox 2');
+    expect(deriveName({ 'aria-label': 'Agree to terms', 'nearby-text': 'checkbox 1' })).toBe('agree to terms');
+  });
+
   it('humanise splits snake, kebab and camel', () => {
     expect(humanise('checkout_button-primaryCta')).toBe('checkout button primary cta');
   });

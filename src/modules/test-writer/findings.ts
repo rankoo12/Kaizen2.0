@@ -73,6 +73,26 @@ export async function reconFindings(
   }
 
   for (const err of errors) {
+    // 401/407 is not a broken page: the site is asking for HTTP credentials,
+    // which is a setting Kaizen does not have yet — and calling it a broken
+    // link sends the customer looking for a bug that is not there.
+    // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §4
+    if (err.status === 401 || err.status === 407) {
+      const realm = /realm="([^"]{1,60})"/i.exec(err.reason)?.[1];
+      findings.push({
+        kind: 'requires_http_auth',
+        severity: 'low',
+        title: 'A page is behind HTTP authentication',
+        detail:
+          `${sanitizeForDisplay(err.url, 300)} answered ${err.status} and asked the browser for `
+          + `credentials${realm ? ` (realm "${sanitizeForDisplay(realm, 60)}")` : ''}. This is the `
+          + 'browser\'s own sign-in box, not a form Kaizen can fill in, so the page was not '
+          + 'explored. Add the username and password in the suite settings to include it.',
+        evidence: { url: sanitizeForDisplay(err.url, 300) },
+        source: 'recon',
+      });
+      continue;
+    }
     const isServer = err.status !== null && err.status >= 500;
     // A page reached by following a link from another page is a BROKEN LINK —
     // a defect in the linking page, and the version of this a person can act on.
@@ -226,6 +246,37 @@ export function sideChannelFinding(params: {
  * Kaizen's own uncertainty.
  */
 const SEVERITY_RANK: Record<Finding['severity'], number> = { high: 0, medium: 1, low: 2, info: 3 };
+
+/**
+ * One site-wide problem should read as one line, not as ten.
+ *
+ * A console error in a shared bundle fires on every page, so a job that proved
+ * ten tests reported ten near-identical "the page underneath was erroring"
+ * rows — burying the findings that were actually about one place. Three or more
+ * of them are collapsed into a single finding that names the count and lists
+ * the pages as evidence.
+ * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §4
+ */
+export function collapseFindings(findings: Finding[]): Finding[] {
+  const noisy = findings.filter((f) => f.kind === 'console_or_network_errors');
+  if (noisy.length < 3) return findings;
+
+  const urls = [...new Set(noisy.map((f) => f.evidence.url).filter(Boolean) as string[])];
+  const worst: Finding['severity'] = noisy.some((f) => f.severity === 'medium') ? 'medium' : 'low';
+  const collapsed: Finding = {
+    kind: 'console_or_network_errors',
+    severity: worst,
+    title: `Your pages are erroring underneath — on ${urls.length || noisy.length} of them`,
+    detail:
+      `${noisy.length} of the tests Kaizen ran passed while the browser was recording console or `
+      + 'network errors on the page. Errors this widespread usually come from one shared script or '
+      + 'one failing request rather than from any single page. Nothing here failed a test — but '
+      + 'every user is hitting it.',
+    evidence: { url: urls[0], repro: urls.slice(0, 12), runId: noisy[0].evidence.runId, caseId: noisy[0].evidence.caseId },
+    source: 'validate',
+  };
+  return [...findings.filter((f) => f.kind !== 'console_or_network_errors'), collapsed];
+}
 
 export function rankFindings(findings: Finding[]): Finding[] {
   return [...findings].sort((a, b) => SEVERITY_RANK[a.severity] - SEVERITY_RANK[b.severity]);

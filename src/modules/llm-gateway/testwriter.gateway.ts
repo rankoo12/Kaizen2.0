@@ -290,6 +290,10 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
       '8. NEW TABS — an element marked "opens a NEW TAB" leaves the current tab where it was. The step',
       '   right after clicking it MUST be {"action":"switch_tab","value":"new"}; only then assert the',
       '   destination (title, url). Asserting on the old tab is a guaranteed failure.',
+      '10. A PAGE WITH NO CONTROLS is still testable. When the citable element list is empty, or holds',
+      '   nothing this scenario can use, write {"action":"navigate","url":"<target page>"} followed by',
+      '   {"action":"assert_text","value":"<a distinctive phrase from WHAT A VISITOR READS>"}. Quote',
+      '   the phrase exactly as given — never paraphrase it, never invent one.',
       '9. STAY ON THE PLAN — write the behaviour the PLAN OUTLINE describes, on the TARGET PAGE named',
       '   below. Elements marked SITE-WIDE are the nav and footer: they appear on every page, so a',
       '   scenario built out of them tests nothing about this one and will be rejected. Use them only',
@@ -325,6 +329,12 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
         ? `\nWHAT THESE PAGES DO NOT HAVE:\n- ${input.groundingNotes.join('\n- ')}`
         : '',
       input.formSummaries.length ? untrusted('forms', input.formSummaries.join('\n')) : '',
+      // A page whose only content is text is still testable: navigate, then
+      // assert the text. Fenced as untrusted — it is the site's own content.
+      input.pageText?.length
+        ? '\nWHAT A VISITOR READS ON THESE PAGES (quote this text exactly in assert_text; invent nothing):\n'
+          + untrusted('page_text', input.pageText.join('\n'))
+        : '',
       input.steeringNotes ? `\nHUMAN STEERING NOTES:\n${untrusted('notes', input.steeringNotes)}` : '',
       input.repairErrors?.length
         ? `\nYOUR PREVIOUS ATTEMPT WAS REJECTED. Fix exactly these problems:\n- ${input.repairErrors.join('\n- ')}`

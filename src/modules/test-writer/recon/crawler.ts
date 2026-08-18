@@ -8,7 +8,7 @@ import type { CrawlBudgets, CrawlReport, LinkCapture, PageCapture } from '../int
 import { classifyInteraction, isSessionEndingUrl, sensitiveTier } from './safety';
 import { runProbes } from './probe';
 import { capturePageMeta, captureForms, captureLinks, condenseOutline } from './page-capture';
-import { normalizeUrl, isSameOrigin, pathOf } from './url-normalizer';
+import { normalizeUrl, isSameOrigin, pathOf, stripFragment } from './url-normalizer';
 import { fetchRobots, isAllowed } from './robots';
 import { acquireSession, isSessionLoss, type AuthSessionDeps, type LoginStep } from './auth-session';
 import { scrubCapture } from './capture-scrub';
@@ -130,8 +130,12 @@ export class ReconCrawler {
     const visited = new Set<string>();
     // `from` makes a broken page actionable: "your pricing page links to a page
     // that 404s" is a bug report; "some url 404s" is a shrug.
-    const queue: Array<{ url: string; depth: number; from: string | null }> =
-      [{ url: rootNormalized, depth: 0, from: null }];
+    // `href` is what we NAVIGATE to (the link as the site wrote it); `url` is
+    // the page's identity. They differ by a trailing slash often enough to cost
+    // a whole page, and the seed URL keeps whatever the customer typed.
+    // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §4
+    const queue: Array<{ url: string; depth: number; from: string | null; href?: string }> =
+      [{ url: rootNormalized, depth: 0, from: null, href: params.targetUrl }];
     let pageIndex = 0;
     let lastNavAt = 0;
 
@@ -212,7 +216,7 @@ export class ReconCrawler {
           break;
         }
 
-        const { url, depth, from } = queue.shift()!;
+        const { url, depth, from, href } = queue.shift()!;
         if (visited.has(url)) continue;
         visited.add(url);
 
@@ -243,12 +247,21 @@ export class ReconCrawler {
           // The response status is the only place a 4xx/5xx is observable —
           // page.goto() resolves happily on a 500, so a server error looked
           // exactly like a healthy page to every previous version of this crawl.
-          const response = await page.goto(url, {
+          const response = await page.goto(href ?? url, {
             timeout: budgets.pageTimeoutMs, waitUntil: 'domcontentloaded',
           });
           const status: number | null = typeof response?.status === 'function' ? response.status() : null;
           if (status !== null && status >= 400) {
-            report.errorPages.push({ url, status, reason: `HTTP ${status}`, linkedFrom: from });
+            // A 401 with a challenge header is not a broken page — it is a page
+            // behind HTTP Basic auth, which is a credentials setting, not a bug.
+            // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §4
+            let reason = `HTTP ${status}`;
+            if (status === 401 || status === 407) {
+              const headers = typeof response?.headers === 'function' ? response.headers() : {};
+              const challenge = headers['www-authenticate'] ?? headers['proxy-authenticate'] ?? '';
+              if (challenge) reason = `HTTP ${status} ${String(challenge).slice(0, 120)}`;
+            }
+            report.errorPages.push({ url, status, reason, linkedFrom: from });
             obs.increment('testwriter.crawl_error_page', { status: String(status) });
           }
         } catch (err) {
@@ -383,8 +396,12 @@ export class ReconCrawler {
 
         let capture: PageCapture & { axOutline?: Record<string, unknown> } = {
           urlNormalized: landed,
+          // Where the browser actually is, minus the fragment — what a generated
+          // test must navigate to, trailing slash and all.
+          urlObserved: stripFragment(page.url()),
           title: meta.title,
           headings: meta.headings,
+          pageText: meta.pageText,
           survey,
           forms,
           outgoingLinks: outgoing,
@@ -419,7 +436,9 @@ export class ReconCrawler {
               obs.increment('testwriter.session_ending_url_blocked');
               continue;
             }
-            queue.push({ url: link.toUrlNormalized, depth: depth + 1, from: landed });
+            queue.push({
+              url: link.toUrlNormalized, depth: depth + 1, from: landed, href: link.hrefObserved,
+            });
           }
         }
       }

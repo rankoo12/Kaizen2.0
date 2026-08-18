@@ -1,6 +1,6 @@
 jest.mock("../../../db/transaction", () => ({ tenantQuery: jest.fn(async () => ({ rows: [] })) }));
 import {
-  sanitizeForDisplay, appDefectFinding, sideChannelFinding, rankFindings,
+  sanitizeForDisplay, appDefectFinding, sideChannelFinding, rankFindings, collapseFindings,
 } from '../findings';
 import type { Finding } from '../../../types/test-writer';
 
@@ -138,5 +138,64 @@ describe('reconFindings — a 404 that still rendered is not a broken page', () 
     expect(spa?.detail).toMatch(/12 interactive controls/);
     expect(broken?.severity).toBe('medium');
     expect(broken?.title).toBe('A link on your site is broken');
+  });
+});
+
+describe('a 401 is a credentials setting, not a broken link', () => {
+  const tx = jest.requireMock('../../../db/transaction') as { tenantQuery: jest.Mock };
+
+  // the-internet /basic_auth: the browser's own sign-in box. Reporting it as a
+  // broken link sends the customer looking for a bug that is not there.
+  // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §4
+  it('names the realm and says where to put the credentials', async () => {
+    tx.tenantQuery.mockImplementation(async () => ({ rows: [] }));
+    const { reconFindings } = await import('../findings');
+    const out = await reconFindings('t1', 's1', [
+      {
+        url: 'https://demo.test/basic_auth', status: 401,
+        reason: 'HTTP 401 Basic realm="Fort Knox"', linkedFrom: 'https://demo.test/',
+      },
+    ], false);
+
+    expect(out).toHaveLength(1);
+    expect(out[0].kind).toBe('requires_http_auth');
+    expect(out[0].severity).toBe('low');
+    expect(out[0].detail).toMatch(/realm "Fort Knox"/);
+    expect(out[0].detail).toMatch(/suite settings/);
+    expect(out[0].title).not.toMatch(/broken/i);
+  });
+});
+
+describe('collapseFindings — one site-wide problem is one line', () => {
+  const noisy = (url: string): Finding => ({
+    kind: 'console_or_network_errors', severity: 'low',
+    title: 'A test passed, but the page underneath it was erroring',
+    detail: 'd', evidence: { url, runId: 'r1', caseId: 'c1' }, source: 'validate',
+  });
+
+  it('leaves two alone — that is not yet a pattern', () => {
+    const out = collapseFindings([noisy('https://a.test/1'), noisy('https://a.test/2')]);
+    expect(out).toHaveLength(2);
+  });
+
+  it('folds ten near-identical rows into one that names the count and lists the pages', () => {
+    const rows = Array.from({ length: 10 }, (_, i) => noisy(`https://a.test/${i}`));
+    const other: Finding = {
+      kind: 'broken_link', severity: 'medium', title: 'A link on your site is broken',
+      detail: 'd', evidence: {}, source: 'recon',
+    };
+    const out = collapseFindings([...rows, other]);
+
+    expect(out).toHaveLength(2);
+    const collapsed = out.find((f) => f.kind === 'console_or_network_errors');
+    expect(collapsed?.title).toMatch(/on 10 of them/);
+    expect(collapsed?.evidence.repro).toHaveLength(10);
+    // Anything that is not this pattern survives untouched.
+    expect(out.find((f) => f.kind === 'broken_link')).toBe(other);
+  });
+
+  it('keeps the worse severity when any of them was a failed request', () => {
+    const rows = [noisy('a'), noisy('b'), { ...noisy('c'), severity: 'medium' as const }];
+    expect(collapseFindings(rows)[0].severity).toBe('medium');
   });
 });

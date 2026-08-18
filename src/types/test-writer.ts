@@ -215,6 +215,13 @@ export type WriteInput = {
   grounding: GroundingElement[];
   /** "signup form: email, password, [Create account]" per target page. */
   formSummaries: string[];
+  /**
+   * What a visitor reads on the target pages. The only material a page with no
+   * controls offers — and the difference between "unwritable" and "navigate
+   * there and verify the text is shown".
+   * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+   */
+  pageText?: string[];
   /** Ordered page path from page_links, when the plan spans pages. */
   pagePath: string[];
   /** Seed tokens available for typed values ({{email}}, {{password}}, …). */
@@ -315,7 +322,8 @@ export type FindingKind =
   | 'possible_app_defect'
   | 'unverified_auth_partition'
   | 'console_or_network_errors'
-  | 'broken_link';
+  | 'broken_link'
+  | 'requires_http_auth';
 
 export type Finding = {
   kind: FindingKind;

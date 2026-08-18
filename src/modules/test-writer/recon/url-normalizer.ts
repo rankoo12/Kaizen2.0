@@ -49,3 +49,20 @@ export function pathOf(normalized: string): string {
     return '';
   }
 }
+
+/**
+ * The URL as observed, minus the fragment. Used for the NAVIGABLE form of a
+ * page (site_pages.url_observed) — normalisation is for identity only, and
+ * stripping a trailing slash from a URL we then navigate to is how a 200 page
+ * became a 404 and a false broken-link finding.
+ * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §4
+ */
+export function stripFragment(raw: string): string {
+  try {
+    const url = new URL(raw);
+    url.hash = '';
+    return url.toString();
+  } catch {
+    return raw;
+  }
+}

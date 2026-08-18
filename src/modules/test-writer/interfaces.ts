@@ -41,6 +41,15 @@ export type LinkCapture = {
   toUrlNormalized: string;
   /** Accessible name of the anchor that leads there (for page_links.via_element_id). */
   viaElementName: string;
+  /**
+   * The href as the site actually wrote it, resolved to an absolute URL.
+   * Normalisation strips the trailing slash so a page has ONE identity — right
+   * for identity, wrong for navigation: the-internet serves
+   * /add_remove_elements/ (200) and 404s on /add_remove_elements. We followed
+   * the stripped form, lost the page, and filed the site's own link as broken.
+   * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §4
+   */
+  hrefObserved?: string;
 };
 
 export type RevealCapture = {
@@ -63,6 +72,14 @@ export type PageCapture = {
   /** SHA-256 of the condensed AX outline — re-crawl diffing. */
   contentHash: string;
   screenshotKey: string | null;
+  /** The URL the browser actually ended up on — what a test must navigate to. */
+  urlObserved?: string;
+  /**
+   * The opening stretch of the page's visible text. Absent for blocked and
+   * capture-suppressed pages, which were deliberately not read.
+   * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+   */
+  pageText?: string;
   requiresAuth: boolean;
   /**
    * 'capture-suppressed' marks a Tier A sensitive page (/api-keys, /billing…)
