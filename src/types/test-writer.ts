@@ -130,6 +130,12 @@ export type PlannedScenario = {
   round?: number;
   /** Set when the scenario needs synthetic-data consent to be validated. */
   requiresSyntheticData?: boolean;
+  /**
+   * When the first target page is a screen reached by clicking rather than by
+   * URL: the clicks that get there, prepended to the test after the navigate.
+   * Spec: docs/specs/test-writer/spec-screen-discovery.md §1.5
+   */
+  reachedBy?: Array<{ role: string; name: string }>;
 };
 
 /**
@@ -148,8 +154,9 @@ export type PageDossier = {
   pageText: string;
   purpose: string;
   capabilities: string[];
-  /** Page-specific interactive elements: nav/footer chrome excluded. */
-  elements: Array<{ role: string; name: string; kind: string; opensNewTab?: boolean }>;
+  /** Page-specific interactive elements: nav/footer chrome excluded. `revealedBy`
+   *  names the control that has to be clicked first for this one to exist. */
+  elements: Array<{ role: string; name: string; kind: string; opensNewTab?: boolean; revealedBy?: string }>;
   /** "login form: username, password, [Login]" */
   forms: string[];
   requiresAuth: boolean;
@@ -157,6 +164,8 @@ export type PageDossier = {
   excludedBy?: string;
   /** A page that is only links to other pages: navigation, not a subject. */
   isIndex?: boolean;
+  /** A screen: the clicks that reach it from `url`. Spec: spec-screen-discovery.md §1.3 */
+  reachedBy?: Array<{ role: string; name: string }>;
 };
 
 export type PlanBatchInput = {
@@ -305,6 +314,12 @@ export type WriteInput = {
    * Spec: docs/specs/test-writer/spec-planner-per-page.md §1.7
    */
   knownAccounts?: string[];
+  /**
+   * The page has no URL of its own: after navigating, these clicks reach it.
+   * The writer is told; the pipeline prepends them.
+   * Spec: docs/specs/test-writer/spec-screen-discovery.md §1.5
+   */
+  reachedBy?: Array<{ role: string; name: string }>;
   maxSteps: number;
   /** Compile/lint errors from a previous attempt — set on the single repair round. */
   repairErrors?: string[];

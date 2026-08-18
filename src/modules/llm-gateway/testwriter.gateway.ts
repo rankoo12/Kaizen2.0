@@ -298,8 +298,15 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
       ].filter(Boolean).join(' · ');
       const already = input.repertoire.filter((r) => r.page === p.urlNormalized);
       const ledger = input.ledger?.find((l) => l.page === p.urlNormalized);
+      // A screen has no URL of its own; its identity carries the fragment and
+      // the header says how it is reached, so the model plans for THIS view.
+      // Spec: docs/specs/test-writer/spec-screen-discovery.md §1.5
+      const reach = p.reachedBy?.length
+        ? `reached by: open ${p.url}, then click ${p.reachedBy.map((h) => `the "${h.name}" ${h.role}`).join(', then ')} (this view has no URL of its own)`
+        : '';
       return [
-        `=== PAGE ${p.url}${flags ? ` [${flags}]` : ''}`,
+        `=== PAGE ${p.reachedBy?.length ? p.urlNormalized : p.url}${flags ? ` [${flags}]` : ''}`,
+        reach,
         p.title ? `title: ${p.title}` : '',
         p.headings.length ? `headings: ${p.headings.join(' | ')}` : '',
         p.purpose ? `purpose: ${p.purpose}` : '',
@@ -307,7 +314,7 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
         p.pageText ? `page text: ${p.pageText}` : '',
         p.forms.length ? `forms: ${p.forms.join(' / ')}` : '',
         p.elements.length
-          ? `controls (${p.elements.length}): ${p.elements.map((e) => `${e.role} "${e.name}"${e.opensNewTab ? ' (new tab)' : ''}`).join(', ')}`
+          ? `controls (${p.elements.length}): ${p.elements.map((e) => `${e.role} "${e.name}"${e.opensNewTab ? ' (new tab)' : ''}${e.revealedBy ? ` (appears after clicking "${e.revealedBy}")` : ''}`).join(', ')}`
           : 'controls: none — only text',
         already.length ? `ALREADY PLANNED: ${already.map((a) => a.name).join(' · ')}` : '',
         ledger?.delivered.length ? `ALREADY DELIVERED: ${ledger.delivered.join(' · ')}` : '',
@@ -441,6 +448,14 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
            ...input.knownAccounts.map((a) => `- ${a}`)].join('\n')
         : '',
       input.plan.targetPages.length ? `TARGET PAGE(S): ${input.plan.targetPages.join(', ')}` : '',
+      // The target is a screen: navigating lands on its parent; Kaizen prepends
+      // the clicks that reach it. The model writes the page's OWN steps.
+      // Spec: docs/specs/test-writer/spec-screen-discovery.md §1.5
+      input.reachedBy?.length
+        ? `HOW THE TARGET PAGE IS REACHED: navigate to ${input.plan.targetPages[0]}, then click `
+          + input.reachedBy.map((h) => `the "${h.name}" ${h.role}`).join(', then ')
+          + '. Kaizen adds these steps for you — do NOT write them; start with the first action ON that view.'
+        : '',
       input.archetype ? `\nARCHETYPE TO FOLLOW:\n${input.archetype}` : '',
       input.pagePath.length ? `\nOBSERVED PAGE PATH: ${input.pagePath.join(' -> ')}` : '',
       `\nSEED TOKENS: ${input.seedTokens.map((t) => `{{${t}}}`).join(' ')}`,

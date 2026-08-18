@@ -97,6 +97,10 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
           'id', 'name', 'placeholder', 'aria-label', 'aria-labelledby',
           'type', 'href', 'title', 'data-testid', 'data-qa', 'data-test', 'role', 'draggable', 'target',
           'aria-expanded', 'aria-haspopup', 'aria-controls', 'download',
+          // The mark WAI-ARIA gives an item in a set of navigation — a
+          // view-switch signal for the Test Writer's screen discovery.
+          // Spec: docs/specs/test-writer/spec-screen-discovery.md §1.1
+          'aria-current',
         ]) {
           const val = el.getAttribute(attr);
           if (val) attributes[attr] = val;
@@ -265,6 +269,34 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
             if (parentContext) break;
           }
           node = node.parentElement;
+        }
+
+        // ── 8a. Navigation context ────────────────────────────────────────
+        // Where a control LIVES: a button in a sidebar or nav bar switches
+        // views; the same button in a form commits one. The Test Writer's
+        // screen discovery reads this to know which hrefless controls lead to
+        // a screen worth crawling. Landmarks first, then the class/id names
+        // apps actually use — Kaizen's own sidebar is <div class="sidebar">.
+        // Spec: docs/specs/test-writer/spec-screen-discovery.md §1.1
+        {
+          let nav: HTMLElement | null = el.parentElement;
+          let navContext = '';
+          let hops = 0;
+          while (nav && nav !== document.body && hops < 20 && !navContext) {
+            hops++;
+            const navTag = nav.tagName.toLowerCase();
+            const navRole = (nav.getAttribute('role') || '').toLowerCase();
+            if (navTag === 'nav' || navTag === 'aside' || navTag === 'header') navContext = navTag;
+            else if (['navigation', 'menubar', 'tablist', 'toolbar', 'menu'].includes(navRole)) navContext = navRole;
+            else {
+              const cls = `${typeof nav.className === 'string' ? nav.className : ''} ${nav.id || ''}`;
+              if (/(^|[\s_-])(sidebar|sidenav|side-nav|nav|navbar|menu|tabs?|tab-?bar|topbar|app-?bar)([\s_-]|$)/i.test(cls)) {
+                navContext = 'nav-class';
+              }
+            }
+            nav = nav.parentElement;
+          }
+          if (navContext) attributes['nav-context'] = navContext;
         }
 
         // ── 8b. Repeated-item context (row / card / list-item) ────────────────

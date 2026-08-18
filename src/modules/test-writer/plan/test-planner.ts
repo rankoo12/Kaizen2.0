@@ -239,7 +239,9 @@ export class TestPlanner {
     //    as context but are flagged, and anything planned for them is dropped
     //    below regardless.
     const known = new Map(dossiers.map((p) => [p.urlNormalized, p]));
-    const byNavigable = new Map(dossiers.map((p) => [p.url, p]));
+    // Screens share their parent's navigable url; only an ordinary page may be
+    // found by it. A screen is quoted by its identity (the header shows that).
+    const byNavigable = new Map(dossiers.filter((p) => !p.reachedBy?.length).map((p) => [p.url, p]));
     const fromModel: PlannedScenario[] = [];
     for (const batch of batchDossiers(dossiers, params.batchSize ?? 6)) {
       if (!batch.some((p) => !p.excludedBy && !p.isIndex)) continue;
@@ -305,6 +307,8 @@ export class TestPlanner {
         targetPages,
         source: scenario.source?.kind === 'repertoire' ? scenario.source : { kind: 'llm' },
         requiresSyntheticData: Boolean(scenario.requiresSyntheticData),
+        // A screen: the writer is told, and the pipeline prepends the clicks.
+        ...(page.reachedBy?.length ? { reachedBy: page.reachedBy } : {}),
       });
     }
 

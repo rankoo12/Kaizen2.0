@@ -171,6 +171,7 @@ async function main(): Promise<void> {
     requested: { pages: args.pages, tests: args.tests },
     seconds: Math.round((Date.now() - t0) / 1000),
     pagesCrawled: r.recon?.pagesCrawled ?? null,
+    screens: r.recon?.screensDiscovered ?? 0,
     planned: planned.length,
     planSources: { catalog: r.plan?.fromCatalog ?? null, llm: r.plan?.fromLlm ?? null, dropped: r.plan?.dropped ?? null },
     write: r.write ?? null,
@@ -188,7 +189,7 @@ async function main(): Promise<void> {
 
   process.stdout.write('\n' + '═'.repeat(72) + '\n');
   process.stdout.write(`  ${args.label}: requested ${args.tests} → planned ${summary.planned} → proposed ${summary.proposed} (proven ${summary.proven}, review ${summary.needsReview}) · rejected ${summary.rejected}\n`);
-  process.stdout.write(`  pages crawled ${summary.pagesCrawled} · pages planned for ${summary.pagesPlannedFor} · pages with a delivered test ${summary.pagesWithDelivery} · ${summary.seconds}s · ${summary.tokens ?? '?'} tok\n`);
+  process.stdout.write(`  pages crawled ${summary.pagesCrawled} (screens ${summary.screens}) · pages planned for ${summary.pagesPlannedFor} · pages with a delivered test ${summary.pagesWithDelivery} · ${summary.seconds}s · ${summary.tokens ?? '?'} tok\n`);
   process.stdout.write(`  rejected by stage: ${JSON.stringify(byStage)}\n`);
   process.stdout.write('─'.repeat(72) + '\n  per page (delivered/planned):\n');
   for (const [p, v] of [...perPage.entries()].sort()) {

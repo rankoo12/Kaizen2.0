@@ -12,6 +12,10 @@ import { normalizeUrl, isSameOrigin, pathOf, stripFragment } from './url-normali
 import { fetchRobots, isAllowed } from './robots';
 import { acquireSession, isSessionLoss, type AuthSessionDeps, type LoginStep } from './auth-session';
 import { scrubCapture, scrubText } from './capture-scrub';
+import {
+  viewSwitchCandidates, screenUrl, isNewScreen, fingerprint,
+  type ReachHop, type ScreenFingerprint,
+} from './screens';
 
 /**
  * RECON crawler — bounded, same-origin BFS with safety-gated interactive
@@ -106,6 +110,8 @@ export class ReconCrawler {
       pagesCrawled: 0,
       pagesBlocked: 0,
       probesPerformed: 0,
+      screensDiscovered: 0,
+      screensDiscarded: 0,
       authScope: authed ? 'authenticated' : 'public',
       urlsSkippedByBudget: 0,
       errorPages: [],
@@ -134,8 +140,21 @@ export class ReconCrawler {
     // the page's identity. They differ by a trailing slash often enough to cost
     // a whole page, and the seed URL keeps whatever the customer typed.
     // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §4
-    const queue: Array<{ url: string; depth: number; from: string | null; href?: string }> =
-      [{ url: rootNormalized, depth: 0, from: null, href: params.targetUrl }];
+    // `reachedBy` marks a SCREEN: a view reached by clicking from `href`, with
+    // no URL of its own. Spec: docs/specs/test-writer/spec-screen-discovery.md §1.3
+    const queue: Array<{
+      url: string; depth: number; from: string | null; href?: string; reachedBy?: ReachHop[];
+    }> = [{ url: rootNormalized, depth: 0, from: null, href: params.targetUrl }];
+    // What each captured page looked like, so a screen can be compared with the
+    // page it was reached from — and so a screen that is really the page we
+    // came from (clicking "Tests" while on Runs) is recognised by its hash.
+    const fingerprints = new Map<string, ScreenFingerprint>();
+    const seenHashes = new Set<string>();
+    // A navigation item is global: "Runs" from Usage is the Runs view already
+    // reached from Tests. One try per control name, wherever it was seen —
+    // otherwise every screen re-tries the whole sidebar (12 × screens clicks,
+    // each a page load), and a 6-screen app took six minutes to crawl.
+    const triedScreenSlugs = new Set<string>();
     let pageIndex = 0;
     let lastNavAt = 0;
 
@@ -216,9 +235,10 @@ export class ReconCrawler {
           break;
         }
 
-        const { url, depth, from, href } = queue.shift()!;
+        const { url, depth, from, href, reachedBy } = queue.shift()!;
         if (visited.has(url)) continue;
         visited.add(url);
+        const isScreen = !!reachedBy && reachedBy.length > 0;
 
         // Never navigate to a logout URL, in ANY scope. The BFS queue — not the
         // click path — is how a crawler ends its own session: the classic logout
@@ -276,6 +296,15 @@ export class ReconCrawler {
         }
         await page.waitForLoadState('networkidle', { timeout: 5_000 }).catch(() => {});
 
+        // A screen: the URL is only where it starts. Click the way there; a hop
+        // that cannot be clicked means the screen is not reachable this way and
+        // is simply not recorded — nothing was captured, nothing is claimed.
+        if (isScreen && !await reachScreen(page, reachedBy!, budgets.pageTimeoutMs)) {
+          obs.increment('testwriter.screen_unreachable');
+          report.screensDiscarded!++;
+          continue;
+        }
+
         const challenge = await challenges.detect(page);
         if (challenge) {
           report.pagesBlocked++;
@@ -284,7 +313,8 @@ export class ReconCrawler {
         }
 
         let meta = await capturePageMeta(page);
-        let landed = normalizeUrl(page.url()) ?? url;
+        // A screen keeps its own identity: the browser is on the parent's URL.
+        let landed = isScreen ? url : (normalizeUrl(page.url()) ?? url);
 
         // ── Session-loss detection (authenticated scope) ─────────────────────
         // Same predicate the public crawler uses for auth walls, plus: landing
@@ -346,6 +376,23 @@ export class ReconCrawler {
         const forms = await captureForms(page);
         const links = await captureLinks(page, page.url(), rootOrigin);
 
+        // Is this screen a screen? Kept only when it is materially different
+        // from the page it was reached from and not a view already captured.
+        // Spec: docs/specs/test-writer/spec-screen-discovery.md §1.3
+        const outlineNow = condenseOutline(survey, forms, meta.title, meta.headings);
+        const print = fingerprint(survey, meta.headings, outlineNow.contentHash, meta.pageText);
+        if (isScreen) {
+          const parent = from ? fingerprints.get(from) : undefined;
+          if (seenHashes.has(print.contentHash) || (parent && !isNewScreen(parent, print))) {
+            obs.increment('testwriter.screen_unchanged');
+            report.screensDiscarded!++;
+            continue;
+          }
+          report.screensDiscovered!++;
+        }
+        fingerprints.set(landed, print);
+        seenHashes.add(print.contentHash);
+
         // Safety gate: ONLY safe-reveal candidates are ever probed.
         const classified = survey.map((c) => ({
           node: c,
@@ -376,7 +423,7 @@ export class ReconCrawler {
         const outgoing = mergeLinks(links, reveals.flatMap((r) =>
           r.revealedLinks.map((to) => ({ toUrlNormalized: to, viaElementName: r.trigger.name }))));
 
-        const { outline, contentHash } = condenseOutline(survey, forms, meta.title, meta.headings);
+        const { outline, contentHash } = outlineNow;
 
         // Tier B screenshots are off by default: on a signed-in members or
         // profile page the PNG is the densest PII artifact in the system, and
@@ -419,6 +466,7 @@ export class ReconCrawler {
           // re-crawl of the marketing pages cannot vandalise public knowledge.
           requiresAuth: authed,
           blocked: null,
+          ...(isScreen ? { reachedBy } : {}),
         };
         // ax_outline rides on the capture via condenseOutline in the repository;
         // pass it along without widening the shared type.
@@ -446,6 +494,25 @@ export class ReconCrawler {
               url: link.toUrlNormalized, depth: depth + 1, from: landed, href: link.hrefObserved,
             });
           }
+          // Screens: hrefless controls in the navigation that switch the view.
+          // Enqueued like links; the newness test above decides on arrival.
+          // Never on a passive-only page — its controls are configuration.
+          // Spec: docs/specs/test-writer/spec-screen-discovery.md §1.2
+          if (!passiveOnly) {
+            const hops = reachedBy ?? [];
+            for (const candidate of viewSwitchCandidates(survey)) {
+              const chain = [...hops, { role: candidate.role, name: candidate.name.trim() }];
+              const screen = screenUrl(landed, chain);
+              if (!screen || visited.has(screen)) continue;
+              const lastSlug = screen.slice(screen.lastIndexOf('/') + 1).replace(/^.*#screen=/, '');
+              if (triedScreenSlugs.has(lastSlug)) continue;
+              triedScreenSlugs.add(lastSlug);
+              queue.push({
+                url: screen, depth: depth + 1, from: landed,
+                href: stripFragment(page.url()), reachedBy: chain,
+              });
+            }
+          }
         }
       }
 
@@ -457,6 +524,31 @@ export class ReconCrawler {
       await pool.release();
     }
   }
+}
+
+/**
+ * Click the way to a screen: each hop by role and accessible name, exact
+ * first, then containing (a sidebar item's name may carry a count — "Tests 3").
+ * Settles after each hop so a view that renders asynchronously is there to be
+ * surveyed. False when any hop cannot be clicked.
+ */
+async function reachScreen(page: any, hops: ReachHop[], timeoutMs: number): Promise<boolean> {
+  for (const hop of hops) {
+    const role = hop.role === 'menuitem' ? 'menuitem' : hop.role === 'link' ? 'link' : 'button';
+    let clicked = false;
+    for (const exact of [true, false]) {
+      try {
+        const locator = page.getByRole(role, { name: hop.name, exact }).first();
+        await locator.click({ timeout: Math.min(timeoutMs, 5_000) });
+        clicked = true;
+        break;
+      } catch { /* try the looser match */ }
+    }
+    if (!clicked) return false;
+    await page.waitForTimeout(600);
+    await page.waitForLoadState('networkidle', { timeout: 5_000 }).catch(() => {});
+  }
+  return true;
 }
 
 function blockedCapture(url: string, blocked: 'challenge' | 'robots'): PageCapture {

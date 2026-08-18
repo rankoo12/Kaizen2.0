@@ -531,6 +531,7 @@ async function runGenerationPhases(
         scope: job.scope,
         syntheticDataConsent: consent,
         knownAccounts: accounts,
+        ...(plan.reachedBy?.length ? { reachedBy: plan.reachedBy } : {}),
       };
       const outcome = await deps.writer.write(writeParams);
 
