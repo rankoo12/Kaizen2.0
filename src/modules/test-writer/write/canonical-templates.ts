@@ -61,6 +61,19 @@ export function describeTarget(
   return element ? describeElement(element) : 'the element';
 }
 
+/**
+ * A description target on an assertion IS the definition of a discover oracle:
+ * the crawler never saw this element, because it only exists after the action
+ * the scenario just performed (a flash message, a new row, a confirmation). The
+ * worker must therefore resolve it inside what that action changed, and nowhere
+ * else — resolving it against the whole page is how "verify the confirmation is
+ * visible" bound to the button that produced it.
+ * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §1
+ */
+function deltaScope(target: StepIntentTarget | undefined): 'delta' | undefined {
+  return target?.kind === 'description' ? 'delta' : undefined;
+}
+
 function buildAst(params: {
   action: StepAST['action'];
   text: string;
@@ -68,6 +81,7 @@ function buildAst(params: {
   value?: string | null;
   url?: string | null;
   captureAs?: string | null;
+  oracleScope?: 'delta';
 }): StepAST {
   const targetDescription = params.targetDescription ?? null;
   return {
@@ -79,6 +93,7 @@ function buildAst(params: {
     contentHash: stepContentHash(params.text),
     targetHash: stepTargetHash(params.action, targetDescription),
     ...(params.captureAs ? { captureAs: params.captureAs } : {}),
+    ...(params.oracleScope ? { oracleScope: params.oracleScope } : {}),
   };
 }
 
@@ -173,7 +188,7 @@ export function renderIntent(
 
     case 'assert_visible': {
       const text = `verify ${target()} is visible`;
-      return { text, ast: buildAst({ action: 'assert_visible', text, targetDescription: target() }) };
+      return { text, ast: buildAst({ action: 'assert_visible', text, targetDescription: target(), oracleScope: deltaScope(intent.target) }) };
     }
     case 'assert_not_visible': {
       const text = `verify ${target()} is not visible`;
@@ -181,15 +196,15 @@ export function renderIntent(
     }
     case 'assert_enabled': {
       const text = `verify ${target()} is enabled`;
-      return { text, ast: buildAst({ action: 'assert_enabled', text, targetDescription: target() }) };
+      return { text, ast: buildAst({ action: 'assert_enabled', text, targetDescription: target(), oracleScope: deltaScope(intent.target) }) };
     }
     case 'assert_disabled': {
       const text = `verify ${target()} is disabled`;
-      return { text, ast: buildAst({ action: 'assert_disabled', text, targetDescription: target() }) };
+      return { text, ast: buildAst({ action: 'assert_disabled', text, targetDescription: target(), oracleScope: deltaScope(intent.target) }) };
     }
     case 'assert_checked': {
       const text = `verify ${target()} is checked`;
-      return { text, ast: buildAst({ action: 'assert_checked', text, targetDescription: target() }) };
+      return { text, ast: buildAst({ action: 'assert_checked', text, targetDescription: target(), oracleScope: deltaScope(intent.target) }) };
     }
 
     case 'assert_text': {
@@ -197,7 +212,7 @@ export function renderIntent(
       const text = where
         ? `verify ${where} contains "${intent.value}"`
         : `verify the text "${intent.value}" is shown`;
-      return { text, ast: buildAst({ action: 'assert_text', text, targetDescription: where, value: intent.value }) };
+      return { text, ast: buildAst({ action: 'assert_text', text, targetDescription: where, value: intent.value, oracleScope: deltaScope(intent.target) }) };
     }
     case 'assert_not_text': {
       const text = `verify the text "${intent.value}" is not shown`;
@@ -221,6 +236,7 @@ export function renderIntent(
           action: 'assert_attribute', text,
           targetDescription: where,
           value: `${intent.attribute}=${intent.expected}`,
+          oracleScope: deltaScope(intent.target),
         }),
       };
     }
