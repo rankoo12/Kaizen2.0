@@ -70,7 +70,7 @@ export type TestWriterJobPayload = {
   authConsent: boolean;
   options: {
     maxPages: number;         // default 30, hard cap 50
-    maxScenarios: number;     // default 6, hard cap 10
+    maxScenarios: number;     // default 6, hard cap 30 (analyze) / 5 (suggest)
     includeNegative: boolean;
     safeMode: boolean;
     validate: boolean;

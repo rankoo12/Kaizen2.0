@@ -31,6 +31,9 @@ import { PinoObservability } from '../../modules/observability/pino.observabilit
 import { FORM_DATA_TOKENS } from '../../modules/test-data/generate';
 import { blockedDestinationReason } from '../../modules/test-writer/recon/destination-guard';
 
+/** Upper bound on scenarios per whole-app analyze. Suggest keeps its own, smaller cap. */
+export const MAX_SCENARIOS_PER_ANALYZE = 30;
+
 const AnalyzeBody = z.object({
   targetUrl: z.string().url(),
   scope: z.enum(['public', 'authenticated']).default('public'),
@@ -42,7 +45,10 @@ const AnalyzeBody = z.object({
   allowSyntheticData: z.boolean().optional(),
   options: z.object({
     maxPages: z.number().int().min(1).max(HARD_MAX_PAGES).default(30),
-    maxScenarios: z.number().int().min(1).max(10).default(6),
+    // Raised from 10 (2026-08-18): a 40-widget site like the-internet cannot be
+    // covered in ten. Cost is linear (one write + one proving run per scenario)
+    // and the planner/judge batch comfortably; the UI shows the count chosen.
+    maxScenarios: z.number().int().min(1).max(MAX_SCENARIOS_PER_ANALYZE).default(6),
     includeNegative: z.boolean().default(true),
     safeMode: z.boolean().default(true),
     validate: z.boolean().default(true),
