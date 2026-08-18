@@ -1,6 +1,7 @@
 # Spec: Validation Trust — the oracle-integrity contract
 
 Created: 2026-08-12
+Updated: 2026-08-18 — §5 executed sign-in proof probe
 Status: approved for implementation (founder accepted 2026-08-12; assessment
 `docs/assessments/2026-08-12-testwriter-full-assessment.md`)
 Owner: Test Writer workstream
@@ -141,6 +142,29 @@ Contract:
   `page_elements` row on a `requires_auth = true` page (the crawl knows which
   elements exist only behind login). If it cannot, the job proceeds but every
   draft carries `unproven_signin` — fail-closed on the label, not the work.
+
+> **Amended 2026-08-18 — executed proof replaces the static lookup as the primary
+> evidence.** Observed on saucedemo (prod): three green drafts, all labelled
+> `SIGN-IN UNPROVEN`, because the static rule cannot see. On an authenticated-only
+> analysis every page was seen signed in, so `requires_auth` is an assumption, and
+> a recipe ending in `verify the url contains "inventory"` or `verify the
+> "Products" heading is visible` names nothing in `page_elements` at all. The
+> label was answering "did the crawl happen to record this element as private?",
+> not "was the browser signed in?".
+>
+> The question has a direct answer, and it is the same shape as the §3 vacuity
+> probe: run the login recipe's terminal assertion **signed out** — its `navigate`
+> steps plus the assertion, no credentials, cold browser — once per job.
+> - Probe **fails** ⇒ the assertion cannot hold without a session ⇒ every green
+>   proving run in this job witnessed one ⇒ `signinAssertionProves = true`.
+> - Probe **passes** ⇒ the assertion holds signed out ⇒ `unproven_signin` for the
+>   job, whatever the static lookup said (executed evidence wins).
+> - Probe **inconclusive** (queue/browser error) ⇒ fall back to the static lookup.
+>
+> One extra small run per authenticated job; the §2 audit of the prefix (heals,
+> unfaithful resolutions) still applies per scenario and can still withhold the
+> label. `validation-runner.ts` `probeSigninAssertionIsPrivate`; the report
+> records `validate.signinProbe: 'private' | 'public' | 'inconclusive'`.
 
 ## 6. `validation_state` — stop collapsing evidence levels (defect 5)
 
