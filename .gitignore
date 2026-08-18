@@ -61,3 +61,7 @@ kaizen-codebase.*.txt
 
 # Throwaway debug scripts (underscore prefix = session scratch, never shipped)
 _*.mjs
+benchmarks/testwriter/results/
+
+# local LLM inbox (prompts contain page text)
+.kaizen-llm/

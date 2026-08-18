@@ -519,6 +519,16 @@ describe('PlaywrightExecutionEngine', () => {
       await expect(engine.executeStep(mkStep('assert_url', { value: '/checkout', targetDescription: null }), emptySet, mockPage)).rejects.toThrow(/assert_url failed/);
     });
 
+    it('assert_url waits for a URL that arrives after the action (SPA sign-in then router push)', async () => {
+      mockPage.url
+        .mockReturnValueOnce('https://app.example.com/login')
+        .mockReturnValueOnce('https://app.example.com/login')
+        .mockReturnValue('https://app.example.com/tests');
+      const r = await engine.executeStep(mkStep('assert_url', { value: '/tests', targetDescription: null }), emptySet, mockPage);
+      expect(r.status).toBe('passed');
+      expect(mockPage.waitForTimeout).toHaveBeenCalledTimes(2);
+    });
+
     it('assert_title passes/fails on page-title containment', async () => {
       mockPage.title.mockResolvedValue('My Store — Checkout');
       expect((await engine.executeStep(mkStep('assert_title', { value: 'Checkout', targetDescription: null }), emptySet, mockPage)).status).toBe('passed');
@@ -545,6 +555,17 @@ describe('PlaywrightExecutionEngine', () => {
       expect((await engine.executeStep(mkStep('assert_checked'), oneSelector(), mockPage)).status).toBe('passed');
       mockPage.isChecked.mockResolvedValueOnce(false);
       await expect(engine.executeStep(mkStep('assert_checked'), oneSelector(), mockPage)).rejects.toThrow(/assert_checked failed/);
+    });
+
+    // The other half of every checkbox test — the-internet /checkboxes died for
+    // want of it. A non-checkable element is a failure, never "unchecked".
+    it('assert_not_checked passes when unchecked, throws when checked or when the element is not checkable', async () => {
+      mockPage.isChecked.mockResolvedValueOnce(false);
+      expect((await engine.executeStep(mkStep('assert_not_checked'), oneSelector(), mockPage)).status).toBe('passed');
+      mockPage.isChecked.mockResolvedValueOnce(true);
+      await expect(engine.executeStep(mkStep('assert_not_checked'), oneSelector(), mockPage)).rejects.toThrow(/assert_not_checked failed/);
+      mockPage.isChecked.mockRejectedValueOnce(new Error('Not a checkbox or radio button'));
+      await expect(engine.executeStep(mkStep('assert_not_checked'), oneSelector(), mockPage)).rejects.toThrow(/Not a checkbox/);
     });
 
     it('assert_attribute passes when the attribute contains the expected value, throws otherwise', async () => {
@@ -601,6 +622,13 @@ describe('PlaywrightExecutionEngine', () => {
       mockPage.$eval.mockResolvedValueOnce(true); // perceptibility probe
       mockPage.$eval.mockResolvedValueOnce('button enable'); // no "thing" → unrelated pick → target absent
       expect((await engine.executeStep(mkStep('assert_not_visible'), oneSelector('#enable'), mockPage)).status).toBe('passed');
+    });
+    it('assert_not_visible: the role noun in the target is not a match — "the Save button" vs a visible "File" button', async () => {
+      mockPage.isVisible.mockResolvedValueOnce(true);
+      mockPage.$eval.mockResolvedValueOnce(true);
+      mockPage.$eval.mockResolvedValueOnce('button   file'); // tag "button" overlaps only the noun
+      const step = mkStep('assert_not_visible', { targetDescription: 'the "Save" button' });
+      expect((await engine.executeStep(step, oneSelector('role=button[name="File"]'), mockPage)).status).toBe('passed');
     });
     it('assert_not_text passes when the text is absent', async () => {
       mockPage.$eval.mockResolvedValue(false);

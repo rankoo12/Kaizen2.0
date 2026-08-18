@@ -14,7 +14,7 @@
  */
 export const NO_CACHE_ASSERTIONS = new Set([
   'assert_visible', 'assert_not_visible', 'assert_enabled',
-  'assert_disabled', 'assert_checked', 'assert_attribute',
+  'assert_disabled', 'assert_checked', 'assert_not_checked', 'assert_attribute',
 ]);
 
 /**

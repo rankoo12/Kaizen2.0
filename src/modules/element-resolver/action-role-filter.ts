@@ -93,6 +93,7 @@ export function isRoleCompatible(action: string, role: string): boolean {
     case 'uncheck':
       return CHECK_ROLES.has(role);
     case 'assert_checked':
+    case 'assert_not_checked':
       return CHECK_ROLES.has(role);
     default:
       return true;   // pointer/assertion actions work against any role

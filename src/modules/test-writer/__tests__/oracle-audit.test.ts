@@ -210,7 +210,7 @@ describe('selector helpers', () => {
  * what PERFORMS the scenario.
  * Spec: docs/specs/test-writer/spec-validation-trust.md §3
  */
-import { planVacuityProbe } from '../validate/oracle-audit';
+import { planVacuityProbe, isPageLoadOnly } from '../validate/oracle-audit';
 
 describe('planVacuityProbe', () => {
   it('keeps navigations and drops the actions, for the shape that shipped', () => {
@@ -229,6 +229,15 @@ describe('planVacuityProbe', () => {
     expect(plan!.keptBodyIndexes).toEqual([0, 2]);
   });
 
+  // Bench run 5: 14 of 17 "needs review" were round-trip tests whose LAST
+  // assertion is true before anything ran. The probe keeps every assertion, so
+  // the middle one — the oracle — is what decides.
+  it('keeps every assertion, so a round-trip test is judged by its middle check', () => {
+    const plan = planVacuityProbe(['navigate', 'check', 'assert_checked', 'uncheck', 'assert_not_checked']);
+    expect(plan!.keptBodyIndexes).toEqual([0, 2]);
+    expect(plan!.terminalIndex).toBe(4);
+  });
+
   it('refuses to probe a scenario that has nothing to drop', () => {
     // navigate → assert is already its own counterfactual; re-running it proves
     // nothing and would reject every legitimate 404 or auth-gate test.
@@ -238,5 +247,30 @@ describe('planVacuityProbe', () => {
   it('refuses to probe a scenario that does not end on an assertion', () => {
     expect(planVacuityProbe(['navigate', 'click'])).toBeNull();
     expect(planVacuityProbe([])).toBeNull();
+  });
+});
+
+describe('isPageLoadOnly', () => {
+  /**
+   * "Hover Interaction" ran `navigate → verify text` green and was labelled
+   * PROVEN while hovering nothing. Spec: spec-oracle-delta-and-fidelity.md §2.2
+   */
+  it('flags a test that navigates and only reads what is there', () => {
+    expect(isPageLoadOnly(['navigate', 'assert_text'])).toBe(true);
+    expect(isPageLoadOnly(['navigate', 'assert_visible', 'assert_visible'])).toBe(true);
+  });
+
+  it('is not fooled by waits and scrolls', () => {
+    expect(isPageLoadOnly(['navigate', 'wait', 'scroll', 'assert_text'])).toBe(true);
+  });
+
+  it('does not flag a test that acts on the page', () => {
+    expect(isPageLoadOnly(['navigate', 'click', 'assert_visible'])).toBe(false);
+    expect(isPageLoadOnly(['navigate', 'hover', 'assert_visible'])).toBe(false);
+  });
+
+  it('does not flag a redirect check — there, arriving IS the action', () => {
+    expect(isPageLoadOnly(['navigate', 'assert_url'])).toBe(false);
+    expect(isPageLoadOnly(['navigate', 'assert_title'])).toBe(false);
   });
 });

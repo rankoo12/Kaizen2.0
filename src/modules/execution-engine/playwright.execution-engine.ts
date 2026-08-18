@@ -45,6 +45,9 @@ interface PlaywrightPageLike {
 
 const ACTION_TIMEOUT_MS = 10_000;
 const NAVIGATE_TIMEOUT_MS = 30_000;
+/** URL / title assertions poll up to the action timeout, in these slices. */
+const PAGE_ASSERT_POLL_MS = 250;
+const PAGE_ASSERT_POLLS = ACTION_TIMEOUT_MS / PAGE_ASSERT_POLL_MS;
 
 export class PlaywrightExecutionEngine implements IExecutionEngine {
   constructor(private readonly observability: IObservability) {}
@@ -351,7 +354,13 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
     // GENUINE match from a stretch by requiring the visible element's own
     // role/type/name/text to overlap a distinctive word from the target — else
     // the described target is absent and the assertion holds.
-    const STOP = new Set(['the', 'a', 'an', 'is', 'are', 'be', 'not', 'no', 'on', 'of', 'in', 'to', 'and', 'that', 'this', 'it', 'should', 'still', 'gone', 'removed', 'disappear', 'visible', 'shown', 'present']);
+    // Role nouns are NOT distinctive: `the "Save" button` must not count the
+    // menubar's "File" as a genuine match because both are <button>s. Kaizen's
+    // own dashboard failed nine of nine "the Save button is gone" checks that
+    // way — the sheet had closed, Save was gone, and the guard said "visible".
+    const STOP = new Set(['the', 'a', 'an', 'is', 'are', 'be', 'not', 'no', 'on', 'of', 'in', 'to', 'and', 'that', 'this', 'it', 'should', 'still', 'gone', 'removed', 'disappear', 'visible', 'shown', 'present',
+      'button', 'link', 'field', 'textbox', 'input', 'checkbox', 'radio', 'dropdown', 'select', 'combobox', 'menu', 'item',
+      'element', 'tab', 'box', 'option', 'icon', 'image', 'control', 'row', 'text', 'label', 'heading', 'dialog', 'sheet', 'panel']);
     const targetWords = (step.targetDescription ?? '')
       .toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 2 && !STOP.has(w));
 
@@ -400,10 +409,21 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
     start: number,
   ): Promise<StepExecutionResult> {
     if (step.value == null) return this.failResult(start, 'MissingValueError', 'assert_url requires an expected URL fragment in value.');
-    const current = page.url();
-    if (current.toLowerCase().includes(step.value.trim().toLowerCase())) {
-      this.observability.increment('engine.assert_url_matched');
-      return this.passResult(start, current);
+    // The URL an action produces often lands a moment later: a sign-in button
+    // posts, then the app router pushes the next page. Playwright's toHaveURL
+    // waits for that; an instant read here said "still on /login" against a
+    // login that had worked. Poll for the action timeout, like every other
+    // assertion, and report the last URL seen.
+    const want = step.value.trim().toLowerCase();
+    let current = page.url();
+    for (let attempt = 0; ; attempt += 1) {
+      if (current.toLowerCase().includes(want)) {
+        this.observability.increment('engine.assert_url_matched');
+        return this.passResult(start, current);
+      }
+      if (attempt >= PAGE_ASSERT_POLLS) break;
+      await page.waitForTimeout(PAGE_ASSERT_POLL_MS);
+      current = page.url();
     }
     throw new Error(`assert_url failed: current URL "${current}" does not contain "${step.value}".`);
   }
@@ -415,10 +435,15 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
   ): Promise<StepExecutionResult> {
     if (step.value == null) return this.failResult(start, 'MissingValueError', 'assert_title requires expected title text in value.');
     const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
-    const title = await page.title();
-    if (norm(title).includes(norm(step.value))) {
-      this.observability.increment('engine.assert_title_matched');
-      return this.passResult(start, title);
+    let title = await page.title();
+    for (let attempt = 0; ; attempt += 1) {
+      if (norm(title).includes(norm(step.value))) {
+        this.observability.increment('engine.assert_title_matched');
+        return this.passResult(start, title);
+      }
+      if (attempt >= PAGE_ASSERT_POLLS) break;
+      await page.waitForTimeout(PAGE_ASSERT_POLL_MS);
+      title = await page.title();
     }
     throw new Error(`assert_title failed: page title "${title}" does not contain "${step.value}".`);
   }
@@ -572,6 +597,16 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
       case 'assert_checked': {
         const checked = await page.isChecked(selector, { timeout: ACTION_TIMEOUT_MS }).catch(() => false);
         if (!checked) throw new Error(`assert_checked failed: element is not checked: ${selector}`);
+        break;
+      }
+
+      // The other half of every checkbox test. Without it the writer improvised
+      // "verify the checkbox 1 is unchecked is not visible" and the run died.
+      // isChecked throws on a non-checkable element; that is a failure too, and
+      // must not read as "unchecked".
+      case 'assert_not_checked': {
+        const checked = await page.isChecked(selector, { timeout: ACTION_TIMEOUT_MS });
+        if (checked) throw new Error(`assert_not_checked failed: element is checked: ${selector}`);
         break;
       }
 

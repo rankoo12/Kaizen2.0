@@ -147,14 +147,21 @@ export async function reconFindings(
   );
   for (const row of unnamed) {
     const count = Number(row.n);
+    const plural = count !== 1;
+    // The role noun, pluralised the way a person would ("checkboxes", not
+    // "checkboxs"). And the second half of the old sentence — "Kaizen cannot
+    // write a test that refers to them" — stopped being true once derived
+    // names landed; the report was contradicting the tests listed above it.
+    const noun = plural ? `${row.role}${/(x|s|ch|sh)$/.test(row.role) ? 'es' : 's'}` : row.role;
     findings.push({
       kind: 'empty_accessible_name',
       severity: 'medium',
-      title: `${count} ${row.role}${count === 1 ? '' : 's'} on this page have no readable label`,
+      title: `${count} ${noun} on this page ${plural ? 'have' : 'has'} no readable label`,
       detail:
-        `On ${sanitizeForDisplay(row.url_normalized, 300)}, ${count} ${row.role}`
-        + `${count === 1 ? ' has' : 's have'} no accessible name. A screen reader announces nothing `
-        + 'for these, and Kaizen cannot write a test that refers to them.',
+        `On ${sanitizeForDisplay(row.url_normalized, 300)}, ${count} ${noun}`
+        + `${plural ? ' have' : ' has'} no accessible name, so a screen reader announces nothing `
+        + 'for them. Kaizen names them from the text beside them or from a developer attribute, '
+        + 'so tests can still refer to them — but users of assistive technology cannot.',
       evidence: { url: sanitizeForDisplay(row.url_normalized, 300), elementRef: row.role },
       source: 'recon',
     });

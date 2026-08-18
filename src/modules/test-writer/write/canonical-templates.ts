@@ -206,6 +206,10 @@ export function renderIntent(
       const text = `verify ${target()} is checked`;
       return { text, ast: buildAst({ action: 'assert_checked', text, targetDescription: target(), oracleScope: deltaScope(intent.target) }) };
     }
+    case 'assert_not_checked': {
+      const text = `verify ${target()} is not checked`;
+      return { text, ast: buildAst({ action: 'assert_not_checked', text, targetDescription: target(), oracleScope: deltaScope(intent.target) }) };
+    }
 
     case 'assert_text': {
       const where = intent.target ? describeTarget(intent.target, elements) : null;

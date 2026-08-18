@@ -78,13 +78,23 @@ export type TenantBrief = {
   businessRules: string[];
   priorities: string[];
   cautions: string[];           // "never touch the billing page", etc.
+  /**
+   * URL paths the team said to skip or leave alone ("/billing", "/basic_auth").
+   * Extracted as its own field because a summary of the caution loses the verb:
+   * "/download involves files; skip it" was distilled to "/download involves
+   * files, which Kaizen cannot open" — true, and no longer an instruction.
+   * Spec: docs/specs/test-writer/spec-planner-per-page.md §1.4
+   */
+  excludedPaths?: string[];
 };
 
 // ─── PLAN ────────────────────────────────────────────────────────────────────
 
 export type ScenarioSource =
   | { kind: 'catalog'; archetypeKey: string }
-  | { kind: 'llm' };
+  | { kind: 'llm' }
+  /** Fired by element shape alone, no model call. Spec: spec-planner-per-page.md §1.3 */
+  | { kind: 'repertoire'; ruleKey: string };
 
 export type PlannedScenario = {
   name: string;
@@ -94,6 +104,17 @@ export type PlannedScenario = {
   /** WHY a QA engineer would write this. */
   rationale: string;
   /**
+   * The observable change the test must see: "a Delete button appears that
+   * was not there before", "the flash reads 'Your username is invalid!'". The
+   * missing half of a plan — without it PLAN says "verify the content is
+   * dynamic", WRITE invents "verify the ever-evolving nature of content is
+   * visible", and no stage can tell that is meaningless. WRITE renders it as
+   * the oracle instruction; the judge asks whether the steps prove it; the
+   * delta oracle scores its pick against it.
+   * Spec: docs/specs/test-writer/spec-planner-per-page.md §1.2
+   */
+  expectedOutcome?: string;
+  /**
    * WHAT it will do — one sentence of approach, so a reviewer can approve
    * knowingly before any steps exist. Catalog scenarios render their archetype
    * skeleton instead; this carries the gap-fill ones (spec §2.2).
@@ -101,8 +122,64 @@ export type PlannedScenario = {
   outline: string;
   targetPages: string[];        // urlNormalized values
   source: ScenarioSource;
+  /**
+   * 1 for the approved plan; 2 or 3 for scenarios a fill round added to reach
+   * the requested count. Shown so a reviewer knows which they did not approve.
+   * Spec: docs/specs/test-writer/spec-planner-per-page.md §1.5
+   */
+  round?: number;
   /** Set when the scenario needs synthetic-data consent to be validated. */
   requiresSyntheticData?: boolean;
+  /**
+   * When the first target page is a screen reached by clicking rather than by
+   * URL: the clicks that get there, prepended to the test after the navigate.
+   * Spec: docs/specs/test-writer/spec-screen-discovery.md §1.5
+   */
+  reachedBy?: Array<{ role: string; name: string }>;
+};
+
+/**
+ * Everything the planner needs to know about ONE page to plan tests for it —
+ * the page as an engineer would read it, not a one-line summary of it.
+ * Spec: docs/specs/test-writer/spec-planner-per-page.md §1.1
+ */
+export type PageDossier = {
+  /** The URL a test navigates to (observed form, trailing slash kept). */
+  url: string;
+  /** Identity — what site_pages / page_elements are keyed by. */
+  urlNormalized: string;
+  title: string;
+  headings: string[];
+  /** Opening stretch of visible text, scrubbed. */
+  pageText: string;
+  purpose: string;
+  capabilities: string[];
+  /** Page-specific interactive elements: nav/footer chrome excluded. `revealedBy`
+   *  names the control that has to be clicked first for this one to exist. */
+  elements: Array<{ role: string; name: string; kind: string; opensNewTab?: boolean; revealedBy?: string }>;
+  /** "login form: username, password, [Login]" */
+  forms: string[];
+  requiresAuth: boolean;
+  /** Set when a brief caution names this page — never planned. */
+  excludedBy?: string;
+  /** A page that is only links to other pages: navigation, not a subject. */
+  isIndex?: boolean;
+  /** A screen: the clicks that reach it from `url`. Spec: spec-screen-discovery.md §1.3 */
+  reachedBy?: Array<{ role: string; name: string }>;
+};
+
+export type PlanBatchInput = {
+  pages: PageDossier[];
+  tenantBrief: TenantBrief | null;
+  appSummary: string;
+  /** Scenarios the deterministic repertoire already produced for these pages. */
+  repertoire: Array<{ page: string; name: string; outline: string }>;
+  /** Fill round: what has already been delivered / rejected per page. */
+  ledger?: Array<{ page: string; delivered: string[]; rejected: Array<{ name: string; reason: string }> }>;
+  perPage: number;
+  scope: 'public' | 'authenticated';
+  syntheticDataConsent: boolean;
+  existingCaseNames: string[];
 };
 
 export type PlanInput = {
@@ -154,7 +231,8 @@ export type StepIntent =
   // ── Group semantics: pick one of many, capture what was picked ──
   | { action: 'click_random'; description: string; captureAs: string }
   // ── Assertions ──
-  | { action: 'assert_visible' | 'assert_not_visible' | 'assert_enabled' | 'assert_disabled' | 'assert_checked';
+  | { action: 'assert_visible' | 'assert_not_visible' | 'assert_enabled' | 'assert_disabled'
+      | 'assert_checked' | 'assert_not_checked';
       target: StepIntentTarget }
   | { action: 'assert_text' | 'assert_not_text'; value: string; target?: StepIntentTarget }
   | { action: 'assert_url' | 'assert_title'; value: string }
@@ -230,6 +308,18 @@ export type WriteInput = {
   archetype: string | null;
   /** Human steering notes captured at plan approval — UNTRUSTED text. */
   steeringNotes: string | null;
+  /**
+   * Accounts the brief names ("username tomsmith, password SuperSecretPassword!").
+   * A sign-in test types these; the seed-token rule is for NEW identities.
+   * Spec: docs/specs/test-writer/spec-planner-per-page.md §1.7
+   */
+  knownAccounts?: string[];
+  /**
+   * The page has no URL of its own: after navigating, these clicks reach it.
+   * The writer is told; the pipeline prepends them.
+   * Spec: docs/specs/test-writer/spec-screen-discovery.md §1.5
+   */
+  reachedBy?: Array<{ role: string; name: string }>;
   maxSteps: number;
   /** Compile/lint errors from a previous attempt — set on the single repair round. */
   repairErrors?: string[];
@@ -284,6 +374,7 @@ export type JudgeInput = {
      * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
      */
     outline?: string;
+    expectedOutcome?: string;
     targetPages?: string[];
   }>;
   /** Advisory lint findings, per scenario planRef — the judge weighs them. */

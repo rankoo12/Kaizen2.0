@@ -18,7 +18,7 @@
 type SettleablePage = {
   url?: () => string;
   waitForLoadState?: (state: string, opts?: { timeout?: number }) => Promise<void>;
-  evaluate?: (fn: () => unknown) => Promise<unknown>;
+  evaluate?: (fn: (arg: never) => unknown, arg?: unknown) => Promise<unknown>;
 };
 
 /**
@@ -37,16 +37,28 @@ export async function settleAfterNavigation(page: unknown, urlBefore: string | u
     // DOM-quiescence settle. A CLIENT-SIDE route change does no network I/O at
     // all, so `networkidle` returns immediately and proves nothing; wait for the
     // DOM to stop mutating instead.
-    await p.evaluate?.(() => new Promise((resolve) => {
-      let timer = setTimeout(() => resolve(null), 400);
-      const mo = new MutationObserver(() => {
-        clearTimeout(timer);
-        timer = setTimeout(() => resolve(null), 400);
-      });
-      mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
-      setTimeout(() => { mo.disconnect(); resolve(null); }, 2000);
-    })).catch(() => {});
+    await settleDom(page);
   } catch {
     /* settling is best-effort — never fail a step on it */
   }
+}
+
+/**
+ * Wait for the DOM to stop mutating (400 ms quiet, 2 s ceiling), whether or not
+ * the URL changed. The crawler needs exactly this after a click that switches a
+ * view in place, and after landing on an app that boots client-side: recon
+ * captured Kaizen's own dashboard while it still read "Signing in…", with
+ * every count at zero. Best-effort; never throws.
+ */
+export async function settleDom(page: unknown, quietMs = 400, ceilingMs = 2000): Promise<void> {
+  const p = page as SettleablePage;
+  await p.evaluate?.((opts: { quietMs: number; ceilingMs: number }) => new Promise((resolve) => {
+    let timer = setTimeout(() => resolve(null), opts.quietMs);
+    const mo = new MutationObserver(() => {
+      clearTimeout(timer);
+      timer = setTimeout(() => resolve(null), opts.quietMs);
+    });
+    mo.observe(document.documentElement, { childList: true, subtree: true, attributes: true });
+    setTimeout(() => { mo.disconnect(); resolve(null); }, opts.ceilingMs);
+  }), { quietMs, ceilingMs }).catch(() => {});
 }

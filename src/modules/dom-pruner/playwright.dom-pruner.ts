@@ -61,7 +61,12 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
         // that the interactive-role query above never surfaces, so drag_and_drop
         // resolution otherwise falls back to the nearest link. Rare on non-drag
         // pages, so this adds negligible candidate noise elsewhere.
-        '[draggable="true"], [aria-grabbed], .ui-draggable, .ui-droppable, .ui-sortable, .ui-sortable > *',
+        '[draggable="true"], [aria-grabbed], .ui-draggable, .ui-droppable, .ui-sortable, .ui-sortable > *, ' +
+        // Figure images: the one kind of image a test hovers or clicks ON PURPOSE
+        // (a gallery tile, an avatar with a caption underneath). Narrow on
+        // purpose — every logo on the web is an <img>, and those are noise.
+        // the-internet's /hovers page had nothing citable without this.
+        'figure > img, .figure > img, figure > a > img',
       )) as HTMLElement[];
 
       const results: any[] = [];
@@ -92,6 +97,10 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
           'id', 'name', 'placeholder', 'aria-label', 'aria-labelledby',
           'type', 'href', 'title', 'data-testid', 'data-qa', 'data-test', 'role', 'draggable', 'target',
           'aria-expanded', 'aria-haspopup', 'aria-controls', 'download',
+          // The mark WAI-ARIA gives an item in a set of navigation — a
+          // view-switch signal for the Test Writer's screen discovery.
+          // Spec: docs/specs/test-writer/spec-screen-discovery.md §1.1
+          'aria-current',
         ]) {
           const val = el.getAttribute(attr);
           if (val) attributes[attr] = val;
@@ -104,6 +113,7 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
           if (tagName === 'button') role = 'button';
           else if (tagName === 'a') role = 'link';
           else if (tagName === 'select') role = 'combobox';
+          else if (tagName === 'img') role = 'img';
           else if (tagName === 'textarea') role = 'textbox';
           else if (tagName === 'input') {
             const t = (el.getAttribute('type') || 'text').toLowerCase();
@@ -193,6 +203,13 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
           el.classList.contains('ui-draggable') ||
           el.classList.contains('ui-droppable') ||
           el.classList.contains('ui-sortable');
+        // An image's name is its alt text — and when several figures share one
+        // alt ("User Avatar" ×3), the caption beside it tells them apart.
+        if (!accessibleName && tagName === 'img') {
+          const alt = (el.getAttribute('alt') || '').trim();
+          const caption = (el.parentElement?.querySelector('figcaption, .figcaption')?.textContent || '').replace(/\s+/g, ' ').trim();
+          accessibleName = caption ? `${alt || 'image'}: ${caption.slice(0, 40)}` : alt;
+        }
         if (!accessibleName && (tagName === 'button' || tagName === 'a' || isDragEl)) {
           accessibleName = textContent.substring(0, 80);
         }
@@ -252,6 +269,37 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
             if (parentContext) break;
           }
           node = node.parentElement;
+        }
+
+        // ── 8a. Navigation context ────────────────────────────────────────
+        // Where a control LIVES: a button in a sidebar or nav bar switches
+        // views; the same button in a form commits one. The Test Writer's
+        // screen discovery reads this to know which hrefless controls lead to
+        // a screen worth crawling. Landmarks first, then the class/id names
+        // apps actually use — Kaizen's own sidebar is <div class="sidebar">.
+        // Spec: docs/specs/test-writer/spec-screen-discovery.md §1.1
+        {
+          let nav: HTMLElement | null = el.parentElement;
+          let navContext = '';
+          let hops = 0;
+          while (nav && nav !== document.body && hops < 20 && !navContext) {
+            hops++;
+            const navTag = nav.tagName.toLowerCase();
+            const navRole = (nav.getAttribute('role') || '').toLowerCase();
+            if (navTag === 'nav' || navTag === 'aside' || navTag === 'header') navContext = navTag;
+            else if (['navigation', 'menubar', 'tablist', 'toolbar', 'menu'].includes(navRole)) navContext = navRole;
+            else {
+              // Whole class/id tokens only. Bare "menu" and "tab" were dropped:
+              // "menu-item" is a popover entry (a probe's business) and a row
+              // action inside one became a "screen" that started a real run.
+              const cls = `${typeof nav.className === 'string' ? nav.className : ''} ${nav.id || ''}`;
+              if (/(^|\s)(sidebar|sidenav|side-nav|nav|navbar|main-nav|primary-nav|site-nav|nav-menu|topbar|top-bar|appbar|app-bar|menubar|tabbar|tab-bar|tabs)(\s|$)/i.test(cls)) {
+                navContext = 'nav-class';
+              }
+            }
+            nav = nav.parentElement;
+          }
+          if (navContext) attributes['nav-context'] = navContext;
         }
 
         // ── 8b. Repeated-item context (row / card / list-item) ────────────────

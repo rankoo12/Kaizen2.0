@@ -51,7 +51,7 @@ import { RunLogger } from './run-logger';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
 import { PageChallengeDetector } from '../modules/execution-engine/challenge-detector';
 import {
-  captureDelta, captureDeltaBaseline, isDeltaScoped, pickDeltaMatch, summariseDelta,
+  captureDeltaFull, captureDeltaBaseline, isDeltaScoped, pickDeltaMatch, summariseDelta,
   STATE_CHANGING_ACTIONS, DELTA_CLEARING_ACTIONS, type DeltaSnapshot,
 } from '../modules/execution-engine/delta';
 import { HealingEngine } from '../modules/healing-engine/healing-engine';
@@ -74,7 +74,7 @@ import { createRedisConnection, RUNS_QUEUE_NAME, SCREENSHOTS_QUEUE_NAME, PERSIST
 import type { RunJobPayload } from '../queue';
 import type { StepAST, ClassifiedFailure, SelectorSet, SelectorEntry, RunContext } from '../types';
 import { isSecretStep, redactStepText, REDACTED } from '../modules/test-writer/secret-steps';
-import { settleAfterNavigation } from '../modules/execution-engine/settle';
+import { settleAfterNavigation, settleDom } from '../modules/execution-engine/settle';
 
 // ─── Module Setup ─────────────────────────────────────────────────────────────
 
@@ -176,6 +176,54 @@ async function markRunRunning(tenantId: string, runId: string): Promise<void> {
     tenantId,
     `UPDATE runs SET status = 'running', started_at = now() WHERE id = $1`,
     [runId],
+  );
+}
+
+/** The double-quoted name in a step's target, if any: `the "Save" button` → Save. */
+export function quotedName(target: string | null | undefined): string | null {
+  if (!target) return null;
+  const m = /["“”]([^"“”]{1,80})["“”]/.exec(target);
+  return m ? m[1].trim() : null;
+}
+
+/** Whether a resolved element's descriptor shares a distinctive word with the quoted name. */
+export function nameOverlaps(quoted: string, descriptor: string): boolean {
+  const STOP = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'button', 'link', 'field']);
+  const words = quoted.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !STOP.has(w));
+  if (words.length === 0) return true;             // "⌘R" alone — nothing to check against
+  const hay = descriptor.toLowerCase();
+  return words.some((w) => hay.includes(w));
+}
+
+/** aria-label / label / title / placeholder / name / value / text of the resolved element; null if unreadable. */
+async function describeResolved(page: Page, selector: string): Promise<string | null> {
+  try {
+    return await (page as any).$eval(selector, (el: Element) => {
+      const e = el as HTMLElement;
+      const id = e.getAttribute('id');
+      const lab = id ? (document.querySelector('label[for="' + id + '"]') as HTMLElement | null) : null;
+      return [
+        e.getAttribute('aria-label') ?? '', lab?.innerText ?? '', e.closest('label')?.textContent ?? '',
+        e.getAttribute('title') ?? '', e.getAttribute('placeholder') ?? '', e.getAttribute('name') ?? '',
+        (e as HTMLInputElement).value ?? '', e.innerText ?? e.textContent ?? '',
+      ].join(' ').replace(/\s+/g, ' ').trim().slice(0, 300);
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Purge a selector that resolved to the wrong element from every cache layer that could serve it again. */
+async function evictWrongSelector(tenantId: string, targetHash: string | null | undefined, selector: string): Promise<void> {
+  if (targetHash) {
+    await tenantQuery(tenantId, `DELETE FROM selector_cache WHERE content_hash = $1 AND (tenant_id = $2 OR is_shared = true) AND pinned_at IS NULL`, [targetHash, tenantId]);
+    const keys = await cacheRedis.keys(`llm:dedup:${targetHash}:*`).catch(() => [] as string[]);
+    if (keys.length > 0) await cacheRedis.del(...keys).catch(() => 0);
+  }
+  await tenantQuery(tenantId,
+    `DELETE FROM selector_cache WHERE (tenant_id = $1 OR is_shared = true) AND pinned_at IS NULL
+       AND $2 = ANY(SELECT s->>'selector' FROM jsonb_array_elements(selectors::jsonb) AS s)`,
+    [tenantId, selector],
   );
 }
 
@@ -686,13 +734,54 @@ async function executeStep(
   // was clicked. This assertion may only look at what the previous action
   // CHANGED. An empty delta is not "look harder", it is the answer: the action
   // did nothing. Spec: spec-oracle-delta-and-fidelity.md §1
+  // A discover oracle with NO action before it on this page has nothing to be
+  // about. "navigate → verify the error message is visible" resolved page-wide
+  // and passed on whatever it found — which is exactly how the vacuity probe
+  // (navigates + assertions, actions removed) called every delta-scoped test
+  // vacuous, and how a test could be green while checking nothing. The
+  // definition of the oracle is "what the previous action changed"; with no
+  // action, the honest answer is a failure that says so.
+  // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §1
+  if (delta.enabled && isDeltaScoped(step) && delta.last === null) {
+    const reason = 'no action came before this check on this page — there is nothing it could be verifying';
+    obs.increment('worker.delta_oracle_no_action');
+    const afterPng = secretStep ? null : await page.screenshot({ type: 'png' }).catch(() => null);
+    const afterKey = afterPng ? screenshots.keyFor(tenantId, runId, stepIndex, 'after') : null;
+    if (afterPng) {
+      void bus.publish({ kind: 'screenshot.upload', tenantId, runId, stepIndex, timing: 'after', png: afterPng, attempt });
+    }
+    void insertStepResult(
+      tenantId, runId, step, stepIndex, 'failed', null, afterKey,
+      Date.now() - stepStart, null, null, null, null, 0, null, 'AssertionNoAction', stepId,
+    );
+    runLog?.log('assert', `assertion failed — ${reason}`, { stepIndex, level: 'error' });
+    await runLog?.flush();
+    return { status: 'failed', healed: false, afterPng };
+  }
+
   const deltaScoped = delta.enabled && isDeltaScoped(step) && delta.last !== null;
   if (deltaScoped && delta.last!.elements.length === 0 && delta.baseline) {
     // Re-diff first: content that renders asynchronously (a spinner finishing,
     // an SPA route settling) can arrive between the action and this assertion.
-    delta.last = { ...delta.last!, elements: await captureDelta(page, delta.baseline) };
+    // Let the DOM go quiet before looking — an app that fetches after a click
+    // has not answered yet the instant the click returns.
+    await settleDom(page);
+    const again = await captureDeltaFull(page, delta.baseline);
+    delta.last = { ...delta.last!, elements: again.elements, removed: again.removed };
   }
-  if (deltaScoped && delta.last!.elements.length === 0) {
+  // Nothing appeared but something DISAPPEARED (a filter hid rows, a banner was
+  // dismissed): the action worked; there is just no new element to scope to.
+  // Resolve the assertion against the whole page instead of declaring the
+  // action a no-op — and say so in the log.
+  const onlyRemovals = deltaScoped && delta.last!.elements.length === 0 && (delta.last!.removed ?? 0) > 0;
+  if (onlyRemovals) {
+    obs.increment('worker.delta_oracle_only_removals');
+    runLog?.log('resolve',
+      `after "${delta.last!.afterStep}" ${delta.last!.removed} element(s) disappeared and nothing appeared — `
+      + 'checking the assertion against the whole page',
+      { stepIndex, data: { removed: delta.last!.removed } });
+  }
+  if (deltaScoped && !onlyRemovals && delta.last!.elements.length === 0) {
     const dialogOnly = delta.last!.dialogAccepted;
     const reason = dialogOnly
       ? `the only thing "${delta.last!.afterStep}" produced was a browser dialog, which Kaizen `
@@ -723,15 +812,19 @@ async function executeStep(
   // ── Resolve selectors ─────────────────────────────────────────────────────
   // navigate and press_key act on the page/keyboard, not a specific DOM element.
   let selectorSet: SelectorSet;
-  if (deltaScoped) {
+  if (deltaScoped && !onlyRemovals) {
     const elements = delta.last!.elements;
     const pick = pickDeltaMatch(step.targetDescription ?? '', elements);
+    // The whole delta rides as candidates and the pick is marked, so the run
+    // page shows "what changed" with the chosen element highlighted — a person
+    // can check the choice, not just read an opaque [data-kz-delta] selector.
     selectorSet = pick
       ? {
           selectors: [{ selector: `[data-kz-delta="${pick.marker}"]`, strategy: 'css' as const, confidence: 0.9 }],
-          fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null,
+          fromCache: false, cacheSource: null, resolutionSource: 'delta', similarityScore: null,
+          llmPickedKaizenId: pick.marker,
           candidates: elements.slice(0, 10).map((el) => ({
-            kaizenId: el.marker, role: el.role, name: el.name || el.text,
+            kaizenId: el.marker, role: el.role, name: el.text || el.name,
             selector: `[data-kz-delta="${el.marker}"]`,
           })),
         }
@@ -867,10 +960,34 @@ async function executeStep(
     }
   }
 
+  // ── Fidelity gate: a quoted name must be ON the element we resolved ─────────
+  // `click the "Checkout smoke 6" button` resolved (from cache) to the menubar's
+  // "File", the click opened a menu, and the run went green. A step that NAMES
+  // its target in quotes is explicit; an element that shares no word with that
+  // name is not it — refuse it, evict it from the caches that served it, and let
+  // the step fail into healing (a page still rendering is what adaptive wait is
+  // for) rather than act on the wrong control and call it proof.
+  if (selectorSet.selectors.length > 0 && selectorSet.resolutionSource !== 'delta'
+      && step.action !== 'assert_text' && step.action !== 'assert_not_text' && step.action !== 'assert_count') {
+    const quoted = quotedName(step.targetDescription);
+    if (quoted) {
+      const sel = selectorSet.selectors[0].selector;
+      const descriptor = await describeResolved(page, sel);
+      if (descriptor !== null && !nameOverlaps(quoted, descriptor)) {
+        obs.increment('worker.quoted_name_mismatch', { source: selectorSet.resolutionSource ?? 'unknown' });
+        runLog?.log('resolve',
+          `refused: "${quoted}" resolved to ${sel.slice(0, 80)} (${descriptor.slice(0, 60)}) — not the named element`,
+          { stepIndex, level: 'warn', data: { selector: sel, source: selectorSet.resolutionSource } });
+        if (selectorSet.fromCache) await evictWrongSelector(tenantId, step.targetHash, sel).catch(() => {});
+        selectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+      }
+    }
+  }
+
   // Assertions must never be persisted to the selector cache — re-verify every run.
   const ASSERTION_ACTIONS = new Set([
     'assert_text', 'assert_not_text', 'assert_visible', 'assert_not_visible',
-    'assert_url', 'assert_title', 'assert_enabled', 'assert_disabled', 'assert_checked',
+    'assert_url', 'assert_title', 'assert_enabled', 'assert_disabled', 'assert_checked', 'assert_not_checked',
     'assert_count', 'assert_attribute',
   ]);
   const isAssertion = ASSERTION_ACTIONS.has(step.action);
@@ -922,9 +1039,13 @@ async function executeStep(
       delta.baseline = null;
       delta.last = null;
     } else if (STATE_CHANGING_ACTIONS.has(step.action) && delta.baseline) {
-      const changed = await captureDelta(page, delta.baseline);
+      // The click has returned; the app may still be rendering what it did.
+      await settleDom(page);
+      const after = await captureDeltaFull(page, delta.baseline);
+      const changed = after.elements;
       delta.last = {
         elements: changed,
+        removed: after.removed,
         afterStep: step.rawText,
         dialogAccepted: delta.dialogs.count > dialogsBefore,
       };

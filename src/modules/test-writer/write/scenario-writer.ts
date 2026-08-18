@@ -174,13 +174,41 @@ export function prependNavigate(
   expectation: ScenarioExpectation,
 ): { steps: StepIntent[]; expectation: ScenarioExpectation } {
   const url = plan.targetPages[0];
-  if (!url || steps[0]?.action === 'navigate') return { steps, expectation };
+  if (!url) return { steps, expectation };
+
+  // A screen reached by clicking: after the navigate come the clicks that get
+  // there — inserted after a navigate the model wrote itself, and never twice
+  // (the model was told not to write them, but a repeated click is dropped
+  // rather than trusted). Spec: docs/specs/test-writer/spec-screen-discovery.md §1.5
+  const hops: StepIntent[] = (plan.reachedBy ?? []).map((h) => ({
+    action: 'click',
+    target: { kind: 'description', description: `the "${h.name}" ${ROLE_NOUN_FOR_REACH[h.role] ?? 'button'}` },
+  }));
+  const hasNavigate = steps[0]?.action === 'navigate';
+  const body = hasNavigate ? steps.slice(1) : steps;
+  const trimmed = dropLeadingDuplicateHops(body, hops);
+  const prefix: StepIntent[] = [hasNavigate ? steps[0] : { action: 'navigate', url }, ...hops];
+  const added = prefix.length + trimmed.length - steps.length;
+  if (added === 0 && trimmed === body) return { steps, expectation };
   return {
-    steps: [{ action: 'navigate', url }, ...steps],
+    steps: [...prefix, ...trimmed],
     expectation: expectation.outcome === 'fail'
-      ? { ...expectation, failStepIndex: expectation.failStepIndex + 1 }
+      ? { ...expectation, failStepIndex: expectation.failStepIndex + added }
       : expectation,
   };
+}
+
+const ROLE_NOUN_FOR_REACH: Record<string, string> = { button: 'button', link: 'link', menuitem: 'menu item', tab: 'tab' };
+
+/** The model re-wrote the reach clicks at the top of the body: drop them, once. */
+function dropLeadingDuplicateHops(body: StepIntent[], hops: StepIntent[]): StepIntent[] {
+  let i = 0;
+  const same = (a: StepIntent, b: StepIntent): boolean =>
+    a.action === 'click' && b.action === 'click'
+    && a.target.kind === 'description' && b.target.kind === 'description'
+    && a.target.description.toLowerCase() === b.target.description.toLowerCase();
+  while (i < hops.length && i < body.length && same(body[i], hops[i])) i++;
+  return i > 0 ? body.slice(i) : body;
 }
 
 /**
@@ -232,6 +260,12 @@ export class ScenarioWriter {
     maxSteps: number;
     /** Widens the hard-block lexicon and re-reads synthetic consent (spec §6.5). */
     scope?: 'public' | 'authenticated';
+    /** Suite consent for throwaway records; with a public scope, softens "delete". */
+    syntheticDataConsent?: boolean;
+    /** Accounts the brief names — typed literally in sign-in tests. */
+    knownAccounts?: string[];
+    /** The target is a screen: the clicks that reach it. Spec: spec-screen-discovery.md §1.5 */
+    reachedBy?: Array<{ role: string; name: string }>;
     /**
      * Set when this is a REWRITE after the quality judge: the judge's failed
      * dimensions and the steps it read. Every attempt of a rewrite runs on the
@@ -275,6 +309,8 @@ export class ScenarioWriter {
         tier,
         judgeFeedback: params.judgeFeedback,
         previousSteps: params.previousSteps,
+        knownAccounts: params.knownAccounts,
+        reachedBy: params.reachedBy,
       }, params.tenantId);
 
       const gate = runSchemaGate(
@@ -338,6 +374,7 @@ export class ScenarioWriter {
         // Behind auth the proving run acts as a real, possibly admin, user —
         // the lexicon widens accordingly (spec §6.5).
         authenticated: params.scope === 'authenticated',
+        syntheticDataConsent: params.syntheticDataConsent,
       });
       if (safety.verdict === 'blocked') {
         this.obs.increment('testwriter.write_safety_block');

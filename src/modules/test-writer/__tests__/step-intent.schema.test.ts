@@ -1,4 +1,4 @@
-import { runSchemaGate } from '../write/step-intent.schema';
+import { runSchemaGate, trimLongAssertion } from '../write/step-intent.schema';
 
 /**
  * The schema/reference gate is what makes hallucinated elements structurally
@@ -366,5 +366,70 @@ describe('runSchemaGate — unfalsifiable oracles', () => {
     ], valid, 10, new Map(), ['email']);
 
     expect(result.ok).toBe(true);
+  });
+});
+
+describe('runSchemaGate — the-internet run 2 lessons', () => {
+  /** Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2.2 */
+
+  it('rejects "navigate and read text" on a page that has controls to use', () => {
+    const result = runSchemaGate([
+      { action: 'navigate', url: 'https://demo.test/' },
+      { action: 'assert_text', value: 'Welcome to the-internet' },
+    ], valid, 10);
+    expect(result.ok).toBe(false);
+    if (!result.ok) expect(result.errors.join(' ')).toMatch(/never interacts with anything/);
+  });
+
+  it('allows "navigate and read text" when there is nothing at all to click', () => {
+    const result = runSchemaGate([
+      { action: 'navigate', url: 'https://demo.test/nope' },
+      { action: 'assert_text', value: 'Not Found' },
+    ], new Set(), 10);
+    expect(result.ok).toBe(true);
+  });
+
+  it('lets a dropdown test read back the option it chose — that IS the oracle', () => {
+    const result = runSchemaGate([
+      { action: 'navigate', url: 'https://demo.test/dropdown' },
+      { action: 'select', target: { kind: 'element', elementId: ELEMENT_A }, value: 'Option 1' },
+      { action: 'assert_text', value: 'Option 1' },
+    ], valid, 10, new Map([[ELEMENT_A, 'combobox']]));
+    expect(result.ok).toBe(true);
+  });
+
+  it('still refuses to assert the text a TYPE step just typed', () => {
+    const result = runSchemaGate([
+      { action: 'type', target: { kind: 'element', elementId: ELEMENT_A }, value: 'hello' },
+      { action: 'assert_text', value: 'hello' },
+    ], valid, 10, new Map([[ELEMENT_A, 'textbox']]));
+    expect(result.ok).toBe(false);
+  });
+
+  it('accepts assert_not_checked as the other half of a checkbox test', () => {
+    const result = runSchemaGate([
+      { action: 'uncheck', target: { kind: 'element', elementId: ELEMENT_A } },
+      { action: 'assert_not_checked', target: { kind: 'element', elementId: ELEMENT_A } },
+    ], valid, 10, new Map([[ELEMENT_A, 'checkbox']]));
+    expect(result.ok).toBe(true);
+  });
+});
+
+describe('trimLongAssertion', () => {
+  it('cuts a paragraph-length text assertion at its first sentence instead of rejecting it', () => {
+    const value = 'HTTP status codes are a standard set of numbers used to communicate from a web server '
+      + 'to your browser to indicate the outcome of the request being made. Here are some more words '
+      + 'that push this comfortably past the two hundred character limit for a value.';
+    const out = trimLongAssertion({ action: 'assert_text', value }) as { value: string };
+    expect(out.value.length).toBeLessThanOrEqual(200);
+    expect(out.value.endsWith('.')).toBe(true);
+    expect(out.value).toMatch(/^HTTP status codes/);
+  });
+
+  it('leaves short values and non-text steps alone', () => {
+    const short = { action: 'assert_text', value: 'Not Found' };
+    expect(trimLongAssertion(short)).toBe(short);
+    const click = { action: 'click', target: { kind: 'element', elementId: 'x' } };
+    expect(trimLongAssertion(click)).toBe(click);
   });
 });

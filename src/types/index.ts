@@ -42,6 +42,7 @@ export type StepAction =
   | 'assert_enabled'
   | 'assert_disabled'
   | 'assert_checked'
+  | 'assert_not_checked'
   | 'assert_count'
   | 'assert_attribute'
   // ── Negative assertions ──
@@ -157,7 +158,15 @@ export type SelectorEntry = {
 };
 
 /** Where a resolved selector came from — propagated to step_results for UI visibility. */
-export type ResolutionSource = 'archetype' | 'redis' | 'db_exact' | 'pgvector_step' | 'pgvector_element' | 'llm';
+export type ResolutionSource =
+  | 'archetype' | 'redis' | 'db_exact' | 'pgvector_step' | 'pgvector_element' | 'llm'
+  /**
+   * The delta oracle: the element was chosen from what the previous action
+   * CHANGED, deterministically, no model call. Its own source so the run page
+   * can say so instead of "this step did not need to find an element".
+   * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §1
+   */
+  | 'delta';
 
 /**
  * Compact snapshot of one DOM candidate as presented to the LLM.

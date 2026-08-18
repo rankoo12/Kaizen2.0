@@ -23,7 +23,10 @@ export type CaseOrigin = 'user' | 'generated';
 export type GenerationJobStatus =
   | 'queued' | 'running' | 'awaiting_plan_approval' | 'completed' | 'failed' | 'blocked';
 
-export type ScenarioSource = { kind: 'catalog'; archetypeKey: string } | { kind: 'llm' };
+export type ScenarioSource =
+  | { kind: 'catalog'; archetypeKey: string }
+  | { kind: 'llm' }
+  | { kind: 'repertoire'; ruleKey: string };
 
 export type PlannedScenario = {
   name: string;

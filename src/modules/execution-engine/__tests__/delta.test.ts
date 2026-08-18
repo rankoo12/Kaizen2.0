@@ -108,6 +108,32 @@ describe('walk — the diff that defines a delta', () => {
     expect(after[0].attrs['data-kz-delta']).toBe('kz-d-0');
   });
 
+  it('a filter that only HIDES rows is a change (removed), not "nothing changed"', () => {
+    const before = [el('button', 'All', { 'aria-pressed': 'true' }), el('button', 'Failed', { 'aria-pressed': 'false' }),
+      el('div', 'run 1 passed'), el('div', 'run 2 failed'), el('div', 'run 3 passed')];
+    mountPage(before);
+    const { keys } = walk({ baseline: null, cap: 0 });
+
+    // Kaizen's Runs view after "Failed": the passed rows are gone, and the
+    // Failed button is now the pressed one — that button is the delta.
+    const after = [el('button', 'All', { 'aria-pressed': 'false' }), el('button', 'Failed', { 'aria-pressed': 'true' }),
+      el('div', 'run 2 failed')];
+    mountPage(after);
+    const r = walk({ baseline: keys, cap: 40 });
+    expect(r.removed).toBe(4);       // two rows + the two buttons in their old states
+    expect(r.elements.map((e) => e.text)).toEqual(['All', 'Failed']);
+  });
+
+  it('a Save button that becomes enabled is the delta', () => {
+    const before = [el('input', '', { name: 'title' }), el('button', 'Save', { 'aria-disabled': 'true' })];
+    mountPage(before);
+    const { keys } = walk({ baseline: null, cap: 0 });
+    const after = [el('input', '', { name: 'title' }, { value: 'x' }), el('button', 'Save', { 'aria-disabled': 'false' })];
+    mountPage(after);
+    const r = walk({ baseline: keys, cap: 40 });
+    expect(r.elements.map((e) => e.text || e.name)).toEqual(['x', 'Save']);
+  });
+
   it('counts text that changed in place — the result line an alert wrote', () => {
     const before = [el('button', 'Click for JS Alert'), el('p', '', { id: 'result' })];
     mountPage(before);
@@ -138,6 +164,17 @@ describe('walk — the diff that defines a delta', () => {
     mountPage([el('div', '', { id: 'wrap' }), el('span', 'one'), el('span', 'two')]);
     const { elements } = walk({ baseline: keys, cap: 40 });
     expect(elements.map((e) => e.text)).toEqual(['two']);
+  });
+
+  // the-internet /tables, run 3: "Sort table by column → nothing changed". A
+  // sort that works leaves the multiset of keys identical; the ORDER changed.
+  it('sees a reorder — the rows that moved are the delta', () => {
+    mountPage([el('a', 'Last Name'), el('td', 'Smith'), el('td', 'Bach'), el('td', 'Doe')]);
+    const { keys } = walk({ baseline: null, cap: 0 });
+
+    mountPage([el('a', 'Last Name'), el('td', 'Bach'), el('td', 'Doe'), el('td', 'Smith')]);
+    const { elements } = walk({ baseline: keys, cap: 40 });
+    expect(elements.map((e) => e.text)).toEqual(['Bach', 'Doe', 'Smith']);
   });
 
   it('treats a second identical row as new (multiset, not membership)', () => {
@@ -171,6 +208,18 @@ describe('pickDeltaMatch', () => {
 
   it('returns null for an empty delta — there is nothing to bind to', () => {
     expect(pickDeltaMatch('anything', [])).toBeNull();
+  });
+
+  it('refuses a delta that is not ABOUT the description — a menu that opened by mistake', () => {
+    const menu = [
+      { marker: 'kz-d-0', role: 'button', name: 'New Suite', text: 'New Suite', interactive: true },
+      { marker: 'kz-d-1', role: 'button', name: 'Analyze an app…', text: 'Analyze an app…', interactive: true },
+      { marker: 'kz-d-2', role: 'button', name: 'Keyboard shortcuts', text: 'Keyboard shortcuts', interactive: true },
+    ];
+    expect(pickDeltaMatch('the running status indicator on the row that was just run', menu)).toBeNull();
+    // …but a genuine indicator in the delta is found.
+    const badge = { marker: 'kz-d-3', role: 'span', name: 'running', text: 'running', interactive: false };
+    expect(pickDeltaMatch('the running status indicator on the row that was just run', [...menu, badge])?.marker).toBe('kz-d-3');
   });
 });
 

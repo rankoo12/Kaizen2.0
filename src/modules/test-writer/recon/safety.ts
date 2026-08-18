@@ -31,7 +31,7 @@ const HARD_DESTRUCTIVE = [
   'deactivate', 'publish', 'unpublish',
 ] as const;
 
-const SESSION_ENDING = [
+export const SESSION_ENDING = [
   'logout', 'log out', 'sign out', 'signout', 'log off', 'logoff', 'end session',
 ] as const;
 
@@ -125,7 +125,13 @@ export type SensitiveTier = 'capture-suppressed' | 'passive-only' | null;
 export function sensitiveTier(rawUrl: string): SensitiveTier {
   let segments: string[];
   try {
-    segments = new URL(rawUrl).pathname.toLowerCase().split('/').filter(Boolean);
+    const url = new URL(rawUrl);
+    segments = url.pathname.toLowerCase().split('/').filter(Boolean);
+    // A screen reached by clicking has no path of its own: "Settings → API
+    // keys" lives at /tests#screen=settings/api-keys. Its slugs are its path.
+    // Spec: docs/specs/test-writer/spec-screen-discovery.md §1.4
+    const screen = /^#screen=(.+)$/.exec(url.hash);
+    if (screen) segments.push(...decodeURIComponent(screen[1]).toLowerCase().split('/').filter(Boolean));
   } catch {
     segments = rawUrl.toLowerCase().split('?')[0].split('/').filter(Boolean);
   }
@@ -176,12 +182,12 @@ const OPENER_PREFIXES = [
 /** Exact names that are openers on their own. */
 const OPENER_EXACT = ['new', '+', 'create', 'add new'] as const;
 
-function isOpenerName(name: string): boolean {
+export function isOpenerName(name: string): boolean {
   if (OPENER_EXACT.includes(name as never)) return true;
   return OPENER_PREFIXES.some((p) => name.startsWith(p));
 }
 
-function matchesAny(name: string, lexicon: readonly string[]): boolean {
+export function matchesAny(name: string, lexicon: readonly string[]): boolean {
   return lexicon.some((term) =>
     new RegExp(`(^|\\b)${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\b|$)`).test(name));
 }

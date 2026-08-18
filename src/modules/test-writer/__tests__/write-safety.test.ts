@@ -206,3 +206,30 @@ describe('checkKnownEntityBinding', () => {
     expect(checkKnownEntityBinding(llmPlan, steps, ['firstName'])).toEqual([]);
   });
 });
+
+describe('"delete" for an anonymous visitor with synthetic-data consent', () => {
+  /**
+   * Spec: docs/specs/test-writer/spec-planner-per-page.md §1.7
+   * No account, no session: whatever Delete touches is demo data or something
+   * this test created. Behind auth it is the account's real data and stays blocked.
+   */
+  const DELETE = element('66666666-6666-4666-8666-666666666666', 'button', 'Delete');
+  const els = new Map([[DELETE.id, DELETE]]);
+  const steps: StepIntent[] = [click(DELETE.id), { action: 'assert_not_visible', target: { kind: 'element', elementId: DELETE.id } }];
+
+  it('is throwaway by construction on a public page once consent is granted', () => {
+    const v = classifyScenarioSafety(steps, els, { safeMode: true, stopBeforeMoney: false, syntheticDataConsent: true });
+    expect(v.verdict).toBe('needs-consent');
+  });
+
+  it('stays blocked without consent, and behind auth regardless of consent', () => {
+    expect(classifyScenarioSafety(steps, els, { safeMode: true, stopBeforeMoney: false }).verdict).toBe('blocked');
+    expect(classifyScenarioSafety(steps, els, { safeMode: true, stopBeforeMoney: false, authenticated: true, syntheticDataConsent: true }).verdict).toBe('blocked');
+  });
+
+  it('does not extend to the rest of the hard-block lexicon', () => {
+    const CLOSE = element('77777777-7777-4777-8777-777777777777', 'button', 'Close account');
+    const v = classifyScenarioSafety([click(CLOSE.id)], new Map([[CLOSE.id, CLOSE]]), { safeMode: true, stopBeforeMoney: false, syntheticDataConsent: true });
+    expect(v.verdict).toBe('blocked');
+  });
+});

@@ -90,9 +90,36 @@ async function collectRevealed(pwPage: any): Promise<{
             : t === 'search' ? 'searchbox' : 'textbox';
         } else role = tag;
       }
+      // Named the way the survey names things: an explicit label beats the
+      // placeholder. The first version read placeholder before label, so the
+      // New Test sheet's name field was "Sign in with valid credentials" and its
+      // "Target URL" field — labelled, no placeholder — had no name at all and
+      // never reached the writer, which then could not fill it.
+      let labelText = '';
+      const id = el.getAttribute('id');
+      if (id) {
+        const lab = document.querySelector('label[for="' + id.replace(/"/g, '\\"') + '"]') as HTMLElement | null;
+        if (lab) labelText = lab.innerText || lab.textContent || '';
+      }
+      if (!labelText) {
+        const wrap = el.closest('label') as HTMLElement | null;
+        if (wrap) labelText = (wrap.innerText || wrap.textContent || '').replace((el as HTMLInputElement).value ?? '', '');
+      }
+      if (!labelText) {
+        const by = el.getAttribute('aria-labelledby');
+        if (by) labelText = by.split(/\s+/).map((i) => (document.getElementById(i)?.innerText ?? '')).join(' ');
+      }
+      if (!labelText && (tag === 'input' || tag === 'textarea' || tag === 'select')) {
+        // A field whose label sits just before it in the same block.
+        const prev = el.previousElementSibling as HTMLElement | null;
+        const t = (prev?.innerText ?? '').trim();
+        if (prev && t && t.length <= 40 && !/^(button|a|input|select|textarea)$/i.test(prev.tagName)) labelText = t;
+      }
       const name = (el.getAttribute('aria-label')
-        || (el as HTMLElement).innerText
+        || labelText
+        || (tag === 'input' || tag === 'textarea' || tag === 'select' ? '' : (el as HTMLElement).innerText)
         || el.getAttribute('placeholder')
+        || el.getAttribute('title')
         || '').trim().replace(/\s+/g, ' ').slice(0, 80);
       elements.push({ role, name });
       const href = el.getAttribute('href');

@@ -37,6 +37,13 @@ export type DeltaElement = {
 
 export type DeltaSnapshot = {
   elements: DeltaElement[];
+  /**
+   * Elements that were on the page before the action and are gone after it. A
+   * filter that hides rows, a dismissed banner, a deleted item: nothing was
+   * added, yet the action plainly did something. Without this the oracle called
+   * every filter on Kaizen's own Runs view "nothing changed".
+   */
+  removed?: number;
   /** The step whose action produced this delta — quoted in failure messages. */
   afterStep: string;
   /**
@@ -89,7 +96,7 @@ export type WalkArg = {
   cap: number;
 };
 
-export type WalkResult = { keys: string[]; elements: DeltaElement[] };
+export type WalkResult = { keys: string[]; elements: DeltaElement[]; removed: number };
 
 /**
  * The single browser-side pass, run twice: once to record the page, once to
@@ -97,13 +104,21 @@ export type WalkResult = { keys: string[]; elements: DeltaElement[] };
  * computed identically by construction — and no `new Function`, which a page
  * with a strict CSP would refuse.
  *
- * A key is `tag|role|ownText|href|value`. Two decisions matter:
+ * A key is `tag|role|ownText|href|value|state`. Two decisions matter:
  *  - OWN text, not innerText: with innerText every ancestor of a new node also
  *    "changes", and the delta grows up the tree until it contains <body> — at
  *    which point restricting resolution to it means nothing.
  *  - Identity is CONTENT, not node identity, so the diff survives a navigation:
  *    submitting a login form re-renders the same page plus a flash message, and
  *    only the flash comes back as new.
+ *  - STATE is part of identity: aria-pressed / aria-selected / aria-checked /
+ *    aria-expanded / aria-current and disabled. A filter button that becomes
+ *    pressed, a tab that becomes selected, a Save that becomes enabled — each is
+ *    the change the action produced, and the element the assertion is about.
+ *  - A REORDER is a change too. Sorting a table leaves the multiset of keys
+ *    identical, so the first version of this reported "nothing changed" on a
+ *    sort that worked. When nothing was added, the ordered sequence is compared
+ *    position by position and the elements that moved become the delta.
  *
  * Exported for tests only: it runs in the BROWSER, so it must never reference
  * anything outside its own argument.
@@ -112,7 +127,7 @@ export function walk(arg: WalkArg): WalkResult {
   const keys: string[] = [];
   const elements: DeltaElement[] = [];
   const root = document.body;
-  if (!root) return { keys, elements };
+  if (!root) return { keys, elements, removed: 0 };
 
   const before: Record<string, number> = {};
   if (arg.baseline) for (const key of arg.baseline) before[key] = (before[key] ?? 0) + 1;
@@ -122,6 +137,8 @@ export function walk(arg: WalkArg): WalkResult {
   const all = root.querySelectorAll('*');
   const limit = Math.min(all.length, 2500);
   let index = 0;
+  // Every visible element in document order, for the reorder pass.
+  const ordered: Array<{ el: HTMLElement; key: string; own: string; value: string; interactive: boolean; tag: string }> = [];
 
   for (let i = 0; i < limit; i++) {
     const el = all[i] as HTMLElement;
@@ -146,9 +163,17 @@ export function walk(arg: WalkArg): WalkResult {
 
     const value = tag === 'input' || tag === 'textarea'
       ? ((el as HTMLInputElement).value ?? '') : '';
-    const key = `${tag}|${el.getAttribute('role') ?? ''}|${own}|${el.getAttribute('href') ?? ''}|${value}`;
+    let state = '';
+    for (const a of ['aria-pressed', 'aria-selected', 'aria-checked', 'aria-expanded', 'aria-current', 'aria-disabled']) {
+      const v = el.getAttribute(a);
+      if (v !== null) state += a.slice(5, 8) + '=' + v + ';';
+    }
+    if ((el as HTMLButtonElement).disabled === true) state += 'dis;';
+    if (tag === 'input' && (el as HTMLInputElement).checked) state += 'chk;';
+    const key = `${tag}|${el.getAttribute('role') ?? ''}|${own}|${el.getAttribute('href') ?? ''}|${value}|${state}`;
 
     if (!arg.baseline) { keys.push(key); continue; }
+    ordered.push({ el, key, own, value, interactive, tag });
 
     seen[key] = (seen[key] ?? 0) + 1;
     if (seen[key] <= (before[key] ?? 0)) continue;
@@ -156,18 +181,47 @@ export function walk(arg: WalkArg): WalkResult {
     const marker = `kz-d-${index++}`;
     el.setAttribute('data-kz-delta', marker);
     if (elements.length >= arg.cap) continue;
+    elements.push(describe(el, marker, own, value, interactive, tag));
+  }
+
+  // Nothing appeared, nothing's text changed — but did anything MOVE? A sort
+  // that works is exactly this case. Compare the sequence position by position
+  // against the baseline; the elements that sit at a different key than before
+  // are the delta. Only meaningful when the two sequences are the same length —
+  // an insertion would already have shown up above.
+  if (arg.baseline && elements.length === 0 && ordered.length === arg.baseline.length) {
+    for (let i = 0; i < ordered.length; i++) {
+      if (ordered[i].key === arg.baseline[i]) continue;
+      const o = ordered[i];
+      const marker = `kz-d-${index++}`;
+      o.el.setAttribute('data-kz-delta', marker);
+      if (elements.length < arg.cap) elements.push(describe(o.el, marker, o.own, o.value, o.interactive, o.tag));
+    }
+  }
+
+  // What was there before and is not now — counted, not marked: there is no
+  // element left to point at, but "nothing changed" would be a lie.
+  let removed = 0;
+  if (arg.baseline) {
+    for (const key in before) {
+      const gone = before[key] - (seen[key] ?? 0);
+      if (gone > 0) removed += gone;
+    }
+  }
+
+  return { keys, elements, removed };
+
+  function describe(el: HTMLElement, marker: string, own: string, value: string, interactive: boolean, tag: string): DeltaElement {
     const name = el.getAttribute('aria-label') || el.getAttribute('placeholder')
       || el.getAttribute('title') || own || value || el.getAttribute('name') || '';
-    elements.push({
+    return {
       marker,
       role: el.getAttribute('role') ?? tag,
       name: String(name).replace(/\s+/g, ' ').trim().slice(0, 120),
       text: own,
       interactive,
-    });
+    };
   }
-
-  return { keys, elements };
 }
 
 /**
@@ -194,13 +248,20 @@ export async function captureDeltaBaseline(page: unknown): Promise<string[]> {
 export async function captureDelta(
   page: unknown, baseline: string[], cap = 40,
 ): Promise<DeltaElement[]> {
+  return (await captureDeltaFull(page, baseline, cap)).elements;
+}
+
+/** As captureDelta, with the count of elements that disappeared. */
+export async function captureDeltaFull(
+  page: unknown, baseline: string[], cap = 40,
+): Promise<{ elements: DeltaElement[]; removed: number }> {
   try {
     const result = await (page as EvaluatingPage).evaluate<WalkResult, WalkArg>(
       walk, { baseline, cap },
     );
-    return result.elements;
+    return { elements: result.elements, removed: result.removed ?? 0 };
   } catch {
-    return [];
+    return { elements: [], removed: 0 };
   }
 }
 
@@ -245,6 +306,11 @@ export function pickDeltaMatch(description: string, elements: DeltaElement[]): D
     .filter(([noun]) => new RegExp(`\\b${noun}s?\\b`).test(lower))
     .flatMap(([, roles]) => roles);
 
+  // "the error message", "the confirmation", "the empty state", "the status
+  // indicator": prose the action wrote. Any non-interactive text in the delta
+  // is a candidate for those; a control is not.
+  const wantsProse = /\b(message|confirmation|result|notification|banner|toast|alert|error|warning|success|indicator|status|state|badge|label|text|list|row|count|total|summary|title|name|empty)\b/.test(lower);
+
   let best: DeltaElement | null = null;
   let bestScore = -Infinity;
   for (const element of elements) {
@@ -257,6 +323,14 @@ export function pickDeltaMatch(description: string, elements: DeltaElement[]): D
     if (element.text.length >= 8) score += 0.4;
     if (element.text.length > 0 && element.text.length <= 2) score -= 0.5;
     if (!element.interactive && element.text.length > 0) score += 0.2;
+    // A pick must be ABOUT the description: share a distinctive word with it, or
+    // be the kind of element it names. Otherwise the best of an unrelated delta
+    // (a menu that opened because the wrong button was clicked) would satisfy
+    // "the running status indicator on the row" — and it did.
+    const about = overlap > 0
+      || (wantedRoles.length > 0 && wantedRoles.includes(element.role))
+      || (wantsProse && !element.interactive && element.text.length > 0);
+    if (!about) continue;
     if (score > bestScore) { bestScore = score; best = element; }
   }
   return best;
