@@ -251,10 +251,12 @@ button:disabled, button[aria-disabled="true"], [role="button"][aria-disabled="tr
 
 /* Live-analysis marker. It pulses only when Kaizen is waiting on the user —
    a dot that always pulses stops meaning "you are needed". */
-.live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--idle); flex: none; }
-.live-dot.waiting { background: var(--accent); animation: live-pulse 1.6s ease-in-out infinite; }
-@keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .3; } }
-@media (prefers-reduced-motion: reduce) { .live-dot.waiting { animation: none; } }
+/* A live dot breathes — the sidebar's "Kaizen is working" mark next to a suite and
+   the QA-engineer rows. Never to zero: a dot that vanishes reads as "gone", not "busy". */
+.live-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--idle); flex: none; animation: live-pulse 2.2s ease-in-out infinite; }
+.live-dot.waiting { background: var(--accent); animation-duration: 1.4s; }
+@keyframes live-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) { .live-dot { animation: none; } }
 
 .field { width: 100%; height: 30px; padding: 0 10px; border-radius: var(--r-ctl); border: .5px solid var(--sep-strong); background: var(--field); color: var(--text); font: inherit; outline: none; transition: box-shadow .14s, border-color .14s; }
 .field:focus { border-color: var(--accent); box-shadow: 0 0 0 3.5px var(--accent-soft); }
