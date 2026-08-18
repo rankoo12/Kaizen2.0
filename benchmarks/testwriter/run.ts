@@ -79,7 +79,7 @@ type Job = {
   testPlan: { scenarios?: Array<{ name: string; targetPages: string[]; outline: string; source: { kind: string } }> } | null;
   report: {
     progress?: { phase?: string };
-    recon?: { pagesCrawled?: number; errorPages?: unknown[] };
+    recon?: { pagesCrawled?: number; screensDiscovered?: number; errorPages?: unknown[] };
     plan?: { scenariosPlanned?: number; fromCatalog?: number; fromLlm?: number; fromRepertoire?: number; pagesPlannedFor?: number; pagesExcludedByBrief?: string[]; dropped?: unknown[] };
     write?: Record<string, number | string | null>;
     validate?: { proposed?: number; validated?: number; unvalidated?: number };
@@ -210,10 +210,76 @@ async function main(): Promise<void> {
   }
   process.stdout.write('═'.repeat(72) + '\n');
 
+  // ── step fidelity: did every named step hit its named element? ──────────
+  // A proof is only a proof if it did. Run 8 said "proven 9" while every
+  // sidebar click had hit the menubar's "File" from a poisoned cache.
+  // Spec: docs/specs/test-writer/spec-reference-plan-grading.md §5
+  const fidelity = await auditFidelity(suite.id, h);
+  process.stdout.write('  step fidelity (quoted name vs element used):\n');
+  for (const f of fidelity) {
+    const flag = f.mismatches.length ? '✗' : f.unverifiable.length ? '?' : '✓';
+    const note = f.mismatches.length ? '' : f.unverifiable.length ? `  (${f.unverifiable.length} structural selector(s) not checkable)` : '';
+    process.stdout.write(`    ${flag} ${f.name.slice(0, 60)}${note}\n`);
+    for (const m of f.mismatches) process.stdout.write(`        #${m.index} "${m.quoted}" → ${m.selector.slice(0, 70)} [${m.source}]\n`);
+  }
+  const trulyProven = fidelity.filter((f) => f.proven && f.mismatches.length === 0).length;
+  process.stdout.write(`  proven AND every named step hit its element: ${trulyProven} of ${summary.proven}\n`);
+  process.stdout.write('═'.repeat(72) + '\n');
+  (summary as Record<string, unknown>).provenWithFidelity = trulyProven;
+
   mkdirSync(OUT_DIR, { recursive: true });
   const file = join(OUT_DIR, `${args.label}-${new Date().toISOString().replace(/[:.]/g, '-')}.json`);
   writeFileSync(file, JSON.stringify({ summary, job }, null, 2));
   process.stdout.write(`saved ${file}\n`);
+}
+
+type FidelityRow = {
+  name: string; proven: boolean;
+  mismatches: Array<{ index: number; quoted: string; selector: string; source: string }>;
+  unverifiable: number[];
+};
+
+const NAME_STOP = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'button', 'link', 'field']);
+function quotedNameOf(text: string): string | null {
+  // `type "value" in the "Field" field` — the target is the SECOND quote.
+  const stripped = text.replace(/^(type|select)\s+["“”][^"“”]*["“”]\s+(in|from)\s+/i, '');
+  const m = /["“”]([^"“”]{1,80})["“”]/.exec(stripped);
+  return m ? m[1].trim() : null;
+}
+function overlaps(quoted: string, hay: string): boolean {
+  const words = quoted.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !NAME_STOP.has(w));
+  if (words.length === 0) return true;
+  const h = hay.toLowerCase();
+  return words.some((w) => h.includes(w));
+}
+
+async function auditFidelity(suiteId: string, h: Record<string, string>): Promise<FidelityRow[]> {
+  const out: FidelityRow[] = [];
+  const cases = await json<{ cases: Array<{ id: string; name: string; status: string; origin: string; validationRunId: string | null; validationState?: string | null }> }>(
+    await fetch(`${API}/suites/${suiteId}/cases`, { headers: h }));
+  for (const c of cases.cases) {
+    if (c.origin !== 'generated' || c.status !== 'draft' || !c.validationRunId) continue;
+    const run = await json<{ status: string; stepResults: Array<{ step_index: number; status: string; rawText: string | null; selector_used: string | null; resolution_source: string | null; dom_candidates: Array<{ kaizenId: string; name: string; selector: string }> | null; llm_picked_kaizen_id: string | null }> }>(
+      await fetch(`${API}/runs/${c.validationRunId}`, { headers: h }));
+    const row: FidelityRow = { name: c.name, proven: c.validationState === 'validated', mismatches: [], unverifiable: [] };
+    for (const st of run.stepResults ?? []) {
+      const text = st.rawText ?? '';
+      if (!/^(click|type|select|check|uncheck|hover|clear|double click|right click)\b/i.test(text)) continue;
+      const quoted = quotedNameOf(text);
+      if (!quoted || !st.selector_used) continue;
+      const sel = st.selector_used;
+      const m = /name="([^"]+)"/.exec(sel);
+      let resolvedName: string | null = m ? m[1] : null;
+      if (!resolvedName && st.dom_candidates) {
+        const cand = st.dom_candidates.find((x) => x.selector === sel || (st.llm_picked_kaizen_id && x.kaizenId === st.llm_picked_kaizen_id));
+        resolvedName = cand?.name ?? null;
+      }
+      if (resolvedName === null) { row.unverifiable.push(st.step_index); continue; }
+      if (!overlaps(quoted, resolvedName)) row.mismatches.push({ index: st.step_index, quoted, selector: sel, source: st.resolution_source ?? '-' });
+    }
+    out.push(row);
+  }
+  return out;
 }
 
 main().catch((e) => { console.error(e); process.exit(1); });
