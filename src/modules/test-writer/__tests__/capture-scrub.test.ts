@@ -97,3 +97,33 @@ describe('scrubCapture', () => {
     expect(capture.title).toBe('Members — ada@example.com');
   });
 });
+
+describe('page text is scrubbed like every other captured string', () => {
+  /**
+   * page_text is the one captured field that is raw prose rather than
+   * structure, and it travels furthest: into storage, and then into the WRITE
+   * prompt. Spec: spec-authenticated-scope.md §5.2
+   */
+  it('redacts an address and a long digit run out of the page body', () => {
+    const scrubbed = scrubCapture({
+      urlNormalized: 'https://app.test/members', title: 'Members', headings: [],
+      survey: [], forms: [], outgoingLinks: [], revealedStates: [],
+      contentHash: 'h', screenshotKey: null, requiresAuth: true, blocked: null,
+      pageText: 'Members: Ada Lovelace ada@example.com, card 4111 1111 1111 1111, joined 2024.',
+    });
+
+    expect(scrubbed.pageText).not.toContain('ada@example.com');
+    expect(scrubbed.pageText).not.toContain('4111 1111 1111 1111');
+    // Shape survives — that is the part COMPREHEND and WRITE actually need.
+    expect(scrubbed.pageText).toContain('Members: Ada Lovelace');
+  });
+
+  it('leaves a capture with no page text alone', () => {
+    const scrubbed = scrubCapture({
+      urlNormalized: 'https://app.test/', title: 'Home', headings: [],
+      survey: [], forms: [], outgoingLinks: [], revealedStates: [],
+      contentHash: 'h', screenshotKey: null, requiresAuth: false, blocked: null,
+    });
+    expect(scrubbed.pageText).toBe('');
+  });
+});
