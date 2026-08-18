@@ -2,6 +2,7 @@
 
 **Created:** 2026-08-18
 **Status:** Approved in principle by the founder (2026-08-18); built through five measured runs — see §5
+**Updated:** 2026-08-18 — §5 run 6 (regression after spec-screen-discovery)
 **Updated:** 2026-08-18 — §1.7 and §5 from the bench runs
 **Owner:** test-writer
 **Amends:** `spec-generation-pipeline.md` §2 (PLAN), `spec-oracle-delta-and-fidelity.md` §2.2
@@ -167,6 +168,7 @@ whose final assertion resolved to something the action did not create.
 | 3 | §1.1–§1.5 together: dossiers, repertoire, exclusions, expected outcomes, fill loop | 53 | 25 | 7 | 17 | 290k |
 | 4 | + delete rule, reorder delta, repertoire fix, fill dedup, figure images | 56 | 24 | 5 | **25** | 274k |
 | 5 | + distiller exclusions, known accounts, fragment quoting | 58 | 22 | 5 | 19 | 300k |
+| 6 | + probe keeps assertions, fill dedup, delta state/removals, AssertionNoAction, screen discovery (0 screens here) — regression check after the Kaizen-on-Kaizen work | 60 | 21 | **13** | 22 | 320k |
 
 **Graded by hand** (real interaction on the planned page; oracle observes what the action produced;
 not an excluded page; not a duplicate of another delivered test in the run): run 3 **23** good of
