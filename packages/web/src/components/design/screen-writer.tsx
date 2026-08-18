@@ -53,7 +53,7 @@ const EVIDENCE = {
   },
   unproven_signin: {
     chip: 'SIGN-IN UNPROVEN',
-    caption: 'Kaizen could not confirm it was actually signed in during this run, so the result proves nothing either way.',
+    caption: 'Kaizen could not confirm it was actually signed in during this run, so the result proves nothing either way. Give your sign-in test a final check — "verify the url contains /dashboard" is enough — and re-analyze.',
   },
   consent_held: {
     chip: 'NOT RUN',

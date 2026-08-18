@@ -165,6 +165,19 @@ Contract:
 > unfaithful resolutions) still applies per scenario and can still withhold the
 > label. `validation-runner.ts` `probeSigninAssertionIsPrivate`; the report
 > records `validate.signinProbe: 'private' | 'public' | 'inconclusive'`.
+>
+> **The recipe with no final check (same day, second finding).** Four green
+> saucedemo drafts stayed unproven after the probe shipped because the sign-in
+> recipe ends on "click Login" — no terminal assertion, so nothing to probe. Recon
+> already observed where sign-in *lands* (`auth.landedUrl` vs `auth.loginPageUrl`,
+> now on the report). When the recipe has no terminal assertion and the landing
+> path differs from the login page, the pipeline appends the witness recon saw —
+> `verify the url contains "/inventory.html"` — to the prefix
+> (`validate/signin-witness.ts`). It rides in every proving run, it is what the
+> signed-out probe runs, and it reads as an ordinary step of the draft. Nothing is
+> invented. Report records `validate.signinWitness`. When there is nothing to
+> witness (lands on the root / the login page) the label stays unproven and the UI
+> caption tells the user to add a final check to their sign-in test.
 
 ## 6. `validation_state` — stop collapsing evidence levels (defect 5)
 
