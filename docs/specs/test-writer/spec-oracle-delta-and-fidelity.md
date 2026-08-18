@@ -2,9 +2,9 @@
 
 **Created:** 2026-08-18
 **Updated:** 2026-08-18 — §1 and §5 built (Batch 1a) with the real-browser measurement below;
-§2 built (Batch 1b) except the page-text item, which moves to Batch 2 with §3
-**Status:** Batch 1 built (§1, §2, §5); Batch 2 (§3, §4 trailing slash, page text) and Batch 3
-(§4 401 + finding collapse) planned
+§2 built (Batch 1b); §3 and §4 built (Batch 2, which absorbed Batch 3's two report fixes)
+**Status:** Built — all of §1–§5. Remaining follow-up: HTTP Basic credentials as a suite setting
+(separate spec) and hardening discover oracles from harvested deltas.
 **Owner:** test-writer / worker
 **Evidence:** the-internet.herokuapp.com, prod, 2026-08-18: 50 pages, 30 planned → 10 proposed
 (1 proven, 9 needs review), 18 rejected, 116.6k tokens. Founder review of all 10 proposed +
@@ -160,11 +160,26 @@ adjacent text in the same parent (`<input type=checkbox> checkbox 1`), or the ne
 label-ish text (≤ 40 chars). Captured by the surveyor as `attributes['nearby-text']`; `deriveName`
 prefers it after `aria-label`. Unblocks checkboxes, inputs, dynamic_controls, key_presses.
 
+**As built (2026-08-18).** The walk steps over inline separators (`br`, `span`, `label`, `small`)
+and reads a heading that sits immediately before the control, stopping at any other form control —
+walking into a neighbour's label is worse than having no name. Captured as an ATTRIBUTE, never as
+the accessible name, so the accessibility finding still counts the control as unlabelled: the
+screen-reader problem is real even once Kaizen's grounding problem is solved.
+
+> Measured on the real site: `/checkboxes` → "checkbox 1", "checkbox 2"; `/dropdown` → "dropdown
+> list"; `/dynamic_controls` → "a checkbox"; `/key_presses` → "target" (from its id, as before).
+> `/inputs` still yields nothing — its number field has no adjacent text at all.
+
 ## 4. Recon correctness
 
 - **Trailing slash.** Normalise for *identity* only; navigate to the **href as observed**. Store
   both (`url_normalized`, `url_observed`). Removes a false broken-link finding and recovers a
   whole page (`/add_remove_elements/`).
+  **As built:** `LinkCapture.hrefObserved` carries the resolved href, the crawl frontier follows it
+  (the seed keeps whatever the customer typed), `site_pages.url_observed` records where the browser
+  actually landed, and the pipeline maps target pages, page paths and element page-urls through it
+  on the way into WRITE — so a generated `navigate` step goes to a URL that answers 200. Identity
+  stays normalised everywhere it already was.
 - **401 + `WWW-Authenticate`** → page state `requires_http_auth`, finding *"…is behind HTTP auth —
   add credentials in suite settings"*, never "broken link". (Credentials themselves: separate
   spec, founder already briefed.)
@@ -193,3 +208,29 @@ collapse. Nothing here adds an LLM call; §1 removes candidates from the resolve
 
 Success check: re-run the-internet with the same brief; expect ≥ 20 proposed, ≥ 15 proven, no
 proposed test whose final assertion resolved to a button/link the action did not create.
+
+
+## 7. Built — what landed where (2026-08-18)
+
+| § | Change | Where |
+|---|---|---|
+| 1 | Delta oracle: snapshot → diff → resolve inside the change; empty delta fails | `execution-engine/delta.ts`, `workers/worker.ts` |
+| 1 | Dialog-only changes separated from "nothing happened" | `worker.ts`, `validation-runner.ts` |
+| 2 | Site chrome computed at read time, marked in the prompt, ranked last under the cap | `site-model.repository.ts`, `testwriter.gateway.ts` |
+| 2 | Chrome-only scenarios get a rewrite instruction, not a rejection | `write/scenario-writer.ts` |
+| 2 | Judge D5 `plan_fidelity` (HARD), with the outline and target pages in the body | `testwriter.gateway.ts`, `pipeline.ts` |
+| 2 | Prepend `navigate`; `failStepIndex` moves with it | `write/scenario-writer.ts` |
+| 2 | Hover is state-changing | `write/step-intent.schema.ts` |
+| 2 | Page text for control-less pages; the plan is only rejected when there is neither | `recon/page-capture.ts`, `pipeline.ts`, gateway rule 10 |
+| 3 | Nearby-text names | `dom-pruner`, `recon/derived-name.ts` |
+| 4 | Trailing slash: navigate what the site wrote | `recon/*`, `site-model.repository.ts`, `pipeline.ts` |
+| 4 | 401 → "behind HTTP authentication", with the realm | `recon/crawler.ts`, `findings.ts` |
+| 4 | Console-error findings collapse at three or more | `findings.ts` |
+| 5 | Delta failures are assertion failures → `possible_app_defect` | `validation-runner.ts` |
+
+Migration `040_page_observed_url_and_text.sql` adds `site_pages.url_observed` and
+`site_pages.page_text`.
+
+**Not built here, deliberately:** `delta_summary` is written to the run timeline (`run_events`)
+rather than a new `step_results` column — same evidence for the reader, same harvest for us, no
+migration. HTTP Basic credentials as a suite setting remain a separate spec.
