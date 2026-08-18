@@ -33,6 +33,7 @@ export const I: Record<string, (p: any) => React.ReactElement> = {
   play: (p) => <Icon {...p} fill><path d="M4.6 3.2 12.6 8l-8 4.8z" fill="currentColor" /></Icon>,
   pause: (p) => <Icon {...p} fill><path d="M5 3.4h2.1v9.2H5zM8.9 3.4H11v9.2H8.9z" fill="currentColor" /></Icon>,
   check: (p) => <Icon {...p}><path d="M3.2 8.4 6.3 11.5l6.5-7" /></Icon>,
+  eye: (p) => <Icon {...p}><path d="M1.8 8s2.3-4.2 6.2-4.2S14.2 8 14.2 8s-2.3 4.2-6.2 4.2S1.8 8 1.8 8z" /><circle cx="8" cy="8" r="2" /></Icon>,
   x: (p) => <Icon {...p}><path d="M4 4l8 8M12 4l-8 8" /></Icon>,
   heal: (p) => <Icon {...p}><path d="M13.4 3.2 6.6 10l-2.9.6.6-2.9 6.8-6.8a1.4 1.4 0 0 1 2 2zM2.6 13.4h5" /></Icon>,
   skip: (p) => <Icon {...p}><path d="M4 4.4v7.2M11.4 4.4v7.2M6.2 8h4" /></Icon>,

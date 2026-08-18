@@ -142,6 +142,16 @@ Contract:
   elements exist only behind login). If it cannot, the job proceeds but every
   draft carries `unproven_signin` — fail-closed on the label, not the work.
 
+> **Amended 2026-08-18 — a green run is the user's call.** The §2 audit failure and
+> the §3 executed vacuity probe wrote `status='rejected'` on cases whose proving run
+> had just PASSED. Founder rule, stated after watching a good cart test disappear:
+> *"if the test passed, I need to be able to accept it."* Both now leave the case a
+> `draft` under "needs a decision" — audit failure ⇒ `weak_oracle`, probe passing
+> without the actions ⇒ new `vacuous_oracle` (migration 039) — with the specific
+> reason in `report.auditFindings[name]` and rendered under the caption. The vacuity
+> probe is skipped when the audit already failed (one honest label; no second
+> browser-minute). Only a RED run rejects.
+
 ## 6. `validation_state` — stop collapsing evidence levels (defect 5)
 
 Today `status = 'draft'` is written by four different UPDATE sites meaning four
