@@ -259,6 +259,15 @@ button:disabled, button[aria-disabled="true"], [role="button"][aria-disabled="tr
 .field { width: 100%; height: 30px; padding: 0 10px; border-radius: var(--r-ctl); border: .5px solid var(--sep-strong); background: var(--field); color: var(--text); font: inherit; outline: none; transition: box-shadow .14s, border-color .14s; }
 .field:focus { border-color: var(--accent); box-shadow: 0 0 0 3.5px var(--accent-soft); }
 .field::placeholder { color: var(--text-3); }
+/* A native <select> popup paints its options with the OS defaults, not the page's
+   tokens — in the dark appearance that was white rows with near-white text
+   ("Choose a test…" and the suite group labels vanished). Options and groups take
+   the field's own colours, and color-scheme tells the browser which chrome to draw
+   for scrollbars, the popup frame and form controls. */
+select.field option, select.field optgroup { background: var(--content); color: var(--text); }
+select.field optgroup { font-weight: 600; color: var(--text-2); }
+:root { color-scheme: light; }
+[data-appearance="dark"] { color-scheme: dark; }
 textarea.field { height: auto; padding: 8px 10px; resize: vertical; line-height: 1.6; }
 .label { font-size: 11px; font-weight: 600; color: var(--text-2); }
 
