@@ -1,7 +1,7 @@
 # Spec: Screen discovery — pages that are reached by clicking, not by URL
 
 **Created:** 2026-08-18
-**Updated:** 2026-08-18 — §1.3 newness rule from run 2; §4 runs 1–5
+**Updated:** 2026-08-18 — §1.3 newness rule from run 2; §4 runs 1–6
 **Status:** Approved by the founder (2026-08-18, "go"); building in PR #101
 **Owner:** test-writer
 **Amends:** `spec-recon-crawler.md` §2 (BFS), §4.1 (classifier); `spec-planner-per-page.md` §1.1 (dossiers)
@@ -114,6 +114,21 @@ as pages (they are).
 | kaizen 3 — looser newness, one try per nav slug, seeded demo workspace | 12 | 11 | 7 (+5) | 6 | 0 | 184k | 25 min |
 | kaizen 4 — actions/toggles are not views, nav is chrome, DOM settle | 10 | 9 | 15 | 4 | 0 | 185k | 11 min |
 | kaizen 5 — delta sees state + removals, aria-expanded not a screen | 7 | 6 | 11 | 7 | 0 | 136k | 7 min |
+| kaizen 6 — AssertionNoAction | 7 | 6 | 16 | 7 | **7** | 205k | 8 min |
+
+Run 6, graded as a senior QA engineer would: **good** — run a single test and watch its status
+change; run a suite and watch the entries change; the Runs filters Active/Failed/Healed each
+narrow the list. **ok** — Members tab shows the member list. **weak** — "Analyze an app" opens the
+form (the test calls that "proposed tests"), "Appearance" opens a section (the test calls that
+"edit and verify"), "usage statistics" is a read-only look. 3 good / 1 ok / 3 weak of 7, and 30 were
+asked for.
+
+What still stands between this and thirty: **rows are invisible.** Kaizen's test rows and run
+rows are `<div class="row" onClick>` — no role, no anchor — so the survey never sees them and no
+test can open a test, open a run, or read a run's timeline (the brief's central flow). That is an
+accessibility finding for the design tool AND a survey gap: many real apps use clickable divs.
+Second, the planner asks for at most 3 per page and gave 16 for 7 pages; the fill rounds then
+re-proposed the same Usage → API keys walk four times.
 
 Run 5 read: the screen set is exactly the app (tests, both suites, runs, analyses, the-brain, usage);
 the filter tests now pass validation; and all seven proposed are `vacuous_oracle` because the
