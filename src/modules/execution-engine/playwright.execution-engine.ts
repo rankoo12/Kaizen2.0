@@ -45,6 +45,9 @@ interface PlaywrightPageLike {
 
 const ACTION_TIMEOUT_MS = 10_000;
 const NAVIGATE_TIMEOUT_MS = 30_000;
+/** URL / title assertions poll up to the action timeout, in these slices. */
+const PAGE_ASSERT_POLL_MS = 250;
+const PAGE_ASSERT_POLLS = ACTION_TIMEOUT_MS / PAGE_ASSERT_POLL_MS;
 
 export class PlaywrightExecutionEngine implements IExecutionEngine {
   constructor(private readonly observability: IObservability) {}
@@ -400,10 +403,21 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
     start: number,
   ): Promise<StepExecutionResult> {
     if (step.value == null) return this.failResult(start, 'MissingValueError', 'assert_url requires an expected URL fragment in value.');
-    const current = page.url();
-    if (current.toLowerCase().includes(step.value.trim().toLowerCase())) {
-      this.observability.increment('engine.assert_url_matched');
-      return this.passResult(start, current);
+    // The URL an action produces often lands a moment later: a sign-in button
+    // posts, then the app router pushes the next page. Playwright's toHaveURL
+    // waits for that; an instant read here said "still on /login" against a
+    // login that had worked. Poll for the action timeout, like every other
+    // assertion, and report the last URL seen.
+    const want = step.value.trim().toLowerCase();
+    let current = page.url();
+    for (let attempt = 0; ; attempt += 1) {
+      if (current.toLowerCase().includes(want)) {
+        this.observability.increment('engine.assert_url_matched');
+        return this.passResult(start, current);
+      }
+      if (attempt >= PAGE_ASSERT_POLLS) break;
+      await page.waitForTimeout(PAGE_ASSERT_POLL_MS);
+      current = page.url();
     }
     throw new Error(`assert_url failed: current URL "${current}" does not contain "${step.value}".`);
   }
@@ -415,10 +429,15 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
   ): Promise<StepExecutionResult> {
     if (step.value == null) return this.failResult(start, 'MissingValueError', 'assert_title requires expected title text in value.');
     const norm = (s: string) => s.replace(/\s+/g, ' ').trim().toLowerCase();
-    const title = await page.title();
-    if (norm(title).includes(norm(step.value))) {
-      this.observability.increment('engine.assert_title_matched');
-      return this.passResult(start, title);
+    let title = await page.title();
+    for (let attempt = 0; ; attempt += 1) {
+      if (norm(title).includes(norm(step.value))) {
+        this.observability.increment('engine.assert_title_matched');
+        return this.passResult(start, title);
+      }
+      if (attempt >= PAGE_ASSERT_POLLS) break;
+      await page.waitForTimeout(PAGE_ASSERT_POLL_MS);
+      title = await page.title();
     }
     throw new Error(`assert_title failed: page title "${title}" does not contain "${step.value}".`);
   }

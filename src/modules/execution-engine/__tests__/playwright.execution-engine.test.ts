@@ -519,6 +519,16 @@ describe('PlaywrightExecutionEngine', () => {
       await expect(engine.executeStep(mkStep('assert_url', { value: '/checkout', targetDescription: null }), emptySet, mockPage)).rejects.toThrow(/assert_url failed/);
     });
 
+    it('assert_url waits for a URL that arrives after the action (SPA sign-in then router push)', async () => {
+      mockPage.url
+        .mockReturnValueOnce('https://app.example.com/login')
+        .mockReturnValueOnce('https://app.example.com/login')
+        .mockReturnValue('https://app.example.com/tests');
+      const r = await engine.executeStep(mkStep('assert_url', { value: '/tests', targetDescription: null }), emptySet, mockPage);
+      expect(r.status).toBe('passed');
+      expect(mockPage.waitForTimeout).toHaveBeenCalledTimes(2);
+    });
+
     it('assert_title passes/fails on page-title containment', async () => {
       mockPage.title.mockResolvedValue('My Store — Checkout');
       expect((await engine.executeStep(mkStep('assert_title', { value: 'Checkout', targetDescription: null }), emptySet, mockPage)).status).toBe('passed');
