@@ -73,6 +73,7 @@ export function scrubCapture(
     ...capture,
     title: scrubText(capture.title ?? ''),
     headings: (capture.headings ?? []).map(scrubText),
+    pageText: scrubText(capture.pageText ?? ''),
     survey: (capture.survey ?? []).map(scrubNode),
     forms: (capture.forms ?? []).map(scrubForm),
   };

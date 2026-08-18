@@ -928,10 +928,15 @@ async function executeStep(
         afterStep: step.rawText,
         dialogAccepted: delta.dialogs.count > dialogsBefore,
       };
-      runLog?.log('execute', `what changed: ${summariseDelta(changed)}`, {
-        stepIndex,
-        data: { changed: changed.slice(0, 10).map((el) => ({ role: el.role, name: el.name, text: el.text })) },
-      });
+      // "What changed" is page text, and a login step's delta is whatever the
+      // app renders around the credential it just accepted. The same rule the
+      // rest of this function follows: a secret step writes no evidence.
+      if (!secretStep) {
+        runLog?.log('execute', `what changed: ${summariseDelta(changed)}`, {
+          stepIndex,
+          data: { changed: changed.slice(0, 10).map((el) => ({ role: el.role, name: el.name, text: el.text })) },
+        });
+      }
     }
   }
 

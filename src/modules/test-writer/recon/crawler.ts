@@ -11,7 +11,7 @@ import { capturePageMeta, captureForms, captureLinks, condenseOutline } from './
 import { normalizeUrl, isSameOrigin, pathOf, stripFragment } from './url-normalizer';
 import { fetchRobots, isAllowed } from './robots';
 import { acquireSession, isSessionLoss, type AuthSessionDeps, type LoginStep } from './auth-session';
-import { scrubCapture } from './capture-scrub';
+import { scrubCapture, scrubText } from './capture-scrub';
 
 /**
  * RECON crawler — bounded, same-origin BFS with safety-gated interactive
@@ -401,7 +401,13 @@ export class ReconCrawler {
           urlObserved: stripFragment(page.url()),
           title: meta.title,
           headings: meta.headings,
-          pageText: meta.pageText,
+          // Scrubbed for EVERY page, not only the sensitive tier. Every other
+          // captured field is structure — a role, a name, a selector — and this
+          // one is raw prose off the page, so it is the field most likely to
+          // carry an address or an order number, and it travels furthest: into
+          // storage, and then into the WRITE prompt.
+          // Spec: spec-authenticated-scope.md §5.2, spec-oracle-delta-and-fidelity.md §2
+          pageText: scrubText(meta.pageText),
           survey,
           forms,
           outgoingLinks: outgoing,
