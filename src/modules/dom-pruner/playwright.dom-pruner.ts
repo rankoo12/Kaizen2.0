@@ -197,6 +197,40 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
           accessibleName = textContent.substring(0, 80);
         }
 
+        // ── 7b. The text a person reads next to it ────────────────────────
+        // A control with no label, no id and no placeholder is not nameless to
+        // a human: the-internet's checkboxes are `<input type="checkbox">
+        // checkbox 1`, and every sighted user calls that one "checkbox 1".
+        // Captured as an ATTRIBUTE, never as the accessible name — a screen
+        // reader still announces nothing here, so the accessibility finding
+        // must keep counting it. deriveName turns it into something citable.
+        // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §3
+        if (!accessibleName) {
+          const readText = (from: Node | null, forward: boolean): string => {
+            let node = from;
+            let hops = 0;
+            while (node && hops++ < 3) {
+              if (node.nodeType === 3) {
+                const t = (node.nodeValue || '').replace(/\s+/g, ' ').trim();
+                if (t) return t.slice(0, 40);
+              } else if (node.nodeType === 1) {
+                const tag = (node as HTMLElement).tagName.toLowerCase();
+                // Another control means we have walked into its label, not ours.
+                if (['input', 'select', 'textarea', 'button', 'a'].includes(tag)) return '';
+                // Inline separators are stepped over; a heading immediately
+                // before a control is what the page calls it ("Number").
+                if (!['br', 'span', 'label', 'small', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6'].includes(tag)) return '';
+                const t = ((node as HTMLElement).innerText || '').replace(/\s+/g, ' ').trim();
+                if (t) return t.slice(0, 40);
+              }
+              node = forward ? node.nextSibling : node.previousSibling;
+            }
+            return '';
+          };
+          const nearby = readText(el.nextSibling, true) || readText(el.previousSibling, false);
+          if (nearby) attributes['nearby-text'] = nearby;
+        }
+
         // ── 8. Parent context for disambiguation ──────────────────────────
         // Walk up the DOM to find the nearest semantic ancestor label so the
         // LLM can tell apart elements that share an identical accessible name

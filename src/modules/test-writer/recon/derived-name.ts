@@ -14,7 +14,17 @@
  * Spec: docs/specs/test-writer/spec-recon-crawler.md §4.1 (amended 2026-08-18)
  */
 
-const SOURCES = ['aria-label', 'data-test', 'data-testid', 'data-qa', 'id', 'name', 'placeholder', 'title'] as const;
+/**
+ * Ordered by how closely each answers "what would a person call this?".
+ * `nearby-text` sits second because it is the only source that is literally
+ * what a sighted user reads: the-internet's checkboxes carry no attributes at
+ * all, and every one of them is "checkbox 1" / "checkbox 2" on the page.
+ * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §3
+ */
+const SOURCES = [
+  'aria-label', 'nearby-text', 'data-test', 'data-testid', 'data-qa',
+  'id', 'name', 'placeholder', 'title',
+] as const;
 
 /** `product_sort_container` / `productSortContainer` / `product-sort-container` → "product sort container". */
 export function humanise(raw: string): string {
