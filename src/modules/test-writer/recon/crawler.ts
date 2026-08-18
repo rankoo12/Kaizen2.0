@@ -252,7 +252,16 @@ export class ReconCrawler {
           });
           const status: number | null = typeof response?.status === 'function' ? response.status() : null;
           if (status !== null && status >= 400) {
-            report.errorPages.push({ url, status, reason: `HTTP ${status}`, linkedFrom: from });
+            // A 401 with a challenge header is not a broken page — it is a page
+            // behind HTTP Basic auth, which is a credentials setting, not a bug.
+            // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §4
+            let reason = `HTTP ${status}`;
+            if (status === 401 || status === 407) {
+              const headers = typeof response?.headers === 'function' ? response.headers() : {};
+              const challenge = headers['www-authenticate'] ?? headers['proxy-authenticate'] ?? '';
+              if (challenge) reason = `HTTP ${status} ${String(challenge).slice(0, 120)}`;
+            }
+            report.errorPages.push({ url, status, reason, linkedFrom: from });
             obs.increment('testwriter.crawl_error_page', { status: String(status) });
           }
         } catch (err) {

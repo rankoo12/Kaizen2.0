@@ -322,7 +322,8 @@ export type FindingKind =
   | 'possible_app_defect'
   | 'unverified_auth_partition'
   | 'console_or_network_errors'
-  | 'broken_link';
+  | 'broken_link'
+  | 'requires_http_auth';
 
 export type Finding = {
   kind: FindingKind;

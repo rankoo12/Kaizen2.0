@@ -126,7 +126,8 @@ export type GenerationReport = {
 export type Finding = {
   kind:
     | 'crawl_error_page' | 'empty_accessible_name' | 'possible_app_defect'
-    | 'unverified_auth_partition' | 'console_or_network_errors' | 'broken_link';
+    | 'unverified_auth_partition' | 'console_or_network_errors' | 'broken_link'
+    | 'requires_http_auth';
   severity: 'info' | 'low' | 'medium' | 'high';
   title: string;
   detail: string;

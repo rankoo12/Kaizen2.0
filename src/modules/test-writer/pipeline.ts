@@ -4,7 +4,7 @@ import type { IObservability } from '../observability/interfaces';
 import type { ITestWriterGateway } from '../llm-gateway/testwriter.interfaces';
 import type { PlannedScenario, ScenarioRejection, TenantBrief } from '../../types/test-writer';
 import type { StepAST } from '../../types';
-import { reconFindings, rankFindings } from './findings';
+import { reconFindings, rankFindings, collapseFindings } from './findings';
 import type { Finding } from '../../types/test-writer';
 import type { CrawlReport, PageCapture } from './interfaces';
 import { DEFAULT_BUDGETS, HARD_MAX_PAGES } from './interfaces';
@@ -590,14 +590,14 @@ async function runGenerationPhases(
   // controls, and whatever validation learned about the app.
   // Spec: docs/specs/test-writer/spec-findings-and-coverage.md
   const recon = (job.report as { recon?: { errorPages?: Array<{ url: string; status: number | null; reason: string }>; auth?: { publicPartitionUnverified?: boolean } } } | null)?.recon;
-  const findings = rankFindings([
+  const findings = rankFindings(collapseFindings([
     ...await reconFindings(
       payload.tenantId, payload.suiteId,
       recon?.errorPages ?? [],
       recon?.auth?.publicPartitionUnverified === true,
     ).catch(() => []),
     ...validation.findings,
-  ]);
+  ]));
 
   const report = {
     ...(job.report ?? {}),
