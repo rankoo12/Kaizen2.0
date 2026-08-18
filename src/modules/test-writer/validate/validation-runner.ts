@@ -49,6 +49,13 @@ export type ValidationOutcome = {
    * tests. Spec: docs/specs/test-writer/spec-findings-and-coverage.md
    */
   findings: Finding[];
+  /**
+   * The executed sign-in proof (spec-validation-trust §5, amended 2026-08-18):
+   * did the login recipe's own final assertion FAIL when run signed out?
+   * 'private' = yes (a green run witnessed a session), 'public' = it held
+   * signed out too, 'inconclusive' = the probe could not run. Absent on public jobs.
+   */
+  signinProbe?: 'private' | 'public' | 'inconclusive';
 };
 
 export class ValidationRunner {
@@ -85,13 +92,33 @@ export class ValidationRunner {
     };
     if (params.scenarios.length === 0) return outcome;
 
+    // Executed evidence for the sign-in premise, once per job. The static
+    // lookup ("does the crawl record the asserted element as private?") is
+    // blind on an authenticated-only analysis, where every page is an assumed
+    // private page and a url/heading assertion names no element at all — three
+    // green saucedemo drafts were labelled unproven for exactly that. Running
+    // the recipe's terminal assertion signed out answers the real question.
+    let signinAssertionProves = params.signinAssertionProves;
+    const prefixForProbe = params.loginPrefix ?? [];
+    if (prefixForProbe.length > 0 && params.validate) {
+      const probe = await this.probeSigninAssertionIsPrivate(params, prefixForProbe);
+      outcome.signinProbe = probe;
+      if (probe === 'private') signinAssertionProves = true;
+      else if (probe === 'public') signinAssertionProves = false;
+      // inconclusive: the static answer stands.
+      this.obs.log('info', 'testwriter.signin_probe', {
+        jobId: params.jobId, probe, staticSaysPrivate: params.signinAssertionProves === true,
+      });
+    }
+    const effective = { ...params, signinAssertionProves };
+
     let cursor = 0;
     const worker = async (): Promise<void> => {
       for (;;) {
         const scenario = params.scenarios[cursor++];
         if (!scenario) return;
         try {
-          await this.validateOne(scenario, params, outcome);
+          await this.validateOne(scenario, effective, outcome);
         } catch (err) {
           outcome.rejected.push({
             name: scenario.name, steps: scenario.steps.map((s) => s.text),
@@ -481,6 +508,57 @@ export class ValidationRunner {
         error: err instanceof Error ? err.message : String(err),
       });
       return false;
+    }
+  }
+
+  /**
+   * The login recipe's terminal assertion, run SIGNED OUT: its navigate steps
+   * plus the assertion, no credentials, cold browser. If that fails, the
+   * assertion cannot hold without a session, so every green proving run in this
+   * job that reached it was signed in. Same construction as the vacuity probe
+   * (§3), pointed at the prefix instead of the body.
+   * Spec: spec-validation-trust.md §5 (amended 2026-08-18)
+   */
+  private async probeSigninAssertionIsPrivate(
+    params: Parameters<ValidationRunner['validateAll']>[0],
+    prefix: Array<{ rawText: string; ast: StepAST }>,
+  ): Promise<'private' | 'public' | 'inconclusive'> {
+    const plan = planVacuityProbe(prefix.map((s) => s.ast.action));
+    if (!plan) return 'inconclusive';
+    const compiledSteps = [
+      ...plan.keptBodyIndexes.map((i) => prefix[i].ast),
+      prefix[plan.terminalIndex].ast,
+    ];
+    try {
+      const pool = tenantPool(params.tenantId);
+      const { rows } = await pool.query<{ id: string }>(
+        `INSERT INTO runs (tenant_id, suite_id, case_id, triggered_by, status, environment_url)
+         VALUES ($1, $2, NULL, 'testwriter', 'queued', $3)
+         RETURNING id`,
+        [params.tenantId, params.suiteId, params.baseUrl],
+      );
+      const probeRunId = rows[0].id;
+      await this.runQueue.add('run', {
+        runId: probeRunId,
+        tenantId: params.tenantId,
+        compiledSteps,
+        stepIds: [],
+        baseUrl: params.baseUrl,
+        seedVariables: generateFormData(),
+        // Deliberately NOT behindAuth: this run must look like a signed-out visitor.
+        behindAuth: false,
+        triggeredBy: 'testwriter',
+      });
+      const status = await this.pollToTerminal(params.tenantId, probeRunId);
+      this.obs.increment('testwriter.signin_probe', { status });
+      if (status === 'failed') return 'private';
+      if (status === 'passed' || status === 'healed') return 'public';
+      return 'inconclusive';
+    } catch (err) {
+      this.obs.log('warn', 'testwriter.signin_probe_failed', {
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return 'inconclusive';
     }
   }
 
