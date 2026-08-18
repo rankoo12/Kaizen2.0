@@ -119,7 +119,7 @@ export async function reconFindings(
      JOIN site_pages sp ON sp.id = pe.page_id
      WHERE pe.tenant_id = $1 AND sp.suite_id = $2
        AND pe.kind IN ('button', 'link', 'input', 'select')
-       AND (pe.name IS NULL OR btrim(pe.name) = '')
+       AND (pe.name IS NULL OR btrim(pe.name) = '' OR pe.attributes->>'nameSource' = 'derived')
      GROUP BY sp.url_normalized, pe.role
      ORDER BY count(*) DESC
      LIMIT $3`,

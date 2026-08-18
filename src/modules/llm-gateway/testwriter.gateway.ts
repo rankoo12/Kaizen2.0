@@ -287,6 +287,9 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
       '6. DETERMINISM — never assert volatile content (prices, dates, counts). Never use wait as the only',
       '   synchronisation. click_random must be followed by an assertion that uses its captured token.',
       `7. Max ${input.maxSteps} steps.`,
+      '8. NEW TABS — an element marked "opens a NEW TAB" leaves the current tab where it was. The step',
+      '   right after clicking it MUST be {"action":"switch_tab","value":"new"}; only then assert the',
+      '   destination (title, url). Asserting on the old tab is a guaranteed failure.',
       UNTRUSTED_PREAMBLE,
       '',
       'Return only valid JSON matching exactly:',
@@ -297,7 +300,8 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
 
     const groundingLines = input.grounding.map((g) =>
       `${g.id} :: ${g.role} "${g.name}" :: ${g.kind} :: on ${g.pageUrl}` +
-      (g.revealedBy ? ` :: revealed by "${g.revealedBy}"` : ''));
+      (g.revealedBy ? ` :: revealed by "${g.revealedBy}"` : '') +
+      (g.opensNewTab ? ' :: opens a NEW TAB' : ''));
 
     const user = [
       `PLANNED SCENARIO: ${input.plan.name}`,

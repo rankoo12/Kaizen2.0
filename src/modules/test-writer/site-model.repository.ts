@@ -3,6 +3,7 @@ import type { PoolClient } from 'pg';
 import { withTenantTransaction } from '../../db/transaction';
 import type { PageCapture } from './interfaces';
 import type { AppBrief, GroundingElement, Journey } from '../../types/test-writer';
+import { deriveName } from './recon/derived-name';
 
 /**
  * Site-model persistence — tenant-isolated writes to site_pages /
@@ -108,9 +109,16 @@ export class SiteModelRepository {
         [pageId, tenantId]);
 
       for (const c of capture.survey) {
+        // No accessible name → the developer's own handle for it (id, data-test,
+        // …), marked as derived so the a11y finding still counts it (spec-recon
+        // §4.1 amendment). Without this the control is uncitable and any
+        // scenario that needs it is written around it.
+        const derived = c.name ? null : deriveName(c.attributes);
         await insertElement(client, tenantId, pageId, {
-          role: c.role, name: c.name, kind: kindOf(c.role),
-          selector: c.cssSelector, attributes: c.attributes, revealedBy: null,
+          role: c.role, name: c.name || derived || '', kind: kindOf(c.role),
+          selector: c.cssSelector,
+          attributes: derived ? { ...(c.attributes ?? {}), nameSource: 'derived' } : c.attributes,
+          revealedBy: null,
         });
       }
       for (const reveal of capture.revealedStates) {
@@ -386,6 +394,7 @@ export class SiteModelRepository {
       const { rows } = await client.query<{
         id: string; page_url: string; role: string; name: string;
         kind: string; revealed_by: string | null; selector: string | null; rn: string;
+        target: string | null;
       }>(
         // The per-page cap is ROUND-ROBIN ACROSS KINDS, not a flat alphabetical
         // slice. Ordering by (kind, name) and cutting at 40 sorted 'button'
@@ -398,12 +407,13 @@ export class SiteModelRepository {
         // Ranking within each kind first and interleaving guarantees the scarce
         // kinds survive: you cannot write a form test without an input, and the
         // 41st button is worth far less than the 1st text field.
-        `SELECT id, page_url, role, name, kind, revealed_by, selector, rn FROM (
-           SELECT id, page_url, role, name, kind, revealed_by, selector,
+        `SELECT id, page_url, role, name, kind, revealed_by, selector, target, rn FROM (
+           SELECT id, page_url, role, name, kind, revealed_by, selector, target,
                   ROW_NUMBER() OVER (PARTITION BY page_id ORDER BY kind_rank, kind, name) AS rn
            FROM (
              SELECT pe.id, sp.url_normalized AS page_url, pe.role, pe.name, pe.kind,
                     pe.revealed_by, pe.selector, pe.page_id,
+                    pe.attributes->>'target' AS target,
                     ROW_NUMBER() OVER (PARTITION BY pe.page_id, pe.kind ORDER BY pe.name) AS kind_rank
              FROM page_elements pe
              JOIN site_pages sp ON sp.id = pe.page_id
@@ -429,6 +439,7 @@ export class SiteModelRepository {
         kind: r.kind,
         revealedBy: r.revealed_by,
         selector: r.selector,
+        opensNewTab: r.target === '_blank',
       }));
     });
   }

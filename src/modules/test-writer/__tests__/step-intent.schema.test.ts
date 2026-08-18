@@ -127,6 +127,25 @@ describe('runSchemaGate — description-variant exemptions', () => {
     expect(amb.ok).toBe(false);
   });
 
+  // saucedemo social links: target="_blank". Asserting the title right after
+  // the click reads the OLD tab and fails every time.
+  it('requires switch_tab right after clicking a link that opens a new tab', () => {
+    const newTab = new Set([ELEMENT_A]);
+    const bad = runSchemaGate([
+      { action: 'click', target: { kind: 'element', elementId: ELEMENT_A } },
+      { action: 'assert_title', value: 'Facebook' },
+    ], valid, 10, new Map(), [], newTab);
+    expect(bad.ok).toBe(false);
+    if (!bad.ok) expect(bad.errors.join(' ')).toContain('switch_tab');
+
+    const good = runSchemaGate([
+      { action: 'click', target: { kind: 'element', elementId: ELEMENT_A } },
+      { action: 'switch_tab', value: 'new' },
+      { action: 'assert_title', value: 'Facebook' },
+    ], valid, 10, new Map(), [], newTab);
+    expect(good.ok).toBe(true);
+  });
+
   it('rejects a description target that does NOT follow a state change', () => {
     const result = runSchemaGate([
       { action: 'navigate', url: 'https://shop.test/' },

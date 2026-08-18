@@ -143,6 +143,8 @@ export function runSchemaGate(
   rolesById: Map<string, string> = new Map(),
   /** Seed tokens the run will actually provide ({{email}}, {{password}}, …). */
   seedTokens: string[] = [],
+  /** page_elements.id of links observed with target="_blank" — a click must be followed by switch_tab. */
+  newTabIds: Set<string> = new Set(),
 ): SchemaGateResult {
   const errors: string[] = [];
 
@@ -243,6 +245,21 @@ export function runSchemaGate(
     const slot = value.match(/\{([a-z_]+)\}/);
     if (slot && !value.includes(`{{${slot[1]}}}`)) {
       errors.push(`step ${index + 1}: unbound placeholder "${slot[0]}" — bind it to a real value`);
+    }
+  });
+
+  // A link the crawl saw open a NEW TAB: the click leaves this tab untouched,
+  // so an assertion right after it reads the wrong page. Three saucedemo
+  // social-link tests failed exactly this way. Deterministic here, so the
+  // repair round gets a precise instruction rather than a red run later.
+  steps.forEach((step, index) => {
+    if (step.action !== 'click' || step.target.kind !== 'element' || !newTabIds.has(step.target.elementId)) return;
+    const next = steps[index + 1];
+    if (!next || next.action !== 'switch_tab') {
+      errors.push(
+        `step ${index + 1}: this link opens a NEW TAB — the next step must be ` +
+        '{"action":"switch_tab","value":"new"} before anything about the destination is asserted',
+      );
     }
   });
 

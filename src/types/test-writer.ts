@@ -193,6 +193,12 @@ export type GroundingElement = {
    * (spec-generation-pipeline.md §5.2). Null for probe-revealed elements.
    */
   selector: string | null;
+  /**
+   * `target="_blank"` was observed on this link: clicking it opens a NEW TAB,
+   * and any assertion about the destination must switch to it first. Three
+   * saucedemo social-link tests asserted the old tab's title and failed.
+   */
+  opensNewTab?: boolean;
 };
 
 export type WriteInput = {
