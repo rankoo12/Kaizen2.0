@@ -60,6 +60,33 @@ describe('groundingNotes', () => {
 });
 
 describe('ScenarioWriter', () => {
+  // the-internet's 404 / javascript_error / nested_frames pages: nothing
+  // clickable, plenty to verify. Spec: spec-oracle-delta-and-fidelity.md §2
+  it('writes a text-only test for a page with no controls at all', async () => {
+    const generate = jest.fn(async (_input: WriteInput): Promise<unknown> => ({
+      name: 'Not found page shows its message', kind: 'positive', rationale: 'r',
+      steps: [
+        { action: 'navigate', url: 'https://shop.test/nope' },
+        { action: 'assert_text', value: 'Not Found' },
+      ],
+    }));
+    const writer = writerWith(generate);
+    const outcome = await writer.write({
+      ...baseParams, grounding: [], pageText: ['https://shop.test/nope: Not Found. The page you are looking for...'],
+    });
+
+    expect(generate).toHaveBeenCalledTimes(1);
+    expect(generate.mock.calls[0][0].pageText).toEqual([
+      'https://shop.test/nope: Not Found. The page you are looking for...',
+    ]);
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.scenario.steps.map((s) => s.text)).toEqual([
+      'navigate to https://shop.test/nope',
+      'verify the text "Not Found" is shown',
+    ]);
+  });
+
   it('tells the model what the pages lack, on the first attempt and on the repair', async () => {
     // Model types into the link both times — the saucedemo failure shape.
     const generate = jest.fn(async (_input: WriteInput): Promise<unknown> => ({

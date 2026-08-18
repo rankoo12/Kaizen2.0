@@ -14,6 +14,14 @@ export type PageMeta = {
   title: string;
   headings: string[];
   hasVisiblePasswordInput: boolean;
+  /**
+   * The opening stretch of what a visitor actually reads. A page whose only
+   * content is text — a 404 page, an error demo, a frameset — has no citable
+   * controls, and WRITE was handed an empty grounding set and gave up, even
+   * though "navigate there and verify the text is shown" is a fine test.
+   * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+   */
+  pageText: string;
 };
 
 export async function capturePageMeta(page: unknown): Promise<PageMeta> {
@@ -30,14 +38,21 @@ export async function capturePageMeta(page: unknown): Promise<PageMeta> {
         return rect.width > 0 && rect.height > 0;
       });
 
+      const body = document.body as HTMLElement | null;
+      const pageText = ((body?.innerText ?? '') || '')
+        .replace(/\s+/g, ' ')
+        .trim()
+        .slice(0, 400);
+
       return {
         title: (document.title ?? '').trim(),
         headings,
         hasVisiblePasswordInput: pw,
+        pageText,
       };
     });
   } catch {
-    return { title: '', headings: [], hasVisiblePasswordInput: false };
+    return { title: '', headings: [], hasVisiblePasswordInput: false, pageText: '' };
   }
 }
 

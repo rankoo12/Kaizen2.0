@@ -63,6 +63,12 @@ export type PageCapture = {
   /** SHA-256 of the condensed AX outline — re-crawl diffing. */
   contentHash: string;
   screenshotKey: string | null;
+  /**
+   * The opening stretch of the page's visible text. Absent for blocked and
+   * capture-suppressed pages, which were deliberately not read.
+   * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+   */
+  pageText?: string;
   requiresAuth: boolean;
   /**
    * 'capture-suppressed' marks a Tier A sensitive page (/api-keys, /billing…)

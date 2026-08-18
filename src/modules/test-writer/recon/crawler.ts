@@ -385,6 +385,7 @@ export class ReconCrawler {
           urlNormalized: landed,
           title: meta.title,
           headings: meta.headings,
+          pageText: meta.pageText,
           survey,
           forms,
           outgoingLinks: outgoing,

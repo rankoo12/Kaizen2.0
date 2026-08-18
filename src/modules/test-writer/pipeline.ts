@@ -433,8 +433,19 @@ async function runGenerationPhases(
     const grounding = await deps.repository.getGroundingElements(
       payload.tenantId, payload.suiteId, targetPages,
     );
-    if (grounding.length === 0) {
-      rejected.push({ name: plan.name, stage: 'schema', reason: 'no observed elements on the target pages' });
+    // A page with no controls is not an untestable page. the-internet's 404,
+    // javascript_error and nested_frames pages carry nothing clickable and were
+    // all rejected here — while "navigate there and verify the text 'Not Found'
+    // is shown" is exactly the test a QA engineer writes for them.
+    // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+    const pageText = await deps.repository.getPageTexts(
+      payload.tenantId, payload.suiteId, targetPages,
+    );
+    if (grounding.length === 0 && pageText.length === 0) {
+      rejected.push({
+        name: plan.name, stage: 'schema',
+        reason: 'the target pages have neither observed elements nor readable text',
+      });
       continue;
     }
     const formSummaries = await deps.repository.getFormSummaries(
@@ -446,6 +457,7 @@ async function runGenerationPhases(
       plan,
       grounding,
       formSummaries,
+      pageText,
       pagePath: targetPages,
       seedTokens: [...FORM_DATA_TOKENS],
       steeringNotes: job.plan_notes,

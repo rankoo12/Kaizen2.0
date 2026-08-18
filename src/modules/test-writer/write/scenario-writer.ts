@@ -223,6 +223,8 @@ export class ScenarioWriter {
     plan: PlannedScenario;
     grounding: GroundingElement[];
     formSummaries: string[];
+    /** Visible text of the target pages — the only material a control-less page has. */
+    pageText?: string[];
     pagePath: string[];
     seedTokens: string[];
     steeringNotes: string | null;
@@ -262,6 +264,7 @@ export class ScenarioWriter {
         plan,
         grounding: params.grounding,
         formSummaries: params.formSummaries,
+        pageText: params.pageText,
         pagePath: params.pagePath,
         seedTokens: params.seedTokens,
         archetype: archetype?.skeleton ?? null,

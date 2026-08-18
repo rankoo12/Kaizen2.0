@@ -75,8 +75,8 @@ export class SiteModelRepository {
       const { rows } = await client.query<{ id: string }>(
         `INSERT INTO site_pages (
            tenant_id, suite_id, url_normalized, title, headings, ax_outline,
-           content_hash, requires_auth, screenshot_key, last_crawled_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now())
+           content_hash, requires_auth, screenshot_key, page_text, last_crawled_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, now())
          ON CONFLICT (tenant_id, suite_id, url_normalized) DO UPDATE SET
            title = EXCLUDED.title,
            headings = EXCLUDED.headings,
@@ -84,6 +84,7 @@ export class SiteModelRepository {
            content_hash = EXCLUDED.content_hash,
            requires_auth = ${requiresAuthSql},
            screenshot_key = COALESCE(EXCLUDED.screenshot_key, site_pages.screenshot_key),
+           page_text = COALESCE(EXCLUDED.page_text, site_pages.page_text),
            last_crawled_at = now(),
            -- content_hash-keyed classification cache: a re-crawl only invalidates
            -- the LLM classification of pages whose AX outline actually changed.
@@ -98,7 +99,7 @@ export class SiteModelRepository {
         [
           tenantId, suiteId, capture.urlNormalized, capture.title || null,
           capture.headings, capture.axOutline ?? null, capture.contentHash,
-          capture.requiresAuth, capture.screenshotKey,
+          capture.requiresAuth, capture.screenshotKey, capture.pageText || null,
         ],
       );
       const pageId = rows[0].id;
@@ -468,6 +469,25 @@ export class SiteModelRepository {
         opensNewTab: r.target === '_blank',
         chrome: r.chrome === true,
       }));
+    });
+  }
+
+  /**
+   * What a visitor reads on the given pages. Handed to WRITE so a page with no
+   * controls of its own is still testable: "navigate there, verify the text is
+   * shown" needs to know what text is there.
+   * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+   */
+  async getPageTexts(tenantId: string, suiteId: string, urls: string[]): Promise<string[]> {
+    if (urls.length === 0) return [];
+    return withTenantTransaction(tenantId, async (client) => {
+      const { rows } = await client.query<{ url_normalized: string; title: string | null; page_text: string | null }>(
+        `SELECT url_normalized, title, page_text FROM site_pages
+         WHERE tenant_id = $1 AND suite_id = $2 AND url_normalized = ANY($3::text[])
+           AND page_text IS NOT NULL AND btrim(page_text) <> ''`,
+        [tenantId, suiteId, urls],
+      );
+      return rows.map((r) => `${r.url_normalized}${r.title ? ` (${r.title})` : ''}: ${r.page_text}`);
     });
   }
 
