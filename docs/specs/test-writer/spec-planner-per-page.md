@@ -166,7 +166,23 @@ whose final assertion resolved to something the action did not create.
 | 2 | *(void — the container had not reloaded; the report showed the old planner)* | | | | | |
 | 3 | §1.1–§1.5 together: dossiers, repertoire, exclusions, expected outcomes, fill loop | 53 | 25 | 7 | 17 | 290k |
 | 4 | + delete rule, reorder delta, repertoire fix, fill dedup, figure images | 56 | 24 | 5 | **25** | 274k |
-| 5 | + distiller exclusions, known accounts, fragment quoting | | | | | |
+| 5 | + distiller exclusions, known accounts, fragment quoting | 58 | 22 | 5 | 19 | 300k |
+
+**Graded by hand** (real interaction on the planned page; oracle observes what the action produced;
+not an excluded page; not a duplicate of another delivered test in the run): run 3 **23** good of
+30, run 4 **21** of 36, run 5 **22** of 34. Distinct good tests across the three runs ≈ 31 — the
+material for 30 is on the site; no single run collects it because the fill rounds re-cover pages
+that already have a test.
+
+Run 5 read: the distiller over-excluded `/dynamic_loading` and `/slow` (advice, not a ban — now
+advice wins over the list); and **14 of the 17 "needs review" were the vacuity probe**, which kept
+only the terminal assertion and so called every round-trip test vacuous (check → verify → uncheck →
+verify ends where it started). The probe now keeps every assertion — unmeasured; the reading of run
+5's tests says ~18 of 22 good tests would flip to proven.
+
+After run 5, unmeasured: fill rounds visit pages with **zero** delivered tests before pages with
+one, and a differently-worded twin of a delivered test (`sameTest`: same verb, same subject) is
+dropped at plan time instead of after a write, a judge and a proving run — seven per job in run 5.
 
 Run 4 read: coverage reached the bar; proposed flat, proven down; **19 of 32 rejections were
 validation** — tests reaching the browser and failing there — of which 7 were the writer inventing

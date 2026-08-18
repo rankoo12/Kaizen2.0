@@ -109,9 +109,17 @@ export function planVacuityProbe(
   const terminalIndex = actions.length - 1;
   if (terminalIndex < 0 || !actions[terminalIndex].startsWith('assert_')) return null;
 
+  // Keep the navigations AND every assertion; drop only the actions. The
+  // question is the spec's own — "would the test stay green with the feature
+  // removed?" — and it is answered by the whole run, not by the last line. The
+  // first version kept only the terminal assertion and called every round-trip
+  // test vacuous: check → verify checked → uncheck → verify not checked ends
+  // where it started, so its LAST check is true before anything ran, while the
+  // one in the middle is the oracle. Fourteen of seventeen "needs review" labels
+  // in bench run 5 were this.
   const keptBodyIndexes: number[] = [];
   for (let i = 0; i < terminalIndex; i++) {
-    if (actions[i] === 'navigate') keptBodyIndexes.push(i);
+    if (actions[i] === 'navigate' || actions[i].startsWith('assert_')) keptBodyIndexes.push(i);
   }
   // Nothing was dropped, so the "probe" is just the scenario again.
   if (keptBodyIndexes.length === terminalIndex) return null;
@@ -177,7 +185,9 @@ export function auditRunOracles(
     const observation = byIndex.get(i);
     const isPrefix = i < prefixLength;
 
-    if (step.action === 'type' || step.action === 'select') {
+    // `select` deliberately excluded (same reasoning as the schema gate):
+    // reading back the option you chose IS the dropdown's oracle.
+    if (step.action === 'type') {
       if (step.value) {
         typedBefore.push({ index: i, value: step.value, selector: observation?.selectorUsed ?? null });
       }

@@ -18,10 +18,22 @@ export function applyBriefExclusions(pages: PageDossier[], brief: TenantBrief | 
   if (cautions.length === 0 && explicit.length === 0) return pages;
 
   const excluded = new Map<string, string>();
-  // The distiller's own list first — it read the original wording.
+  // A caution that names a path and reads as ADVICE ("needs an explicit wait",
+  // "takes several seconds", "assert X instead") describes how to test the page,
+  // not whether to. The distiller listed two such pages in run 5 and cost three
+  // delivered tests; advice wins over the list.
+  const advised = new Set<string>();
+  for (const caution of cautions) {
+    if (!/\b(needs?|takes?|instead|wait|slow|allow|expect|use)\b/i.test(caution)) continue;
+    if (/\b(skip|avoid|do not|don't|never|exclude|leave|not touch|no test)\b/i.test(caution)) continue;
+    for (const m of caution.matchAll(/(?:^|[\s,(])(\/[a-z0-9_\-]+(?:\/[a-z0-9_\-]+)*)/gi)) {
+      advised.add(m[1].replace(/\/$/, '').toLowerCase());
+    }
+  }
+  // The distiller's own list — it read the original wording.
   for (const raw of explicit) {
     const path = String(raw).trim().replace(/\/$/, '').toLowerCase();
-    if (path.startsWith('/')) excluded.set(path, 'listed as a page to skip in your brief');
+    if (path.startsWith('/') && !advised.has(path)) excluded.set(path, 'listed as a page to skip in your brief');
   }
   for (const caution of cautions) {
     // Only cautions that read as "avoid / skip / do not" exclude; a caution that

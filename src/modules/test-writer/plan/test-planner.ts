@@ -27,6 +27,36 @@ export type PlanResult = {
   pagesSkippedAsIndex?: string[];
 };
 
+/**
+ * Two names describe the same test when they share their verb and their
+ * subject on the same page: "Toggle checkbox 1" and "Toggle checkbox 1 state",
+ * "Drag element A to element B" and "Drag element A to position of element B".
+ * Dedup only sees identical step lists, so these used to survive to a write, a
+ * judge and a proving run each. Cheap, deterministic, and it errs towards
+ * letting a genuinely different test through: the verb AND a distinctive noun
+ * must both match.
+ */
+export function sameTest(a: string, b: string): boolean {
+  const STOP = new Set(['the', 'a', 'an', 'to', 'on', 'of', 'in', 'and', 'with', 'from', 'its', 'is', 'are',
+    'verify', 'test', 'check', 'that', 'page', 'element', 'state', 'functionality', 'button', 'link', 'field']);
+  const words = (s: string) => s.toLowerCase().replace(/[^a-z0-9\s]/g, ' ').split(/\s+/).filter((w) => w && !STOP.has(w));
+  const wa = words(a); const wb = words(b);
+  if (wa.length === 0 || wb.length === 0) return false;
+  // Same verb (first meaningful word) and at least half the remaining words in common.
+  if (wa[0] !== wb[0]) return false;
+  const restA = new Set(wa.slice(1)); const restB = new Set(wb.slice(1));
+  if (restA.size === 0 || restB.size === 0) return wa.join(' ') === wb.join(' ');
+  // A number or a distinguishing noun on ONE side and not the other is a
+  // different test: "checkbox 1" vs "checkbox 2", "wrong username" vs "wrong
+  // password". Only look at words that could plausibly be the subject.
+  const onlyA = [...restA].filter((w) => !restB.has(w));
+  const onlyB = [...restB].filter((w) => !restA.has(w));
+  const distinguishing = (w: string) => /^\d+$/.test(w) || /^(username|password|email|name|first|second|third|last|left|right|top|bottom|up|down|open|close|closed|enable|disable|add|remove)$/.test(w);
+  if (onlyA.some(distinguishing) || onlyB.some(distinguishing)) return false;
+  const shared = [...restB].filter((w) => restA.has(w)).length;
+  return shared >= Math.ceil(Math.min(restA.size, restB.size) / 2);
+}
+
 /** What has already happened per page — the fill round's memory. Spec §1.5 */
 export type PlanLedger = Array<{
   page: string;
@@ -257,8 +287,10 @@ export class TestPlanner {
       if (params.ledger && !params.ledger.some((l) => l.page === targetPages[0])) {
         dropped.push({ name, reason: 'fill round planned outside the pages that still had material' }); continue;
       }
-      if (params.ledger?.some((l) => l.delivered.some((d) => d.toLowerCase() === name.toLowerCase()))) {
-        dropped.push({ name, reason: 'already delivered in an earlier round' }); continue;
+      const priorOnPage = params.ledger?.find((l) => l.page === targetPages[0])?.delivered ?? [];
+      const twin = priorOnPage.find((d) => sameTest(d, name));
+      if (twin) {
+        dropped.push({ name, reason: `already covered by "${twin}"` }); continue;
       }
 
       seen.add(name.toLowerCase());

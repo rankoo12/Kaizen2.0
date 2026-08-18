@@ -229,6 +229,15 @@ describe('planVacuityProbe', () => {
     expect(plan!.keptBodyIndexes).toEqual([0, 2]);
   });
 
+  // Bench run 5: 14 of 17 "needs review" were round-trip tests whose LAST
+  // assertion is true before anything ran. The probe keeps every assertion, so
+  // the middle one — the oracle — is what decides.
+  it('keeps every assertion, so a round-trip test is judged by its middle check', () => {
+    const plan = planVacuityProbe(['navigate', 'check', 'assert_checked', 'uncheck', 'assert_not_checked']);
+    expect(plan!.keptBodyIndexes).toEqual([0, 2]);
+    expect(plan!.terminalIndex).toBe(4);
+  });
+
   it('refuses to probe a scenario that has nothing to drop', () => {
     // navigate → assert is already its own counterfactual; re-running it proves
     // nothing and would reject every legitimate 404 or auth-gate test.

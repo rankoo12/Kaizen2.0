@@ -941,13 +941,19 @@ async function buildLedger(
       rejected.set(page, [...(rejected.get(page) ?? []), { name: x.name, reason: x.reason.slice(0, 160) }]);
     }
   }
-  return dossiers
+  // Pages with NOTHING delivered come first — that is where the fill round
+  // earns its keep. A page with one good test is only revisited if no bare
+  // page is left; sending it every time is how the model re-proposed "Toggle
+  // checkbox 1" as "Toggle checkbox 1 state" seven times in one job.
+  const rows = dossiers
     .filter((d) => d.elements.length > 0 && (delivered.get(d.urlNormalized)?.length ?? 0) < 2)
     .map((d) => ({
       page: d.urlNormalized,
       delivered: delivered.get(d.urlNormalized) ?? [],
       rejected: rejected.get(d.urlNormalized) ?? [],
     }));
+  const bare = rows.filter((r) => r.delivered.length === 0);
+  return bare.length > 0 ? bare : rows;
 }
 
 function mergeValidation(all: ValidationOutcome[]): ValidationOutcome {

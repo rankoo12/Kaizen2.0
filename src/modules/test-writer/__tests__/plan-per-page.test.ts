@@ -1,6 +1,6 @@
 import { repertoireScenarios } from '../plan/repertoire';
 import { applyBriefExclusions, isIndexPage, batchDossiers, knownAccounts } from '../plan/dossier';
-import { TestPlanner } from '../plan/test-planner';
+import { TestPlanner, sameTest } from '../plan/test-planner';
 import type { ITestWriterGateway } from '../../llm-gateway/testwriter.interfaces';
 import type { IObservability } from '../../observability/interfaces';
 import type { PageDossier, PlanBatchInput, PlannedScenario, TenantBrief } from '../../../types/test-writer';
@@ -162,5 +162,18 @@ describe('knownAccounts', () => {
     expect(knownAccounts(b)).toEqual(['username "tomsmith", password "SuperSecretPassword!"']);
     expect(knownAccounts({ ...brief, roles: ['Anonymous visitor only'] })).toEqual([]);
     expect(knownAccounts(null)).toEqual([]);
+  });
+});
+
+describe('sameTest — a differently-worded twin is the same test', () => {
+  it('matches the shapes the fill rounds actually produced', () => {
+    expect(sameTest('Toggle the "checkbox 1" checkbox on /checkboxes', 'Toggle checkbox 1 state')).toBe(true);
+    expect(sameTest('Drag element A to element B', 'Drag element A to position of element B')).toBe(true);
+    expect(sameTest('hover over each user avatar', 'Hover over avatar to reveal additional information')).toBe(true);
+  });
+  it('lets a genuinely different test through', () => {
+    expect(sameTest('Sign-in rejects a wrong username', 'Sign-in rejects a wrong password')).toBe(false);
+    expect(sameTest('Toggle checkbox 1', 'Toggle checkbox 2')).toBe(false);
+    expect(sameTest('Add Element creates a Delete button', 'Delete button removes itself')).toBe(false);
   });
 });
