@@ -85,7 +85,26 @@ by hand against the judge's own criteria — spec-planner-per-page.md §5.
 | run | covered (of 32) | good / weak / wrong of delivered |
 |---|---|---|
 | 6 | 14, 16, 18 (+ partial 28, 27) ≈ 3–5 | 3 / 3 / 1 of 7 |
-| 8 (Claude as the model) | 6, 11, 12, 14, 16, 18, 25, 26, 28 + cancel-draft, Save & Run ≈ 10 of 32 | 12 / 2 / 0 of 14 |
+| 8 (Claude as the model) | ~~10 of 32~~ **VOID** — see below | ~~12 / 2 / 0 of 14~~ |
+
+**Run 8 is void.** The founder read a proving run and saw `click the "Checkout smoke 6" button` executed
+as `role=button[name="File"]`. A step-by-step audit of every proving run (step text vs. locator used)
+found the same for "Runs", "Demo 0", "Blank", "The Brain", "Global", "Run suite", "Failed", "Needs
+review": all served from the selector cache. Cause: when the model answered "no candidate matches"
+(the sidebar had not rendered), the resolver's fallback took the FIRST candidate in DOM order — the
+menubar's File — and cached it; the click opened a menu; the delta oracle matched a vague description
+against the menu; green. Three fixes: the fallback considers only candidates that share a word with the
+target and is never cached; a delta pick must be *about* the description; and the worker refuses any
+resolved element whose label shares no word with a quoted target, evicts it, and fails into healing.
+The grader now audits step fidelity before it counts anything as proven (§5).
+
+## 5. Step fidelity — a proof is only a proof if every step hit its named element
+
+For every proving run, every step whose text quotes a name (`click the "Runs" button`) is checked
+against the element actually used (selector name, or the resolved element's label/text). One
+mismatch and the test is **not proven**, whatever the run status. The bench prints these; the worker
+now refuses them at execution time (worker fidelity gate), so they should be zero — the audit is
+the check on the check.
 
 Run 8, graded: create a test (Blank → name → Target URL → Save → Save gone → row with the name)
 is the flagship flow and it is proven; Save & Run in the empty suite, Run now, Run suite, the

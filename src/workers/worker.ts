@@ -179,6 +179,54 @@ async function markRunRunning(tenantId: string, runId: string): Promise<void> {
   );
 }
 
+/** The double-quoted name in a step's target, if any: `the "Save" button` → Save. */
+export function quotedName(target: string | null | undefined): string | null {
+  if (!target) return null;
+  const m = /["“”]([^"“”]{1,80})["“”]/.exec(target);
+  return m ? m[1].trim() : null;
+}
+
+/** Whether a resolved element's descriptor shares a distinctive word with the quoted name. */
+export function nameOverlaps(quoted: string, descriptor: string): boolean {
+  const STOP = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'button', 'link', 'field']);
+  const words = quoted.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !STOP.has(w));
+  if (words.length === 0) return true;             // "⌘R" alone — nothing to check against
+  const hay = descriptor.toLowerCase();
+  return words.some((w) => hay.includes(w));
+}
+
+/** aria-label / label / title / placeholder / name / value / text of the resolved element; null if unreadable. */
+async function describeResolved(page: Page, selector: string): Promise<string | null> {
+  try {
+    return await (page as any).$eval(selector, (el: Element) => {
+      const e = el as HTMLElement;
+      const id = e.getAttribute('id');
+      const lab = id ? (document.querySelector('label[for="' + id + '"]') as HTMLElement | null) : null;
+      return [
+        e.getAttribute('aria-label') ?? '', lab?.innerText ?? '', e.closest('label')?.textContent ?? '',
+        e.getAttribute('title') ?? '', e.getAttribute('placeholder') ?? '', e.getAttribute('name') ?? '',
+        (e as HTMLInputElement).value ?? '', e.innerText ?? e.textContent ?? '',
+      ].join(' ').replace(/\s+/g, ' ').trim().slice(0, 300);
+    });
+  } catch {
+    return null;
+  }
+}
+
+/** Purge a selector that resolved to the wrong element from every cache layer that could serve it again. */
+async function evictWrongSelector(tenantId: string, targetHash: string | null | undefined, selector: string): Promise<void> {
+  if (targetHash) {
+    await tenantQuery(tenantId, `DELETE FROM selector_cache WHERE content_hash = $1 AND (tenant_id = $2 OR is_shared = true) AND pinned_at IS NULL`, [targetHash, tenantId]);
+    const keys = await cacheRedis.keys(`llm:dedup:${targetHash}:*`).catch(() => [] as string[]);
+    if (keys.length > 0) await cacheRedis.del(...keys).catch(() => 0);
+  }
+  await tenantQuery(tenantId,
+    `DELETE FROM selector_cache WHERE (tenant_id = $1 OR is_shared = true) AND pinned_at IS NULL
+       AND $2 = ANY(SELECT s->>'selector' FROM jsonb_array_elements(selectors::jsonb) AS s)`,
+    [tenantId, selector],
+  );
+}
+
 async function markRunComplete(tenantId: string, runId: string, status: 'passed' | 'failed' | 'healed' | 'cancelled'): Promise<void> {
   await tenantQuery(
     tenantId,
@@ -909,6 +957,30 @@ async function executeStep(
       // the rest as skipped, and the run completes as 'failed'.
       obs.log('warn', 'worker.resolution_failed', { runId, action: step.action, error: e.message });
       selectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+    }
+  }
+
+  // ── Fidelity gate: a quoted name must be ON the element we resolved ─────────
+  // `click the "Checkout smoke 6" button` resolved (from cache) to the menubar's
+  // "File", the click opened a menu, and the run went green. A step that NAMES
+  // its target in quotes is explicit; an element that shares no word with that
+  // name is not it — refuse it, evict it from the caches that served it, and let
+  // the step fail into healing (a page still rendering is what adaptive wait is
+  // for) rather than act on the wrong control and call it proof.
+  if (selectorSet.selectors.length > 0 && selectorSet.resolutionSource !== 'delta'
+      && step.action !== 'assert_text' && step.action !== 'assert_not_text' && step.action !== 'assert_count') {
+    const quoted = quotedName(step.targetDescription);
+    if (quoted) {
+      const sel = selectorSet.selectors[0].selector;
+      const descriptor = await describeResolved(page, sel);
+      if (descriptor !== null && !nameOverlaps(quoted, descriptor)) {
+        obs.increment('worker.quoted_name_mismatch', { source: selectorSet.resolutionSource ?? 'unknown' });
+        runLog?.log('resolve',
+          `refused: "${quoted}" resolved to ${sel.slice(0, 80)} (${descriptor.slice(0, 60)}) — not the named element`,
+          { stepIndex, level: 'warn', data: { selector: sel, source: selectorSet.resolutionSource } });
+        if (selectorSet.fromCache) await evictWrongSelector(tenantId, step.targetHash, sel).catch(() => {});
+        selectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+      }
     }
   }
 

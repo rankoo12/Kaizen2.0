@@ -36,6 +36,24 @@ export function serializeCandidateForEmbedding(candidate: CandidateNode, urlPath
  * target description. Used for element_embedding L2.5 lookup to pick which
  * candidate's semantic identity to search the cache with.
  */
+/**
+ * Candidates that share at least one distinctive word with the target
+ * description (its quoted name, or its nouns), in DOM order. Empty when none do —
+ * the caller must then treat the step as unresolved rather than guess.
+ */
+export function plausibleCandidates(candidates: CandidateNode[], target: string): CandidateNode[] {
+  const STOP = new Set(['the', 'a', 'an', 'button', 'link', 'field', 'input', 'textbox', 'checkbox', 'radio',
+    'dropdown', 'select', 'combobox', 'menu', 'item', 'element', 'tab', 'box', 'option', 'icon', 'image',
+    'control', 'row', 'text', 'label', 'heading', 'dialog', 'sheet', 'panel', 'first', 'second', 'last',
+    'new', 'this', 'that', 'page', 'and', 'for', 'with', 'from', 'into', 'its']);
+  const words = target.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !STOP.has(w));
+  if (words.length === 0) return [];
+  return candidates.filter((c) => {
+    const hay = `${c.role} ${c.name ?? ''} ${c.textContent ?? ''} ${c.attributes?.['aria-label'] ?? ''} ${c.attributes?.['placeholder'] ?? ''} ${c.attributes?.['title'] ?? ''}`.toLowerCase();
+    return words.some((w) => hay.includes(w));
+  });
+}
+
 function pickTopCandidate(candidates: CandidateNode[], target: string): CandidateNode {
   const words = target.toLowerCase().split(/\s+/).filter((w) => w.length > 2);
   if (words.length === 0) return candidates[0];
@@ -377,11 +395,21 @@ export class LLMElementResolver implements IElementResolver {
 
       // ── Pre-generated selector fallback ──────────────────────────────────
       // If the LLM returned no valid selectors (e.g. all hallucinated), walk the
-      // DOM-pruner-generated selectorCandidates for each candidate in order.
+      // DOM-pruner-generated selectorCandidates — but ONLY for candidates that
+      // plausibly ARE the target (a distinctive word of the description appears
+      // in the candidate's role/name/text). The first version walked every
+      // candidate in DOM order and took the first that existed: on Kaizen's own
+      // dashboard, when the sidebar had not rendered yet and the model rightly
+      // said "none", that was the menubar's "File" — for "Runs", "Demo 0",
+      // "Checkout smoke", "Global", "Run suite"… — and the pick was CACHED, so
+      // every later run clicked File from cache and its proof was worthless.
+      // A fallback pick is never cached: it was not confirmed by anyone.
       if (validSelectors.length === 0) {
         this.observability.increment('resolver.llm_output_unusable');
         const seen = new Set<string>();
-        for (const candidate of candidates) {
+        const plausible = plausibleCandidates(candidates, step.targetDescription ?? '');
+        if (plausible.length > 0) sessionOnly = true;
+        for (const candidate of plausible) {
           for (const sel of (candidate.selectorCandidates ?? [])) {
             if (seen.has(sel.selector)) continue;
             seen.add(sel.selector);

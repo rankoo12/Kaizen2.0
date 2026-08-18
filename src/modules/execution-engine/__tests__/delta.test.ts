@@ -209,6 +209,18 @@ describe('pickDeltaMatch', () => {
   it('returns null for an empty delta — there is nothing to bind to', () => {
     expect(pickDeltaMatch('anything', [])).toBeNull();
   });
+
+  it('refuses a delta that is not ABOUT the description — a menu that opened by mistake', () => {
+    const menu = [
+      { marker: 'kz-d-0', role: 'button', name: 'New Suite', text: 'New Suite', interactive: true },
+      { marker: 'kz-d-1', role: 'button', name: 'Analyze an app…', text: 'Analyze an app…', interactive: true },
+      { marker: 'kz-d-2', role: 'button', name: 'Keyboard shortcuts', text: 'Keyboard shortcuts', interactive: true },
+    ];
+    expect(pickDeltaMatch('the running status indicator on the row that was just run', menu)).toBeNull();
+    // …but a genuine indicator in the delta is found.
+    const badge = { marker: 'kz-d-3', role: 'span', name: 'running', text: 'running', interactive: false };
+    expect(pickDeltaMatch('the running status indicator on the row that was just run', [...menu, badge])?.marker).toBe('kz-d-3');
+  });
 });
 
 describe('isDeltaScoped', () => {

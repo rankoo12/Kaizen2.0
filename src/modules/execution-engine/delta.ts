@@ -306,6 +306,11 @@ export function pickDeltaMatch(description: string, elements: DeltaElement[]): D
     .filter(([noun]) => new RegExp(`\\b${noun}s?\\b`).test(lower))
     .flatMap(([, roles]) => roles);
 
+  // "the error message", "the confirmation", "the empty state", "the status
+  // indicator": prose the action wrote. Any non-interactive text in the delta
+  // is a candidate for those; a control is not.
+  const wantsProse = /\b(message|confirmation|result|notification|banner|toast|alert|error|warning|success|indicator|status|state|badge|label|text|list|row|count|total|summary|title|name|empty)\b/.test(lower);
+
   let best: DeltaElement | null = null;
   let bestScore = -Infinity;
   for (const element of elements) {
@@ -318,6 +323,14 @@ export function pickDeltaMatch(description: string, elements: DeltaElement[]): D
     if (element.text.length >= 8) score += 0.4;
     if (element.text.length > 0 && element.text.length <= 2) score -= 0.5;
     if (!element.interactive && element.text.length > 0) score += 0.2;
+    // A pick must be ABOUT the description: share a distinctive word with it, or
+    // be the kind of element it names. Otherwise the best of an unrelated delta
+    // (a menu that opened because the wrong button was clicked) would satisfy
+    // "the running status indicator on the row" — and it did.
+    const about = overlap > 0
+      || (wantedRoles.length > 0 && wantedRoles.includes(element.role))
+      || (wantsProse && !element.interactive && element.text.length > 0);
+    if (!about) continue;
     if (score > bestScore) { bestScore = score; best = element; }
   }
   return best;
