@@ -118,6 +118,13 @@ function elapsed(job: GenerationJob): string {
 
 function ProgressFace({ job }: { job: GenerationJob }) {
   const active = phaseIndex(job);
+  // The elapsed clock only re-rendered when the 2s poll returned new data, so
+  // it skipped seconds. A clock ticks once a second regardless of the poll.
+  const [, tick] = React.useState(0);
+  React.useEffect(() => {
+    const id = setInterval(() => tick((n) => n + 1), 1000);
+    return () => clearInterval(id);
+  }, []);
   const progress = job.report?.progress;
   const authScope = job.scope === 'authenticated';
   // An authenticated crawl signs in before the loop starts, so the first page
