@@ -36,6 +36,18 @@ const CONCURRENCY = 2;
  */
 const ASSERTION_FAILURE_CLASSES = new Set(['LOGIC_FAILURE']);
 
+/**
+ * The same judgement expressed as an error type rather than a failure class.
+ * A delta-scoped oracle that failed because NOTHING CHANGED never reached the
+ * classifier — the worker short-circuits before the engine — but "the click did
+ * nothing" is the app declining in the plainest possible terms, and it is the
+ * reading the customer needs. Spec: spec-oracle-delta-and-fidelity.md §5
+ */
+function isAssertionFailure(failure: { failureClass: string | null; errorType: string | null }): boolean {
+  return ASSERTION_FAILURE_CLASSES.has(failure.failureClass ?? '')
+    || (failure.errorType ?? '').startsWith('Assertion');
+}
+
 type TerminalStatus = 'passed' | 'failed' | 'healed' | 'cancelled';
 
 export type ValidationOutcome = {
@@ -372,14 +384,16 @@ export class ValidationRunner {
       // for an injection and goes red BECAUSE THE APP IS VULNERABLE is filed as
       // Kaizen's mistake and deleted.
       const failure = await this.firstFailure(params.tenantId, runId);
-      if (status === 'failed' && failure
-          && ASSERTION_FAILURE_CLASSES.has(failure.failureClass ?? '')) {
+      if (status === 'failed' && failure && isAssertionFailure(failure)) {
         outcome.findings.push(appDefectFinding({
           scenarioName: scenario.name,
           runId,
           caseId: created.id,
           steps: scenario.steps.map((st) => st.text),
-          reason: `It failed at step ${failure.stepIndex + 1}.`,
+          reason: failure.errorType === 'AssertionNothingChanged'
+            ? `At step ${failure.stepIndex + 1} the page did not change at all after the action — `
+              + 'the control responded to nothing.'
+            : `It failed at step ${failure.stepIndex + 1}.`,
         }));
         this.obs.increment('testwriter.possible_app_defect');
       }
@@ -401,6 +415,25 @@ export class ValidationRunner {
     if (scenario.expectation.outcome === 'pass') {
       if (status === 'passed') return { accepted: true, reason: '' };
       if (status === 'healed') return { accepted: true, reason: 'passed after self-healing' };
+      // "failed against the live site" tells a reader nothing they can act on.
+      // The two delta verdicts are precisely the ones worth spelling out: one
+      // says the app did nothing, the other says Kaizen could not look.
+      // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §1
+      const failure = await this.firstFailure(tenantId, runId);
+      if (failure?.errorType === 'AssertionNothingChanged') {
+        return {
+          accepted: false,
+          reason: `at step ${failure.stepIndex + 1} nothing on the page changed after the action, `
+            + 'so the check had nothing real to find',
+        };
+      }
+      if (failure?.errorType === 'DialogOnlyChange') {
+        return {
+          accepted: false,
+          reason: `at step ${failure.stepIndex + 1} the only thing that happened was a browser dialog, `
+            + 'which Kaizen answers automatically — its contents cannot be checked',
+        };
+      }
       return { accepted: false, reason: 'the generated test failed against the live site' };
     }
 
@@ -430,7 +463,7 @@ export class ValidationRunner {
     // An assertion that failed is the app declining. A selector that could not
     // be found, a timeout, a navigation error — those are the test breaking, and
     // they prove nothing about the app's behaviour.
-    if (!ASSERTION_FAILURE_CLASSES.has(first.failureClass ?? '') && !first.errorType?.startsWith('Assertion')) {
+    if (!isAssertionFailure(first)) {
       return {
         accepted: false,
         reason: `the run failed at the expected step but for a ${first.failureClass ?? first.errorType ?? 'non-assertion'} reason — the test broke rather than the app refusing`,

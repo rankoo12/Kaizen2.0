@@ -1,7 +1,9 @@
 # Spec: Oracle delta + scenario fidelity — what the-internet run taught us
 
 **Created:** 2026-08-18
-**Status:** Proposed — awaiting founder go
+**Updated:** 2026-08-18 — §1 and §5 built (Batch 1a); as-built notes and the real-browser
+measurement recorded below
+**Status:** §1 + §5 built; §2 next (Batch 1b); §3/§4 planned
 **Owner:** test-writer / worker
 **Evidence:** the-internet.herokuapp.com, prod, 2026-08-18: 50 pages, 30 planned → 10 proposed
 (1 proven, 9 needs review), 18 rejected, 116.6k tokens. Founder review of all 10 proposed +
@@ -58,6 +60,48 @@ only kind that can name something the crawl never saw), the answer must come fro
 Kills: JS-alerts (#2), context-menu (#3), download (#5), dynamic-controls (#10) false passes; makes
 the login negatives resolve to the flash text instead of its "×" button.
 
+### 1.1 As built (2026-08-18)
+
+`src/modules/execution-engine/delta.ts` + the worker's `executeStep`.
+
+- **The baseline lives in Node, not on `window`.** Stashing it in the page would lose it to every
+  navigation, and the single most valuable case — an invalid sign-in that re-renders the same page
+  plus a flash message — is a navigation. Keys come back to the worker and go in as an argument.
+- **Identity is a key, not a node:** `tag|role|ownText|href|value`. Own text, never `innerText`,
+  because with `innerText` every ancestor of a new node also "changes" and the delta grows up the
+  tree until it contains `<body>` — at which point restricting resolution to it means nothing.
+  Comparison is a multiset, so a second identical row counts as new.
+- **One `page.evaluate` function serialised twice** (baseline pass and diff pass), so both sides
+  compute keys identically by construction. No `new Function`/eval — a page with a strict CSP
+  would refuse it.
+- **The match is deterministic** (`pickDeltaMatch`): word overlap first, then the tie-breaks that
+  encode what a person means by "the message" — prose over a one-character "×", and the role the
+  sentence asked for. No model call: reintroducing one per assertion is the cost this whole
+  mechanism removes.
+- **An empty delta is re-diffed once** at assertion time before it fails, so async rendering
+  (a spinner finishing, an SPA route settling) is not mistaken for "nothing happened".
+- **Dialog-only changes are separated out.** The worker auto-accepts native dialogs, so an alert
+  leaves the page identical. That still fails the assertion — nothing was proven — but with
+  `DialogOnlyChange`, which is explicitly NOT an app defect: the limitation is ours. Only
+  `AssertionNothingChanged` reaches §5.
+- **`delta_summary` is written to the run timeline** (`run_events`, "what changed: …") rather than
+  a new `step_results` column — the same evidence for the reader and the same harvest for us,
+  without a migration.
+- **Nothing changes for a normal customer run:** `enabled` is false unless the test actually
+  carries an `oracleScope: 'delta'` step, so no snapshots are taken.
+
+> **Measured against the real site, 2026-08-18** (headless chromium, the-internet.herokuapp.com):
+> | page | action | delta | resolves to |
+> |---|---|---|---|
+> | `/add_remove_elements/` | click "Add Element" | `button "Delete"` | the control it created |
+> | `/javascript_alerts` | click "Click for JS Alert" | `p "You successfully clicked an alert"` | the result line — **not** the button that used to satisfy it |
+> | `/login` (invalid) | submit | `div "Your username is invalid!"`, `a "×"` | the flash text, not its close button |
+> | `/context_menu` | right-click the hot spot | **empty** | fails: "nothing on the page changed" |
+> | `/dynamic_controls` | click "Remove" | `button "Add"`, `p "It's gone!"` | the confirmation message |
+>
+> Four of the five false passes in the run that prompted this spec are answered directly by that
+> table; the fifth (the download link) has no delta and now fails.
+
 ## 2. Scenario fidelity (writer + judge)
 
 - **Site chrome.** After recon, an element (role+name+href) present on ≥ 60 % of crawled pages
@@ -106,6 +150,12 @@ A discover-oracle assertion that fails because *nothing matched* is an assertion
 "element not found" plumbing failure — `oracleScope: 'delta'` failures join
 `ASSERTION_FAILURE_CLASSES`. The password-reset 500 becomes the `possible_app_defect` finding it
 should have been.
+
+**As built:** the worker records `error_type = 'AssertionNothingChanged'` and the validation runner
+treats any `Assertion…` error type as assertion-class, alongside `LOGIC_FAILURE`. The finding then
+reads *"at step N the page did not change at all after the action — the control responded to
+nothing"*, and the rejection row says the same thing instead of "failed against the live site".
+`DialogOnlyChange` is deliberately excluded: that failure is Kaizen's limit, not the app's.
 
 ## 6. Order and cost
 

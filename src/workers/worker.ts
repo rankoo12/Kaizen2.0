@@ -50,6 +50,10 @@ import { shouldResolveFresh, healCertifiesAssertion } from './assertion-cache-po
 import { RunLogger } from './run-logger';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
 import { PageChallengeDetector } from '../modules/execution-engine/challenge-detector';
+import {
+  captureDelta, captureDeltaBaseline, isDeltaScoped, pickDeltaMatch, summariseDelta,
+  STATE_CHANGING_ACTIONS, DELTA_CLEARING_ACTIONS, type DeltaSnapshot,
+} from '../modules/execution-engine/delta';
 import { HealingEngine } from '../modules/healing-engine/healing-engine';
 import { FallbackSelectorStrategy } from '../modules/healing-engine/strategies/fallback-selector.strategy';
 import { AdaptiveWaitStrategy } from '../modules/healing-engine/strategies/adaptive-wait.strategy';
@@ -255,9 +259,15 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
   // context — including tabs opened later by a click (target=_blank/window.open).
   // Without a handler Playwright DISMISSES dialogs, so a "click OK" flow gets
   // Cancel and a confirm can stall. Accepting matches the common QA intent.
+  const dialogs = { count: 0 };
   const attachDialogHandler = (p: Page): void => {
     p.on('dialog', (dialog) => {
       obs.log('info', 'worker.dialog_accepted', { runId, type: dialog.type(), message: dialog.message() });
+      // Counted so a step whose ONLY effect was a dialog can say so. Kaizen
+      // answers dialogs automatically, so their contents are gone before any
+      // assertion could read them — that is our limitation, not a defect in the
+      // customer's app. Spec: spec-oracle-delta-and-fidelity.md §1
+      dialogs.count++;
       void dialog.accept().catch(() => { /* already handled/closed */ });
     });
   };
@@ -298,12 +308,21 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
 
   const domain = new URL(baseUrl).hostname;
 
+  // Only a test that carries a discover oracle pays for the delta snapshots.
+  // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §1
+  const delta: DeltaMemory = {
+    enabled: compiledSteps.some((s) => s.oracleScope === 'delta'),
+    baseline: null,
+    last: null,
+    dialogs,
+  };
+
   let loopResult;
   try {
     loopResult = await runStepLoop(runId, compiledSteps, {
       isCancelled,
       executeStep: (step, stepIndex, previousAfterPng, runContext) =>
-        executeStep(step, tabs.current, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext, runLog, attempt, (p) => { tabs.current = p; }, payload.behindAuth === true, payload.triggeredBy === 'testwriter'),
+        executeStep(step, tabs.current, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext, runLog, attempt, (p) => { tabs.current = p; }, payload.behindAuth === true, payload.triggeredBy === 'testwriter', delta),
       recordSkippedSteps: (steps, startIndex, reason) =>
         recordSkippedSteps(tenantId, runId, steps, startIndex, reason, stepIds, attempt),
       onStepFailed: (stepIndex, step) => {
@@ -528,6 +547,21 @@ async function fetchLastGoodScreenshot(
   }
 }
 
+/**
+ * What the previous action changed, carried across steps of one run.
+ * `enabled` is false unless the test actually contains a delta-scoped oracle, so
+ * a normal customer run pays nothing for this.
+ * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §1
+ */
+type DeltaMemory = {
+  enabled: boolean;
+  /** Keys of everything visible immediately BEFORE the last action. */
+  baseline: string[] | null;
+  last: DeltaSnapshot | null;
+  /** The run's native-dialog counter, shared with the context's dialog handler. */
+  dialogs: { count: number };
+};
+
 async function executeStep(
   rawStep: StepAST,
   page: Page,
@@ -555,6 +589,12 @@ async function executeStep(
    * Spec: spec-validation-trust.md §9.
    */
   isProvingRun: boolean = false,
+  /**
+   * Run-scoped memory of what the previous action changed. A discover oracle
+   * ("verify the confirmation is visible") resolves inside it and nowhere else.
+   * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §1
+   */
+  delta: DeltaMemory = { enabled: false, baseline: null, last: null, dialogs: { count: 0 } },
 ): Promise<{ status: 'passed' | 'failed'; healed: boolean; afterPng: Buffer | null }> {
   // Resolve {{variable}} tokens captured by earlier steps before doing anything
   // else, so resolution, execution, and persistence all see the concrete values.
@@ -640,10 +680,69 @@ async function executeStep(
     return { status: outcome.ok ? 'passed' : 'failed', healed: false, afterPng };
   }
 
+  // ── The delta oracle ──────────────────────────────────────────────────────
+  // A discover oracle names something the crawl never saw, so the resolver
+  // searches the whole page — and the whole page still contains the button that
+  // was clicked. This assertion may only look at what the previous action
+  // CHANGED. An empty delta is not "look harder", it is the answer: the action
+  // did nothing. Spec: spec-oracle-delta-and-fidelity.md §1
+  const deltaScoped = delta.enabled && isDeltaScoped(step) && delta.last !== null;
+  if (deltaScoped && delta.last!.elements.length === 0 && delta.baseline) {
+    // Re-diff first: content that renders asynchronously (a spinner finishing,
+    // an SPA route settling) can arrive between the action and this assertion.
+    delta.last = { ...delta.last!, elements: await captureDelta(page, delta.baseline) };
+  }
+  if (deltaScoped && delta.last!.elements.length === 0) {
+    const dialogOnly = delta.last!.dialogAccepted;
+    const reason = dialogOnly
+      ? `the only thing "${delta.last!.afterStep}" produced was a browser dialog, which Kaizen `
+        + 'answers automatically — its contents are gone before anything can be verified'
+      : `nothing on the page changed after "${delta.last!.afterStep}" — `
+        + `there is no ${step.targetDescription} to verify`;
+    obs.increment('worker.delta_oracle_empty', { dialogOnly: String(dialogOnly) });
+    const afterPng = secretStep ? null : await page.screenshot({ type: 'png' }).catch(() => null);
+    const afterKey = afterPng ? screenshots.keyFor(tenantId, runId, stepIndex, 'after') : null;
+    if (afterPng) {
+      void bus.publish({ kind: 'screenshot.upload', tenantId, runId, stepIndex, timing: 'after', png: afterPng, attempt });
+    }
+    void insertStepResult(
+      tenantId, runId, step, stepIndex, 'failed', null, afterKey,
+      Date.now() - stepStart, null, null, null, null, 0, null,
+      // 'Assertion…' reads as the app declining rather than as Kaizen failing to
+      // find an element — this failure IS the observation, and §5 files it as a
+      // possible app defect. A dialog-only change is NOT that: there the limit
+      // is ours, so it must never be reported as a defect in the customer's app.
+      dialogOnly ? 'DialogOnlyChange' : 'AssertionNothingChanged',
+      stepId,
+    );
+    runLog?.log('assert', `assertion failed — ${reason}`, { stepIndex, level: 'error', data: { afterStep: delta.last!.afterStep } });
+    await runLog?.flush();
+    return { status: 'failed', healed: false, afterPng };
+  }
+
   // ── Resolve selectors ─────────────────────────────────────────────────────
   // navigate and press_key act on the page/keyboard, not a specific DOM element.
   let selectorSet: SelectorSet;
-  if (step.action === 'click_random') {
+  if (deltaScoped) {
+    const elements = delta.last!.elements;
+    const pick = pickDeltaMatch(step.targetDescription ?? '', elements);
+    selectorSet = pick
+      ? {
+          selectors: [{ selector: `[data-kz-delta="${pick.marker}"]`, strategy: 'css' as const, confidence: 0.9 }],
+          fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null,
+          candidates: elements.slice(0, 10).map((el) => ({
+            kaizenId: el.marker, role: el.role, name: el.name || el.text,
+            selector: `[data-kz-delta="${el.marker}"]`,
+          })),
+        }
+      : { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+    obs.increment('worker.delta_oracle_resolved', { matched: String(!!pick) });
+    runLog?.log('resolve',
+      pick
+        ? `resolved inside what changed → ${pick.role} "${(pick.text || pick.name).slice(0, 60)}"`
+        : 'nothing in what changed matched the assertion',
+      { stepIndex, data: { deltaSize: elements.length, marker: pick?.marker ?? null } });
+  } else if (step.action === 'click_random') {
     // click_random does NOT go through the single-element resolver chain. It
     // queries the live page directly for the repeated control the target names
     // (e.g. add-to-cart buttons), picks ONE by a seeded index (runId+stepIndex →
@@ -789,6 +888,14 @@ async function executeStep(
   // URL before the action, so we can tell whether this step navigated.
   const urlBefore = (() => { try { return (page as { url?: () => string }).url?.() ?? ''; } catch { return ''; } })();
 
+  // Photograph the page BEFORE the action that is about to change it. Keys come
+  // back to Node rather than living on `window`, so the comparison survives the
+  // navigation a submit causes. One evaluate, no model call.
+  const dialogsBefore = delta.dialogs.count;
+  if (delta.enabled && STATE_CHANGING_ACTIONS.has(step.action)) {
+    delta.baseline = await captureDeltaBaseline(page);
+  }
+
   try {
     result = await engine.executeStep(step, selectorSet, page);
   } catch (e: any) {
@@ -803,6 +910,29 @@ async function executeStep(
   // a chatty page (long-poll / websocket) or a never-quiet DOM can never hang the run.
   if (result.status !== 'failed') {
     await settleAfterNavigation(page, urlBefore);
+  }
+
+  // ── What changed ──────────────────────────────────────────────────────────
+  // Recorded once the page has settled, and only for a test that actually
+  // carries a delta-scoped oracle. A navigation step throws the memory away:
+  // "what changed" across a deliberate page change is the whole page, which
+  // would restrict nothing. Spec §1.
+  if (delta.enabled && result.status !== 'failed') {
+    if (DELTA_CLEARING_ACTIONS.has(step.action)) {
+      delta.baseline = null;
+      delta.last = null;
+    } else if (STATE_CHANGING_ACTIONS.has(step.action) && delta.baseline) {
+      const changed = await captureDelta(page, delta.baseline);
+      delta.last = {
+        elements: changed,
+        afterStep: step.rawText,
+        dialogAccepted: delta.dialogs.count > dialogsBefore,
+      };
+      runLog?.log('execute', `what changed: ${summariseDelta(changed)}`, {
+        stepIndex,
+        data: { changed: changed.slice(0, 10).map((el) => ({ role: el.role, name: el.name, text: el.text })) },
+      });
+    }
   }
 
   runLog?.log(isAssertion ? 'assert' : 'execute',

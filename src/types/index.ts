@@ -81,6 +81,15 @@ export type StepAST = {
    * Spec: docs/specs/workers/spec-engine-capabilities-assert-random-capture.md §3.3
    */
   captureAs?: string | null;
+  /**
+   * 'delta' marks a DISCOVER ORACLE: an assertion about something the crawl
+   * never saw, which therefore may only be resolved against what the previous
+   * action CHANGED. Set by the Test Writer's canonical renderer for
+   * description-target assertions; the worker enforces it, and an empty delta
+   * fails the step instead of falling back to the whole page.
+   * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §1
+   */
+  oracleScope?: 'delta' | null;
 };
 
 // ─── DOM Pruning ─────────────────────────────────────────────────────────────

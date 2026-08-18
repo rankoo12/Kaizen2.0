@@ -141,3 +141,46 @@ describe('renderIntent', () => {
     }
   });
 });
+
+describe('oracleScope — which assertions are discover oracles', () => {
+  /**
+   * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §1
+   * The mark is what tells the worker to resolve inside what the action changed
+   * instead of across the whole page — the difference between proving a message
+   * appeared and finding the button that produced it.
+   */
+  it('marks a description-target assertion, because the crawl never saw that element', () => {
+    const rendered = renderIntent(
+      { action: 'assert_visible', target: { kind: 'description', description: 'the confirmation message' } },
+      elements,
+    );
+    expect(rendered.text).toBe('verify the confirmation message is visible');
+    expect(rendered.ast.oracleScope).toBe('delta');
+  });
+
+  it('leaves a grounded assertion alone — that element was observed and is on the page', () => {
+    const rendered = renderIntent(
+      { action: 'assert_visible', target: { kind: 'element', elementId: BUTTON.id } },
+      elements,
+    );
+    expect(rendered.ast.oracleScope).toBeUndefined();
+  });
+
+  it('marks a scoped content assertion but not a whole-page one', () => {
+    const scoped = renderIntent(
+      { action: 'assert_text', target: { kind: 'description', description: 'the flash message' }, value: 'invalid' },
+      elements,
+    );
+    expect(scoped.ast.oracleScope).toBe('delta');
+    const wholePage = renderIntent({ action: 'assert_text', value: 'invalid' }, elements);
+    expect(wholePage.ast.oracleScope).toBeUndefined();
+  });
+
+  it('never marks an absence assertion — what vanished is not in the delta', () => {
+    const rendered = renderIntent(
+      { action: 'assert_not_visible', target: { kind: 'description', description: 'the row' } },
+      elements,
+    );
+    expect(rendered.ast.oracleScope).toBeUndefined();
+  });
+});
