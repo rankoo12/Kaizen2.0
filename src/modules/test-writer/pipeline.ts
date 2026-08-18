@@ -574,6 +574,7 @@ async function runGenerationPhases(
       proposed: validation.proposed.length,
       validated: validation.proposed.filter((p) => p.validated).length,
       unvalidated: validation.proposed.filter((p) => !p.validated).length,
+      ...(validation.signinProbe ? { signinProbe: validation.signinProbe } : {}),
     },
     rejected: [...rejected, ...validation.rejected],
     harvest: validation.harvest,
