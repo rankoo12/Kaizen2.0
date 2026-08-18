@@ -61,7 +61,12 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
         // that the interactive-role query above never surfaces, so drag_and_drop
         // resolution otherwise falls back to the nearest link. Rare on non-drag
         // pages, so this adds negligible candidate noise elsewhere.
-        '[draggable="true"], [aria-grabbed], .ui-draggable, .ui-droppable, .ui-sortable, .ui-sortable > *',
+        '[draggable="true"], [aria-grabbed], .ui-draggable, .ui-droppable, .ui-sortable, .ui-sortable > *, ' +
+        // Figure images: the one kind of image a test hovers or clicks ON PURPOSE
+        // (a gallery tile, an avatar with a caption underneath). Narrow on
+        // purpose — every logo on the web is an <img>, and those are noise.
+        // the-internet's /hovers page had nothing citable without this.
+        'figure > img, .figure > img, figure > a > img',
       )) as HTMLElement[];
 
       const results: any[] = [];
@@ -104,6 +109,7 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
           if (tagName === 'button') role = 'button';
           else if (tagName === 'a') role = 'link';
           else if (tagName === 'select') role = 'combobox';
+          else if (tagName === 'img') role = 'img';
           else if (tagName === 'textarea') role = 'textbox';
           else if (tagName === 'input') {
             const t = (el.getAttribute('type') || 'text').toLowerCase();
@@ -193,6 +199,13 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
           el.classList.contains('ui-draggable') ||
           el.classList.contains('ui-droppable') ||
           el.classList.contains('ui-sortable');
+        // An image's name is its alt text — and when several figures share one
+        // alt ("User Avatar" ×3), the caption beside it tells them apart.
+        if (!accessibleName && tagName === 'img') {
+          const alt = (el.getAttribute('alt') || '').trim();
+          const caption = (el.parentElement?.querySelector('figcaption, .figcaption')?.textContent || '').replace(/\s+/g, ' ').trim();
+          accessibleName = caption ? `${alt || 'image'}: ${caption.slice(0, 40)}` : alt;
+        }
         if (!accessibleName && (tagName === 'button' || tagName === 'a' || isDragEl)) {
           accessibleName = textContent.substring(0, 80);
         }

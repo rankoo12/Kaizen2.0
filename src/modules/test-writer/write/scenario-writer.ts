@@ -232,6 +232,10 @@ export class ScenarioWriter {
     maxSteps: number;
     /** Widens the hard-block lexicon and re-reads synthetic consent (spec §6.5). */
     scope?: 'public' | 'authenticated';
+    /** Suite consent for throwaway records; with a public scope, softens "delete". */
+    syntheticDataConsent?: boolean;
+    /** Accounts the brief names — typed literally in sign-in tests. */
+    knownAccounts?: string[];
     /**
      * Set when this is a REWRITE after the quality judge: the judge's failed
      * dimensions and the steps it read. Every attempt of a rewrite runs on the
@@ -275,6 +279,7 @@ export class ScenarioWriter {
         tier,
         judgeFeedback: params.judgeFeedback,
         previousSteps: params.previousSteps,
+        knownAccounts: params.knownAccounts,
       }, params.tenantId);
 
       const gate = runSchemaGate(
@@ -338,6 +343,7 @@ export class ScenarioWriter {
         // Behind auth the proving run acts as a real, possibly admin, user —
         // the lexicon widens accordingly (spec §6.5).
         authenticated: params.scope === 'authenticated',
+        syntheticDataConsent: params.syntheticDataConsent,
       });
       if (safety.verdict === 'blocked') {
         this.obs.increment('testwriter.write_safety_block');

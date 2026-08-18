@@ -1,6 +1,6 @@
 import type {
   AppBrief, AppBriefInput, GeneratedScenario, JudgeInput, JudgeVerdict,
-  PageClassification, PageClassifyInput, PlanInput, PlannedScenario,
+  PageClassification, PageClassifyInput, PlanBatchInput, PlanInput, PlannedScenario,
   TenantBrief, WriteInput,
 } from '../../types/test-writer';
 
@@ -37,6 +37,13 @@ export interface ITestWriterGateway {
 
   /** The test plan: catalog instantiation + app-specific gap-fill. FRONTIER tier. */
   planScenarios(input: PlanInput, tenantId: string): Promise<PlannedScenario[]>;
+
+  /**
+   * Plan a BATCH of pages, each from its full dossier — the page as an engineer
+   * reads it. Returns scenarios with an expectedOutcome each. FRONTIER tier.
+   * Spec: docs/specs/test-writer/spec-planner-per-page.md §1.1
+   */
+  planPageBatch(input: PlanBatchInput, tenantId: string): Promise<PlannedScenario[]>;
 
   /**
    * One planned scenario → structured step intents referencing real element

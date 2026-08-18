@@ -78,9 +78,23 @@ const ACTING = new Set([
 export function classifyScenarioSafety(
   steps: StepIntent[],
   elements: Map<string, GroundingElement>,
-  opts: { safeMode: boolean; stopBeforeMoney: boolean; authenticated?: boolean },
+  opts: {
+    safeMode: boolean; stopBeforeMoney: boolean; authenticated?: boolean;
+    /**
+     * The suite has consented to throwaway records. Combined with a PUBLIC
+     * scope this changes what "delete" can mean: an anonymous visitor has no
+     * account and no session, so whatever a Delete control touches is demo
+     * data or something this very test created. Three of the-internet's forty
+     * pages exist to demonstrate Delete; under the flat rule none of them
+     * could ever have a test. Behind auth the flat rule stands — Delete on a
+     * signed-in page is the account's real data.
+     * Spec: docs/specs/test-writer/spec-planner-per-page.md §1.7
+     */
+    syntheticDataConsent?: boolean;
+  },
 ): SafetyDecision {
   let needsConsent: string | null = null;
+  const anonymousWithConsent = !opts.authenticated && opts.syntheticDataConsent === true;
   const hardBlock = opts.authenticated
     ? [...HARD_BLOCK, ...HARD_BLOCK_AUTHENTICATED]
     : HARD_BLOCK;
@@ -97,12 +111,13 @@ export function classifyScenarioSafety(
     const subject = `${label} ${'value' in step ? step.value ?? '' : ''}`;
 
     const blocked = matches(subject, hardBlock);
-    if (blocked && opts.safeMode) {
+    if (blocked && opts.safeMode && !(anonymousWithConsent && blocked === 'delete')) {
       return {
         verdict: 'blocked',
         reason: `step activates "${blocked}" — irreversible or costly actions are never generated`,
       };
     }
+    if (blocked === 'delete' && anonymousWithConsent) needsConsent ??= blocked;
     // A checkout scenario may walk TO payment; it may never press the button.
     if (blocked && opts.stopBeforeMoney) {
       return {

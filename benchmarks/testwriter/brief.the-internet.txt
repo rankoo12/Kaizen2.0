@@ -1,0 +1,64 @@
+PURPOSE
+the-internet is a QA practice site: ~40 independent demo pages, each isolating one
+browser behaviour (checkboxes, dropdowns, hovers, dynamic controls, alerts, tables,
+frames, new windows). It is not one product with a journey — treat each page as its
+own small feature and write tests that prove THAT page's behaviour. The home page is
+an index of links; it is navigation, not a subject.
+
+ROLES
+Anonymous visitor. One signed-in user on /login: username "tomsmith", password
+"SuperSecretPassword!".
+
+CRITICAL FLOWS
+- Sign in with valid credentials -> lands on /secure showing "You logged into a
+  secure area!"; the Logout button returns to /login showing "You logged out of the
+  secure area!".
+- /add_remove_elements/ — clicking "Add Element" creates a "Delete" button; clicking
+  Delete removes it. (Note the trailing slash: the URL without it returns 404.)
+- /checkboxes — checkbox 1 starts unchecked, checkbox 2 starts checked; check and
+  uncheck them.
+- /dropdown — select "Option 1" / "Option 2" from the dropdown list.
+- /dynamic_controls — "Remove" deletes the checkbox and shows "It's gone!"; "Add"
+  brings it back and shows "It's back". "Enable" enables the text field and shows
+  "It's enabled!".
+- /hovers — hovering an avatar reveals that user's caption and "View profile" link.
+- /inputs and /key_presses — type into the field; /key_presses reports the key pressed.
+- /javascript_alerts — each button writes its outcome into the result line under it.
+- /windows — "Click Here" opens a NEW TAB whose title is "New Window".
+- /tables and /sortable_data_tables — sorting by a column header reorders the rows.
+- /status_codes — each link leads to a page stating the status code it returned.
+- /redirector — "here" redirects to /status_codes.
+- /typos — a paragraph that intermittently contains a typo.
+- /broken_images — some images on the page fail to load.
+- /login negatives — a wrong username shows "Your username is invalid!", a wrong
+  password shows "Your password is invalid!", both in a flash message.
+
+BUSINESS RULES
+- Every demo page is reachable from the home page and is meant to be tested on its
+  own URL. Always navigate to the page under test first.
+- The footer link "Elemental Selenium" and the "Powered by" line appear on EVERY page.
+  They are site chrome, never the subject of a test.
+- Assertions must check what the action produced (the message, the new control, the
+  changed row) — not the button that produced it.
+
+PRIORITIES
+Prefer pages with a clear cause and effect: add_remove_elements, checkboxes, dropdown,
+dynamic_controls, hovers, login (positive and negatives), javascript_alerts, windows,
+status_codes, redirector, tables, inputs, key_presses, horizontal_slider,
+drag_and_drop, notification_message.
+
+CAUTIONS
+- /basic_auth and /digest_auth are behind the browser's own credential prompt, not a
+  form. Skip them until site credentials are configured.
+- /disappearing_elements, /shifting_content, /dynamic_content and /notification_message
+  change on purpose between loads. Do not assert on which element or message appears —
+  at most assert that the page still renders.
+- /entry_ad and /exit_intent pop modals on load or on mouse-exit; skip them.
+- /download and /upload involve files, which Kaizen cannot open or inspect. Skip.
+- /geolocation needs a browser permission prompt. Skip.
+- /infinite_scroll never ends; do not write a scroll-to-bottom test.
+- /dynamic_loading and /slow take several seconds — any test there needs an explicit
+  wait before its check.
+- Native alert/confirm/prompt dialogs are answered automatically, so their text cannot
+  be asserted. Assert the result line the page writes afterwards instead.
+- Nothing here is destructive and there is no real data — synthetic data consent is safe.

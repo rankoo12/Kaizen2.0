@@ -140,6 +140,17 @@ describe('walk — the diff that defines a delta', () => {
     expect(elements.map((e) => e.text)).toEqual(['two']);
   });
 
+  // the-internet /tables, run 3: "Sort table by column → nothing changed". A
+  // sort that works leaves the multiset of keys identical; the ORDER changed.
+  it('sees a reorder — the rows that moved are the delta', () => {
+    mountPage([el('a', 'Last Name'), el('td', 'Smith'), el('td', 'Bach'), el('td', 'Doe')]);
+    const { keys } = walk({ baseline: null, cap: 0 });
+
+    mountPage([el('a', 'Last Name'), el('td', 'Bach'), el('td', 'Doe'), el('td', 'Smith')]);
+    const { elements } = walk({ baseline: keys, cap: 40 });
+    expect(elements.map((e) => e.text)).toEqual(['Bach', 'Doe', 'Smith']);
+  });
+
   it('treats a second identical row as new (multiset, not membership)', () => {
     mountPage([el('li', 'Delete')]);
     const { keys } = walk({ baseline: null, cap: 0 });

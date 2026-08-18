@@ -104,6 +104,10 @@ export type WalkResult = { keys: string[]; elements: DeltaElement[] };
  *  - Identity is CONTENT, not node identity, so the diff survives a navigation:
  *    submitting a login form re-renders the same page plus a flash message, and
  *    only the flash comes back as new.
+ *  - A REORDER is a change too. Sorting a table leaves the multiset of keys
+ *    identical, so the first version of this reported "nothing changed" on a
+ *    sort that worked. When nothing was added, the ordered sequence is compared
+ *    position by position and the elements that moved become the delta.
  *
  * Exported for tests only: it runs in the BROWSER, so it must never reference
  * anything outside its own argument.
@@ -122,6 +126,8 @@ export function walk(arg: WalkArg): WalkResult {
   const all = root.querySelectorAll('*');
   const limit = Math.min(all.length, 2500);
   let index = 0;
+  // Every visible element in document order, for the reorder pass.
+  const ordered: Array<{ el: HTMLElement; key: string; own: string; value: string; interactive: boolean; tag: string }> = [];
 
   for (let i = 0; i < limit; i++) {
     const el = all[i] as HTMLElement;
@@ -149,6 +155,7 @@ export function walk(arg: WalkArg): WalkResult {
     const key = `${tag}|${el.getAttribute('role') ?? ''}|${own}|${el.getAttribute('href') ?? ''}|${value}`;
 
     if (!arg.baseline) { keys.push(key); continue; }
+    ordered.push({ el, key, own, value, interactive, tag });
 
     seen[key] = (seen[key] ?? 0) + 1;
     if (seen[key] <= (before[key] ?? 0)) continue;
@@ -156,18 +163,37 @@ export function walk(arg: WalkArg): WalkResult {
     const marker = `kz-d-${index++}`;
     el.setAttribute('data-kz-delta', marker);
     if (elements.length >= arg.cap) continue;
+    elements.push(describe(el, marker, own, value, interactive, tag));
+  }
+
+  // Nothing appeared, nothing's text changed — but did anything MOVE? A sort
+  // that works is exactly this case. Compare the sequence position by position
+  // against the baseline; the elements that sit at a different key than before
+  // are the delta. Only meaningful when the two sequences are the same length —
+  // an insertion would already have shown up above.
+  if (arg.baseline && elements.length === 0 && ordered.length === arg.baseline.length) {
+    for (let i = 0; i < ordered.length; i++) {
+      if (ordered[i].key === arg.baseline[i]) continue;
+      const o = ordered[i];
+      const marker = `kz-d-${index++}`;
+      o.el.setAttribute('data-kz-delta', marker);
+      if (elements.length < arg.cap) elements.push(describe(o.el, marker, o.own, o.value, o.interactive, o.tag));
+    }
+  }
+
+  return { keys, elements };
+
+  function describe(el: HTMLElement, marker: string, own: string, value: string, interactive: boolean, tag: string): DeltaElement {
     const name = el.getAttribute('aria-label') || el.getAttribute('placeholder')
       || el.getAttribute('title') || own || value || el.getAttribute('name') || '';
-    elements.push({
+    return {
       marker,
       role: el.getAttribute('role') ?? tag,
       name: String(name).replace(/\s+/g, ' ').trim().slice(0, 120),
       text: own,
       interactive,
-    });
+    };
   }
-
-  return { keys, elements };
 }
 
 /**

@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import type { PoolClient } from 'pg';
 import { withTenantTransaction } from '../../db/transaction';
 import type { PageCapture } from './interfaces';
-import type { AppBrief, GroundingElement, Journey } from '../../types/test-writer';
+import type { AppBrief, GroundingElement, Journey, PageDossier } from '../../types/test-writer';
 import { deriveName } from './recon/derived-name';
 
 /**
@@ -509,6 +509,86 @@ export class SiteModelRepository {
         [tenantId, suiteId],
       );
       return new Map(rows.map((r) => [r.url_normalized, r.url_observed as string]));
+    });
+  }
+
+  /**
+   * The pages as an engineer would read them, for the planner. One query per
+   * suite: elements come with the chrome flag so nav/footer can be dropped
+   * (chrome is context, never a subject), forms and text ride from ax_outline
+   * and page_text, and the URL is the NAVIGABLE one.
+   * Spec: docs/specs/test-writer/spec-planner-per-page.md §1.1
+   */
+  async listPageDossiers(
+    tenantId: string, suiteId: string, perPageElementCap = 30,
+  ): Promise<PageDossier[]> {
+    return withTenantTransaction(tenantId, async (client) => {
+      const { rows: pages } = await client.query<{
+        id: string; url_normalized: string; url_observed: string | null; title: string | null;
+        headings: string[] | null; page_text: string | null; purpose: string | null;
+        capabilities: string[] | null; requires_auth: boolean;
+        ax_outline: UnclassifiedPage['axOutline'];
+      }>(
+        `SELECT id, url_normalized, url_observed, title, headings, page_text, purpose,
+                capabilities, requires_auth, ax_outline
+         FROM site_pages
+         WHERE tenant_id = $1 AND suite_id = $2
+         ORDER BY first_seen_at`,
+        [tenantId, suiteId],
+      );
+      if (pages.length === 0) return [];
+
+      // Same chrome rule as getGroundingElements: role+name on >= 60% of pages.
+      const { rows: elements } = await client.query<{
+        page_id: string; role: string; name: string; kind: string; target: string | null; chrome: boolean;
+      }>(
+        `WITH crawled AS (
+           SELECT count(*)::numeric AS n FROM site_pages WHERE tenant_id = $1 AND suite_id = $2
+         ),
+         site_wide AS (
+           SELECT pe.role, pe.name
+           FROM page_elements pe JOIN site_pages sp ON sp.id = pe.page_id
+           WHERE pe.tenant_id = $1 AND sp.suite_id = $2 AND pe.name <> ''
+           GROUP BY pe.role, pe.name
+           HAVING (SELECT n FROM crawled) >= 5
+              AND count(DISTINCT pe.page_id) >= 0.6 * (SELECT n FROM crawled)
+         )
+         SELECT pe.page_id, pe.role, pe.name, pe.kind, pe.attributes->>'target' AS target,
+                (sw.name IS NOT NULL) AS chrome
+         FROM page_elements pe
+         JOIN site_pages sp ON sp.id = pe.page_id
+         LEFT JOIN site_wide sw ON sw.role = pe.role AND sw.name = pe.name
+         WHERE pe.tenant_id = $1 AND sp.suite_id = $2 AND pe.name <> '' AND pe.kind <> 'form'
+         ORDER BY pe.page_id, pe.kind, pe.name`,
+        [tenantId, suiteId],
+      );
+      const byPage = new Map<string, PageDossier['elements']>();
+      for (const el of elements) {
+        if (el.chrome) continue;
+        const list = byPage.get(el.page_id) ?? [];
+        if (list.length >= perPageElementCap) continue;
+        list.push({
+          role: el.role, name: el.name, kind: el.kind,
+          ...(el.target === '_blank' ? { opensNewTab: true } : {}),
+        });
+        byPage.set(el.page_id, list);
+      }
+
+      // Blocked captures are never stored (see upsertPage), so every row here is
+      // a page the crawl actually read.
+      return pages
+        .map((p) => ({
+          url: p.url_observed ?? p.url_normalized,
+          urlNormalized: p.url_normalized,
+          title: p.title ?? '',
+          headings: Array.isArray(p.headings) ? p.headings.slice(0, 6) : [],
+          pageText: (p.page_text ?? '').slice(0, 300),
+          purpose: p.purpose ?? '',
+          capabilities: Array.isArray(p.capabilities) ? p.capabilities : [],
+          elements: byPage.get(p.id) ?? [],
+          forms: formSummaryLines(p.ax_outline),
+          requiresAuth: p.requires_auth,
+        }));
     });
   }
 

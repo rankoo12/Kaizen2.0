@@ -13,11 +13,12 @@ import { normalizeUrl } from './recon/url-normalizer';
 import { SiteModelRepository } from './site-model.repository';
 import { PageClassifier } from './comprehend/classifier';
 import { AppBriefSynthesizer } from './comprehend/synthesizer';
-import { TestPlanner } from './plan/test-planner';
+import { TestPlanner, type PlanLedger } from './plan/test-planner';
+import { knownAccounts } from './plan/dossier';
 import { ScenarioWriter, type WrittenScenario } from './write/scenario-writer';
 import { dedupeScenarios } from './write/dedup';
 import { judgeWithRepair } from './write/judge-round';
-import { ValidationRunner } from './validate/validation-runner';
+import { ValidationRunner, type ValidationOutcome } from './validate/validation-runner';
 import { withSigninWitness } from './validate/signin-witness';
 import { FORM_DATA_TOKENS } from '../test-data/generate';
 import { LearnedCompiler } from '../test-compiler/learned.compiler';
@@ -216,22 +217,37 @@ export async function runTestWriterJob(
     const consent = await loadSuiteConsent(payload.tenantId, payload.suiteId);
     const existingCaseNames = await loadExistingCaseNames(payload.tenantId, payload.suiteId);
 
-    const plan = await deps.planner.plan({
-      tenantId: payload.tenantId,
-      appBrief: synthesis.brief,
-      tenantBrief,
-      pages,
-      existingCaseNames,
-      scope: payload.scope,
-      syntheticDataConsent: consent,
-      maxScenarios: payload.options.maxScenarios,
-      focusUrl,
-    });
+    // A whole-app analyze plans PER PAGE, from each page's dossier — the page as
+    // an engineer reads it. Scoped Suggest is one page and keeps the focused
+    // planner. Spec: docs/specs/test-writer/spec-planner-per-page.md §1
+    const plan = focusUrl
+      ? await deps.planner.plan({
+          tenantId: payload.tenantId,
+          appBrief: synthesis.brief,
+          tenantBrief,
+          pages,
+          existingCaseNames,
+          scope: payload.scope,
+          syntheticDataConsent: consent,
+          maxScenarios: payload.options.maxScenarios,
+          focusUrl,
+        })
+      : await deps.planner.planPages({
+          tenantId: payload.tenantId,
+          appSummary: `${synthesis.brief.appType}: ${synthesis.brief.summary}`,
+          tenantBrief,
+          pages: await deps.repository.listPageDossiers(payload.tenantId, payload.suiteId),
+          existingCaseNames,
+          scope: payload.scope,
+          syntheticDataConsent: consent,
+          maxScenarios: payload.options.maxScenarios,
+        });
 
     const report = {
       recon,
       findings: await earlyFindings(),
       comprehend: {
+        appSummary: `${synthesis.brief.appType}: ${synthesis.brief.summary}`,
         pagesClassified: classification.classified,
         pagesReusedFromCache: classification.skipped,
         classificationFailures: classification.failed,
@@ -244,6 +260,10 @@ export async function runTestWriterJob(
         scenariosPlanned: plan.scenarios.length,
         fromCatalog: plan.catalogCount,
         fromLlm: plan.llmCount,
+        fromRepertoire: plan.repertoireCount ?? 0,
+        pagesPlannedFor: plan.pagesPlannedFor ?? null,
+        pagesExcludedByBrief: plan.pagesExcludedByBrief ?? [],
+        pagesSkippedAsIndex: plan.pagesSkippedAsIndex ?? [],
         dropped: plan.dropped,
       },
     };
@@ -407,6 +427,8 @@ async function runGenerationPhases(
   }
 
   const consent = await loadSuiteConsent(payload.tenantId, payload.suiteId);
+  // Credentials the brief names — a sign-in test types these, not a seed token.
+  const accounts = knownAccounts(await loadTenantBrief(payload.tenantId, payload.suiteId));
   const rejected: ScenarioRejection[] = [];
   const written: WrittenScenario[] = [];
   const writeParamsByRef = new Map<string, Parameters<ScenarioWriter['write']>[0]>();
@@ -419,86 +441,7 @@ async function runGenerationPhases(
   const navigable = await deps.repository.getNavigableUrls(payload.tenantId, payload.suiteId);
   const navigableUrl = (url: string): string => navigable.get(url) ?? url;
 
-  // ── WRITE (sequential: each call is small, and ordering keeps the report readable)
-  for (const plan of approved) {
-    // Sensitive pages are readable knowledge for COMPREHEND but are never
-    // writable targets: nothing can be generated against elements that are
-    // never handed to WRITE, which is cheaper and stronger than filtering the
-    // step that would have used them. Spec §6.5.
-    const targetPages = job.scope === 'authenticated'
-      ? plan.targetPages.filter((u) => sensitiveTier(u) === null)
-      : plan.targetPages;
-    if (targetPages.length === 0) {
-      rejected.push({
-        name: plan.name, stage: 'safety',
-        reason: 'targets only settings/billing-class pages, which Kaizen will not write tests against',
-      });
-      continue;
-    }
-
-    const grounding = await deps.repository.getGroundingElements(
-      payload.tenantId, payload.suiteId, targetPages,
-    );
-    // A page with no controls is not an untestable page. the-internet's 404,
-    // javascript_error and nested_frames pages carry nothing clickable and were
-    // all rejected here — while "navigate there and verify the text 'Not Found'
-    // is shown" is exactly the test a QA engineer writes for them.
-    // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
-    const pageText = await deps.repository.getPageTexts(
-      payload.tenantId, payload.suiteId, targetPages,
-    );
-    if (grounding.length === 0 && pageText.length === 0) {
-      rejected.push({
-        name: plan.name, stage: 'schema',
-        reason: 'the target pages have neither observed elements nor readable text',
-      });
-      continue;
-    }
-    const formSummaries = await deps.repository.getFormSummaries(
-      payload.tenantId, payload.suiteId, targetPages,
-    );
-
-    const writeParams = {
-      tenantId: payload.tenantId,
-      // Identity did its job — grounding, forms and text were all fetched by the
-      // normalized URLs. From here on the plan is about NAVIGATION, so it
-      // carries the URLs the site actually serves.
-      plan: { ...plan, targetPages: targetPages.map(navigableUrl) },
-      // Same reason: the element list tells the model which page each control is
-      // on, and that url must be the one it can navigate to.
-      grounding: grounding.map((g) => ({ ...g, pageUrl: navigableUrl(g.pageUrl) })),
-      formSummaries,
-      // ONLY when there is nothing to click. Offered alongside a full element
-      // list it became an escape hatch: the-internet run 2 answered twelve
-      // different plans with "navigate to the home page, verify the text
-      // 'Welcome to the-internet' is shown", and dedup ate eleven of them.
-      // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2.2
-      pageText: grounding.length === 0 ? pageText : [],
-      pagePath: targetPages.map(navigableUrl),
-      seedTokens: [...FORM_DATA_TOKENS],
-      steeringNotes: job.plan_notes,
-      safeMode: payload.options.safeMode,
-      maxSteps: 10,
-      scope: job.scope,
-    };
-    const outcome = await deps.writer.write(writeParams);
-
-    if (outcome.ok) {
-      written.push(outcome.scenario);
-      // Kept so a judge rewrite can re-run WRITE with the same grounding.
-      writeParamsByRef.set(plan.name, writeParams);
-    }
-    else {
-      rejected.push({
-        name: plan.name, stage: outcome.failure.stage, reason: outcome.failure.reason,
-        ...(outcome.failure.steps?.length ? { steps: outcome.failure.steps } : {}),
-      });
-    }
-    await progress({
-      phase: 'write', scenariosWritten: written.length, scenariosTotal: approved.length,
-    });
-  }
-
+  // The sign-in prefix, once: dedup ignores it and every proving run carries it.
   // ── DEDUP (kind-aware, against each other and the suite's existing cases)
   // Loaded before dedup rather than at VALIDATE, because dedup needs to know
   // which leading steps are sign-in boilerplate in order to ignore them.
@@ -518,77 +461,229 @@ async function runGenerationPhases(
       deps.obs.log('info', 'testwriter.signin_witness', { jobId: payload.jobId, witness: signinWitness });
     }
   }
-  const existing = await loadExistingCaseSteps(
-    payload.tenantId, payload.suiteId, (loginPrefixSteps ?? []).map((s) => s.rawText),
-  );
-  const dedup = dedupeScenarios(
-    written.map((w) => ({
-      planRef: w.plan.name, kind: w.kind, name: w.name, steps: w.steps.map((s) => s.text),
-    })),
-    existing,
-  );
-  const stepsByRef = new Map(written.map((w) => [w.plan.name, w.steps.map((s) => s.text)]));
-  for (const drop of dedup.dropped) {
-    rejected.push({
-      name: drop.name, stage: 'dedup', reason: `duplicate of "${drop.duplicateOf}"`,
-      steps: stepsByRef.get(drop.planRef),
-    });
-  }
-  const keptRefs = new Set(dedup.kept.map((k) => k.planRef));
-  const deduped = written.filter((w) => keptRefs.has(w.plan.name));
 
-  // ── JUDGE (batched, with one repair round — the value filter VALIDATE
-  // cannot provide, now able to fix an oracle rather than only delete it).
-  // Spec: docs/specs/test-writer/spec-judge-repair-loop.md §2.2
-  const judged = await judgeWithRepair(deduped, {
-    judge: (batch) => deps.gateway.judgeScenarios({
-      scenarios: batch.map((w) => ({
-        planRef: w.plan.name, name: w.name, kind: w.kind,
-        steps: w.steps.map((s) => s.text), rationale: w.rationale,
-        // What was approved, next to what was written — the judge cannot ask
-        // "is this the test the plan promised?" without it.
-        // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
-        outline: w.plan.outline, targetPages: w.plan.targetPages,
-      })),
-      lintFindings: Object.fromEntries(batch.map((w) => [w.plan.name, w.lintFindings])),
-    }, payload.tenantId),
-    rewrite: (w, feedback) => {
-      const base = writeParamsByRef.get(w.plan.name);
-      if (!base) return Promise.resolve({ ok: false, failure: { plan: w.plan, stage: 'schema', reason: 'no write context' } });
-      return deps.writer.write({
-        ...base,
-        judgeFeedback: feedback,
-        previousSteps: w.steps.map((s) => s.text),
+  // ── One ROUND: WRITE → DEDUP → JUDGE → VALIDATE for a set of plans. Round 1
+  // is the approved plan; a fill round is what the planner adds for the pages
+  // that still have material, so that asking for 30 means 30 and not 'however
+  // many survived'. Spec: docs/specs/test-writer/spec-planner-per-page.md §1.5
+  const runRound = async (approved: PlannedScenario[], roundNo: number) => {
+    const roundWritten: WrittenScenario[] = [];
+    // ── WRITE (sequential: each call is small, and ordering keeps the report readable)
+    for (const plan of approved) {
+      // Sensitive pages are readable knowledge for COMPREHEND but are never
+      // writable targets: nothing can be generated against elements that are
+      // never handed to WRITE, which is cheaper and stronger than filtering the
+      // step that would have used them. Spec §6.5.
+      const targetPages = job.scope === 'authenticated'
+        ? plan.targetPages.filter((u) => sensitiveTier(u) === null)
+        : plan.targetPages;
+      if (targetPages.length === 0) {
+        rejected.push({
+          name: plan.name, stage: 'safety',
+          reason: 'targets only settings/billing-class pages, which Kaizen will not write tests against',
+        });
+        continue;
+      }
+
+      const grounding = await deps.repository.getGroundingElements(
+        payload.tenantId, payload.suiteId, targetPages,
+      );
+      // A page with no controls is not an untestable page. the-internet's 404,
+      // javascript_error and nested_frames pages carry nothing clickable and were
+      // all rejected here — while "navigate there and verify the text 'Not Found'
+      // is shown" is exactly the test a QA engineer writes for them.
+      // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+      const pageText = await deps.repository.getPageTexts(
+        payload.tenantId, payload.suiteId, targetPages,
+      );
+      if (grounding.length === 0 && pageText.length === 0) {
+        rejected.push({
+          name: plan.name, stage: 'schema',
+          reason: 'the target pages have neither observed elements nor readable text',
+        });
+        continue;
+      }
+      const formSummaries = await deps.repository.getFormSummaries(
+        payload.tenantId, payload.suiteId, targetPages,
+      );
+
+      const writeParams = {
+        tenantId: payload.tenantId,
+        // Identity did its job — grounding, forms and text were all fetched by the
+        // normalized URLs. From here on the plan is about NAVIGATION, so it
+        // carries the URLs the site actually serves.
+        plan: { ...plan, targetPages: targetPages.map(navigableUrl) },
+        // Same reason: the element list tells the model which page each control is
+        // on, and that url must be the one it can navigate to.
+        grounding: grounding.map((g) => ({ ...g, pageUrl: navigableUrl(g.pageUrl) })),
+        formSummaries,
+        // ONLY when there is nothing to click. Offered alongside a full element
+        // list it became an escape hatch: the-internet run 2 answered twelve
+        // different plans with "navigate to the home page, verify the text
+        // 'Welcome to the-internet' is shown", and dedup ate eleven of them.
+        // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2.2
+        pageText: grounding.length === 0 ? pageText : [],
+        pagePath: targetPages.map(navigableUrl),
+        seedTokens: [...FORM_DATA_TOKENS],
+        steeringNotes: job.plan_notes,
+        safeMode: payload.options.safeMode,
+        maxSteps: 10,
+        scope: job.scope,
+        syntheticDataConsent: consent,
+        knownAccounts: accounts,
+      };
+      const outcome = await deps.writer.write(writeParams);
+
+      if (outcome.ok) {
+        written.push(outcome.scenario);
+        roundWritten.push(outcome.scenario);
+        // Kept so a judge rewrite can re-run WRITE with the same grounding.
+        writeParamsByRef.set(plan.name, writeParams);
+      }
+      else {
+        rejected.push({
+          name: plan.name, stage: outcome.failure.stage, reason: outcome.failure.reason,
+          ...(outcome.failure.steps?.length ? { steps: outcome.failure.steps } : {}),
+        });
+      }
+      await progress({
+        phase: 'write', scenariosWritten: written.length, scenariosTotal: written.length + (approved.length - roundWritten.length),
       });
-    },
-    obs: deps.obs,
-  });
-  const survivors = judged.survivors;
-  rejected.push(...judged.rejected);
+    }
 
-  // ── VALIDATE
-  await progress({
-    phase: 'validate', validationRunsDone: 0, validationRunsTotal: survivors.length,
-  });
-  const validation = await deps.validator.validateAll({
-    tenantId: payload.tenantId,
-    suiteId: payload.suiteId,
-    jobId: payload.jobId,
-    baseUrl: job.target_url,
-    scenarios: survivors,
-    syntheticDataConsent: consent,
-    validate: payload.options.validate,
-    // Authenticated drafts are self-contained: the sign-in steps ride along so
-    // each proving run signs in for itself, from a cold browser (spec §6.2, §7).
-    loginPrefix: loginPrefixSteps,
-    // Whether the recipe's own final assertion can actually witness a session.
-    // Fail-closed on the LABEL, not the work: a recipe that verifies something
-    // visible to signed-out visitors still runs, but nothing it carries may be
-    // called proven (spec-validation-trust §5).
-    signinAssertionProves: loginPrefixSteps
-      ? await signinAssertionIsPrivate(payload.tenantId, payload.suiteId, loginPrefixSteps, deps)
-      : true,
-  });
+    const existing = await loadExistingCaseSteps(
+      payload.tenantId, payload.suiteId, (loginPrefixSteps ?? []).map((s) => s.rawText),
+    );
+    const dedup = dedupeScenarios(
+      roundWritten.map((w) => ({
+        planRef: w.plan.name, kind: w.kind, name: w.name, steps: w.steps.map((s) => s.text),
+      })),
+      existing,
+    );
+    const stepsByRef = new Map(roundWritten.map((w) => [w.plan.name, w.steps.map((s) => s.text)]));
+    for (const drop of dedup.dropped) {
+      rejected.push({
+        name: drop.name, stage: 'dedup', reason: `duplicate of "${drop.duplicateOf}"`,
+        steps: stepsByRef.get(drop.planRef),
+      });
+    }
+    const keptRefs = new Set(dedup.kept.map((k) => k.planRef));
+    const deduped = roundWritten.filter((w) => keptRefs.has(w.plan.name));
+
+    // ── JUDGE (batched, with one repair round — the value filter VALIDATE
+    // cannot provide, now able to fix an oracle rather than only delete it).
+    // Spec: docs/specs/test-writer/spec-judge-repair-loop.md §2.2
+    const judged = await judgeWithRepair(deduped, {
+      judge: (batch) => deps.gateway.judgeScenarios({
+        scenarios: batch.map((w) => ({
+          planRef: w.plan.name, name: w.name, kind: w.kind,
+          steps: w.steps.map((s) => s.text), rationale: w.rationale,
+          // What was approved, next to what was written — the judge cannot ask
+          // "is this the test the plan promised?" without it.
+          // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
+          outline: w.plan.outline, expectedOutcome: w.plan.expectedOutcome, targetPages: w.plan.targetPages,
+        })),
+        lintFindings: Object.fromEntries(batch.map((w) => [w.plan.name, w.lintFindings])),
+      }, payload.tenantId),
+      rewrite: (w, feedback) => {
+        const base = writeParamsByRef.get(w.plan.name);
+        if (!base) return Promise.resolve({ ok: false, failure: { plan: w.plan, stage: 'schema', reason: 'no write context' } });
+        return deps.writer.write({
+          ...base,
+          judgeFeedback: feedback,
+          previousSteps: w.steps.map((s) => s.text),
+        });
+      },
+      obs: deps.obs,
+    });
+    const survivors = judged.survivors;
+    rejected.push(...judged.rejected);
+
+    // ── VALIDATE
+    await progress({
+      phase: 'validate', validationRunsDone: 0, validationRunsTotal: survivors.length,
+    });
+    const validation = await deps.validator.validateAll({
+      tenantId: payload.tenantId,
+      suiteId: payload.suiteId,
+      jobId: payload.jobId,
+      baseUrl: job.target_url,
+      scenarios: survivors,
+      syntheticDataConsent: consent,
+      validate: payload.options.validate,
+      // Authenticated drafts are self-contained: the sign-in steps ride along so
+      // each proving run signs in for itself, from a cold browser (spec §6.2, §7).
+      loginPrefix: loginPrefixSteps,
+      // Whether the recipe's own final assertion can actually witness a session.
+      // Fail-closed on the LABEL, not the work: a recipe that verifies something
+      // visible to signed-out visitors still runs, but nothing it carries may be
+      // called proven (spec-validation-trust §5).
+      signinAssertionProves: loginPrefixSteps
+        ? await signinAssertionIsPrivate(payload.tenantId, payload.suiteId, loginPrefixSteps, deps)
+        : true,
+    });
+
+    return { written: roundWritten, dedup, judged, survivors, validation, roundNo, attempted: approved.length };
+  };
+
+  // ── ROUNDS. The requested count is a target, not a ceiling on effort: after
+  // round one, if fewer were delivered than asked and pages still hold unspent
+  // material, plan again for those pages only, telling the planner what already
+  // exists and what already failed. At most two fill rounds; then say honestly
+  // what fell short and why.
+  const requested = payload.options.maxScenarios;
+  const rounds: Array<Awaited<ReturnType<typeof runRound>>> = [];
+  let plans = approved;
+  let ledgerFill: { pages: number; shortfallReason: string | null } = { pages: 0, shortfallReason: null };
+  for (let roundNo = 1; roundNo <= 3; roundNo++) {
+    rounds.push(await runRound(plans, roundNo));
+    const delivered = rounds.reduce((n, r) => n + r.validation.proposed.length, 0);
+    if (delivered >= requested) break;
+    if (focusUrlOf(payload) || roundNo === 3) {
+      ledgerFill.shortfallReason = roundNo === 3 ? 'two fill rounds ran; the remaining pages produced nothing further' : null;
+      break;
+    }
+    const ledger = await buildLedger(payload, deps, rounds);
+    if (ledger.length === 0) {
+      ledgerFill.shortfallReason = 'every crawled page has been planned to the depth it supports';
+      break;
+    }
+    const fill = await deps.planner.planPages({
+      tenantId: payload.tenantId,
+      appSummary: String((job.report as { comprehend?: { appSummary?: string } } | null)?.comprehend?.appSummary ?? ''),
+      tenantBrief: await loadTenantBrief(payload.tenantId, payload.suiteId),
+      pages: await deps.repository.listPageDossiers(payload.tenantId, payload.suiteId),
+      existingCaseNames: await loadExistingCaseNames(payload.tenantId, payload.suiteId),
+      scope: payload.scope,
+      syntheticDataConsent: consent,
+      maxScenarios: requested - delivered,
+      ledger,
+    });
+    if (fill.scenarios.length === 0) {
+      ledgerFill.shortfallReason = 'the planner found nothing more worth testing on the remaining pages';
+      break;
+    }
+    ledgerFill.pages = ledger.length;
+    deps.obs.increment('testwriter.fill_round', { round: String(roundNo + 1) });
+    plans = fill.scenarios.map((s) => ({ ...s, round: roundNo + 1 }));
+    // The plan on the job row is what the UI lists and what a reviewer sees:
+    // fill-round scenarios join it, marked with their round.
+    await tenantQuery(
+      payload.tenantId,
+      `UPDATE generation_jobs
+          SET test_plan = jsonb_set(COALESCE(test_plan, '{}'::jsonb), '{scenarios}',
+                COALESCE(test_plan->'scenarios', '[]'::jsonb) || $2::jsonb)
+        WHERE id = $1`,
+      [payload.jobId, JSON.stringify(plans)],
+    );
+  }
+  const validation = mergeValidation(rounds.map((r) => r.validation));
+  const dedupDropped = rounds.reduce((n, r) => n + r.dedup.dropped.length, 0);
+  const judgedCount = rounds.reduce((n, r) => n + r.judged.survivors.length + r.judged.rejected.length, 0);
+  const repairAttempted = rounds.reduce((n, r) => n + r.judged.repairAttempted, 0);
+  const repaired = rounds.reduce((n, r) => n + r.judged.repaired, 0);
+  const survivorsCount = rounds.reduce((n, r) => n + r.survivors.length, 0);
+  const attempted = rounds.reduce((n, r) => n + r.attempted, 0);
 
   // What Kaizen noticed that is not a test. Assembled last so it can draw on
   // everything the job saw — the crawl's error pages, the site model's unnamed
@@ -608,13 +703,16 @@ async function runGenerationPhases(
     ...(job.report ?? {}),
     findings,
     write: {
-      attempted: approved.length,
+      attempted,
       written: written.length,
-      deduped: dedup.dropped.length,
-      judged: deduped.length,
-      judgeRepairAttempted: judged.repairAttempted,
-      judgeRepaired: judged.repaired,
-      survivedJudge: survivors.length,
+      deduped: dedupDropped,
+      judged: judgedCount,
+      judgeRepairAttempted: repairAttempted,
+      judgeRepaired: repaired,
+      survivedJudge: survivorsCount,
+      rounds: rounds.length,
+      fillPages: ledgerFill.pages,
+      shortfallReason: validation.proposed.length < requested ? ledgerFill.shortfallReason : null,
     },
     validate: {
       proposed: validation.proposed.length,
@@ -810,4 +908,59 @@ async function finishJob(
      WHERE id = $1`,
     [jobId, status, withUsage ? JSON.stringify(withUsage) : null, error],
   );
+}
+
+// ─── fill-round helpers ───────────────────────────────────────────────────────
+
+function focusUrlOf(payload: TestWriterJobPayload): string | undefined {
+  return payload.options.focusUrl;
+}
+
+/**
+ * Per page: what was delivered and what was rejected (with reasons), for the
+ * pages that still have material — page-specific controls, and fewer than two
+ * delivered tests. Everything else is done. Spec: spec-planner-per-page.md §1.5
+ */
+async function buildLedger(
+  payload: TestWriterJobPayload,
+  deps: TestWriterPipelineDeps,
+  rounds: Array<{ validation: ValidationOutcome; written: WrittenScenario[] }>,
+): Promise<PlanLedger> {
+  const dossiers = await deps.repository.listPageDossiers(payload.tenantId, payload.suiteId);
+  const pageOfPlan = new Map<string, string>();
+  for (const r of rounds) for (const w of r.written) pageOfPlan.set(w.plan.name, w.plan.targetPages[0]);
+  const delivered = new Map<string, string[]>();
+  const rejected = new Map<string, Array<{ name: string; reason: string }>>();
+  for (const r of rounds) {
+    for (const p of r.validation.proposed) {
+      const page = pageOfPlan.get(p.name) ?? '';
+      delivered.set(page, [...(delivered.get(page) ?? []), p.name]);
+    }
+    for (const x of r.validation.rejected) {
+      const page = pageOfPlan.get(x.name) ?? '';
+      rejected.set(page, [...(rejected.get(page) ?? []), { name: x.name, reason: x.reason.slice(0, 160) }]);
+    }
+  }
+  return dossiers
+    .filter((d) => d.elements.length > 0 && (delivered.get(d.urlNormalized)?.length ?? 0) < 2)
+    .map((d) => ({
+      page: d.urlNormalized,
+      delivered: delivered.get(d.urlNormalized) ?? [],
+      rejected: rejected.get(d.urlNormalized) ?? [],
+    }));
+}
+
+function mergeValidation(all: ValidationOutcome[]): ValidationOutcome {
+  const out: ValidationOutcome = {
+    proposed: [], rejected: [], harvest: {}, auditFindings: {}, findings: [],
+  };
+  for (const v of all) {
+    out.proposed.push(...v.proposed);
+    out.rejected.push(...v.rejected);
+    Object.assign(out.harvest, v.harvest);
+    Object.assign(out.auditFindings, v.auditFindings);
+    out.findings.push(...v.findings);
+    if (v.signinProbe && !out.signinProbe) out.signinProbe = v.signinProbe;
+  }
+  return out;
 }
