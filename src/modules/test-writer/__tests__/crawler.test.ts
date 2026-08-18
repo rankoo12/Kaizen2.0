@@ -112,6 +112,31 @@ describe('ReconCrawler', () => {
     expect(stack.context.close).toHaveBeenCalled();
   });
 
+  // the-internet, 2026-08-18: /add_remove_elements/ answers 200 and
+  // /add_remove_elements answers 404. We normalised the trailing slash away and
+  // then NAVIGATED to the normalised form — losing the page and filing the
+  // site's own link as broken.
+  // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §4
+  it('follows the link the site actually wrote, trailing slash and all', async () => {
+    const site: SiteFixture = {
+      'https://a.com/': { anchors: [{ href: '/things/', text: 'Things' }] },
+      // Only the slashed form exists; the stripped form is a 404.
+      'https://a.com/things/': { anchors: [] },
+    };
+    const { crawler } = makeCrawler(site);
+
+    const captures: PageCapture[] = [];
+    const report = await crawler.crawl(params(10), async (c) => { captures.push(c); });
+
+    expect(report.pagesCrawled).toBe(2);
+    expect(report.errorPages).toEqual([]);
+    const page = captures.find((c) => c.urlNormalized === 'https://a.com/things');
+    // Identity stays normalised; navigation keeps what the site served.
+    expect(page).toBeDefined();
+    expect(page?.urlObserved).toBe('https://a.com/things/');
+    expect(captures[0].outgoingLinks[0].hrefObserved).toBe('https://a.com/things/');
+  });
+
   it('records robots-disallowed pages as blocked without visiting them', async () => {
     const site: SiteFixture = {
       'https://a.com/': { anchors: [{ href: '/blocked', text: 'Admin' }] },

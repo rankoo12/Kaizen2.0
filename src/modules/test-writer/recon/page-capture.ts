@@ -144,7 +144,15 @@ export async function captureLinks(
     if (!normalized || !isSameOrigin(normalized, rootOrigin)) continue;
     if (seen.has(normalized)) continue;
     seen.add(normalized);
-    links.push({ toUrlNormalized: normalized, viaElementName: a.text });
+    // Absolute, fragment-free, otherwise exactly as written. The crawler
+    // follows THIS; url_normalized is only ever the identity.
+    let hrefObserved: string | undefined;
+    try {
+      const resolved = new URL(a.href, pageUrl);
+      resolved.hash = '';
+      hrefObserved = resolved.toString();
+    } catch { /* normalizeHref already succeeded, so this is unreachable in practice */ }
+    links.push({ toUrlNormalized: normalized, viaElementName: a.text, hrefObserved });
   }
   return links;
 }

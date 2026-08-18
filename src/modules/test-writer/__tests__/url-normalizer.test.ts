@@ -1,4 +1,4 @@
-import { normalizeUrl, normalizeHref, isSameOrigin, pathOf } from '../recon/url-normalizer';
+import { normalizeUrl, normalizeHref, isSameOrigin, pathOf, stripFragment } from '../recon/url-normalizer';
 
 describe('normalizeUrl', () => {
   it('drops query string and fragment', () => {
@@ -43,5 +43,21 @@ describe('isSameOrigin / pathOf', () => {
 
   it('extracts the pathname', () => {
     expect(pathOf('https://a.com/admin/users')).toBe('/admin/users');
+  });
+});
+
+describe('stripFragment', () => {
+  /**
+   * Normalisation is for IDENTITY. Anything that navigates uses this instead —
+   * /add_remove_elements/ is 200 and /add_remove_elements is 404.
+   * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §4
+   */
+  it('keeps the trailing slash and the query, and drops only the fragment', () => {
+    expect(stripFragment('https://a.com/things/#top')).toBe('https://a.com/things/');
+    expect(stripFragment('https://a.com/search?q=hat#results')).toBe('https://a.com/search?q=hat');
+  });
+
+  it('hands back anything it cannot parse, unchanged', () => {
+    expect(stripFragment('not a url')).toBe('not a url');
   });
 });

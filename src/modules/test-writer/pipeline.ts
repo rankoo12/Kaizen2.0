@@ -413,6 +413,12 @@ async function runGenerationPhases(
   const progress = makeProgressWriter(payload.tenantId, payload.jobId);
   await progress({ phase: 'write', scenariosWritten: 0, scenariosTotal: approved.length });
 
+  // Where a test must NAVIGATE, as opposed to how a page is identified. Loaded
+  // once: only pages whose observed URL differs from the normalized one appear.
+  // Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §4
+  const navigable = await deps.repository.getNavigableUrls(payload.tenantId, payload.suiteId);
+  const navigableUrl = (url: string): string => navigable.get(url) ?? url;
+
   // ── WRITE (sequential: each call is small, and ordering keeps the report readable)
   for (const plan of approved) {
     // Sensitive pages are readable knowledge for COMPREHEND but are never
@@ -454,11 +460,16 @@ async function runGenerationPhases(
 
     const writeParams = {
       tenantId: payload.tenantId,
-      plan,
-      grounding,
+      // Identity did its job — grounding, forms and text were all fetched by the
+      // normalized URLs. From here on the plan is about NAVIGATION, so it
+      // carries the URLs the site actually serves.
+      plan: { ...plan, targetPages: targetPages.map(navigableUrl) },
+      // Same reason: the element list tells the model which page each control is
+      // on, and that url must be the one it can navigate to.
+      grounding: grounding.map((g) => ({ ...g, pageUrl: navigableUrl(g.pageUrl) })),
       formSummaries,
       pageText,
-      pagePath: targetPages,
+      pagePath: targetPages.map(navigableUrl),
       seedTokens: [...FORM_DATA_TOKENS],
       steeringNotes: job.plan_notes,
       safeMode: payload.options.safeMode,
