@@ -578,6 +578,7 @@ async function runGenerationPhases(
     },
     rejected: [...rejected, ...validation.rejected],
     harvest: validation.harvest,
+    auditFindings: validation.auditFindings,
   };
 
   await finishJob(payload.tenantId, payload.jobId, 'completed', report, null, true);

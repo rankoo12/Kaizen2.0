@@ -290,45 +290,41 @@ export class ValidationRunner {
         await this.observeRun(params.tenantId, runId),
         prefix.length,
       );
-      if (!audit.ok) {
-        await pool.query(
-          `UPDATE test_cases SET status = 'rejected', validation_run_id = $2 WHERE id = $1`,
-          [created.id, runId],
-        );
-        outcome.rejected.push({
-          name: scenario.name, steps: scenario.steps.map((s) => s.text), stage: 'validation', runId,
-          reason: `${audit.rule}: ${audit.reason}`,
-        });
-        this.obs.increment('testwriter.oracle_audit_reject', { rule: String(audit.rule) });
-        return;
+      // A GREEN run is the user's call. The audit and the vacuity probe below
+      // used to write status='rejected' on a case that had just passed — the
+      // founder's rule is the opposite: if it ran green, the human decides,
+      // with the honest label in front of them. Both now land as drafts under
+      // "needs a decision"; the report still carries the finding.
+      // Spec: spec-validation-trust.md §3/§6 (amended 2026-08-18)
+      const auditFailed = !audit.ok;
+      if (auditFailed) {
+        this.obs.increment('testwriter.oracle_audit_flag', { rule: String(audit.rule) });
+        (outcome.auditFindings[scenario.name] ??= []).push(`${audit.rule}: ${audit.reason}`);
       }
 
       // The audit reads what the run recorded; the probe asks the page itself.
       // An oracle can be perfectly faithful — the right element, the right
       // words — and still be true before the scenario did anything. Running the
       // assertion with the ACTIONS REMOVED is the only way to find that out.
-      const vacuous = await this.probeIsVacuous(scenario, params, prefix, created.steps);
+      const vacuous = auditFailed
+        ? false   // one honest label is enough; the browser-minute is not
+        : await this.probeIsVacuous(scenario, params, prefix, created.steps);
       if (vacuous) {
-        await pool.query(
-          `UPDATE test_cases SET status = 'rejected', validation_run_id = $2 WHERE id = $1`,
-          [created.id, runId],
-        );
-        outcome.rejected.push({
-          name: scenario.name, steps: scenario.steps.map((s) => s.text), stage: 'validation', runId,
-          reason: 'oracle_vacuous_executed: the final check already passed without the scenario\'s '
-            + 'actions — it would stay green if the feature broke',
-        });
         this.obs.increment('testwriter.oracle_vacuous_executed');
-        return;
+        (outcome.auditFindings[scenario.name] ??= []).push(
+          'oracle_vacuous_executed: the final check already passed without the scenario’s actions',
+        );
       }
 
       const signinUnproven = audit.unprovenSignin
         || (prefix.length > 0 && params.signinAssertionProves === false);
       const validationState = signinUnproven ? 'unproven_signin'
-        : status === 'healed' ? 'healed'
-          : flaky ? 'flaky'
-            : audit.weakOracle ? 'weak_oracle'
-              : 'validated';
+        : vacuous ? 'vacuous_oracle'
+          : auditFailed ? 'weak_oracle'
+            : status === 'healed' ? 'healed'
+              : flaky ? 'flaky'
+                : audit.weakOracle ? 'weak_oracle'
+                  : 'validated';
 
       await pool.query(
         `UPDATE test_cases SET status = 'draft', validation_run_id = $2, validation_state = $3,
@@ -343,7 +339,9 @@ export class ValidationRunner {
         validated: validationState === 'validated',
         healed: status === 'healed',
       });
-      if (audit.findings.length > 0) outcome.auditFindings[scenario.name] = audit.findings;
+      if (audit.findings.length > 0) {
+        (outcome.auditFindings[scenario.name] ??= []).push(...audit.findings);
+      }
       // The test passed. That does not mean the page was healthy while it did.
       if (harvest) {
         const sideChannel = sideChannelFinding({

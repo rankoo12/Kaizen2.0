@@ -113,6 +113,8 @@ export type GenerationReport = {
   tokenUsage?: Record<string, number>;
   rejected?: ScenarioRejection[];
   harvest?: Record<string, { finalUrl: string; heading: string | null; alertText: string | null }>;
+  /** Per-draft notes from the post-run oracle audit / vacuity probe — why a green run is "needs a decision". */
+  auditFindings?: Record<string, string[]>;
   /**
    * What Kaizen noticed that is not a test — broken pages, unlabelled controls,
    * a sound test that failed against the app. Present even on jobs that
@@ -178,7 +180,7 @@ export type CaseSummary = {
    * sign-in was never confirmed — all of which used to render as "proven".
    */
   validationState?:
-    | 'validated' | 'healed' | 'weak_oracle' | 'flaky'
+    | 'validated' | 'healed' | 'weak_oracle' | 'vacuous_oracle' | 'flaky'
     | 'unproven_signin' | 'consent_held' | 'unvalidated' | null;
   generationJobId?: string | null;
   archetypeKey?: string | null;

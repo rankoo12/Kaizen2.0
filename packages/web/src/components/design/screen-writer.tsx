@@ -41,7 +41,11 @@ const EVIDENCE = {
   },
   weak_oracle: {
     chip: 'WEAK CHECK',
-    caption: 'Ran green, but the model chose which element the final check looks at. Confirm it checks the right thing.',
+    caption: 'Ran green, but the final check may not be reading what it names. Confirm it checks the right thing.',
+  },
+  vacuous_oracle: {
+    chip: 'CHECK TOO EASY',
+    caption: 'Ran green — but the final check also passed with the actions removed, so it would stay green if this broke. Fine to accept if the steps themselves are what you want to see run.',
   },
   flaky: {
     chip: 'FLAKY',
@@ -545,9 +549,11 @@ function DeliveryFace({ job, drafts, onAcceptAll, onAccept, onDismiss, onOpenRun
                 <Chip text="PROVEN" tone="var(--pass)" />
                 <div style={{ display: 'flex', gap: 4, flex: 'none' }}>
                   {d.validationRunId && (
-                    <button className="btn" onClick={() => onOpenRun(d.id, d.validationRunId)}>See it run</button>
+                    <button className="btn icon" title="View execution" aria-label="View execution"
+                      onClick={() => onOpenRun(d.id, d.validationRunId)}><I.eye size={13} /></button>
                   )}
-                  <button className="btn" onClick={() => onAccept(d.id)} disabled={busy}>Accept</button>
+                  <button className="btn icon" title="Accept" aria-label="Accept"
+                    onClick={() => onAccept(d.id)} disabled={busy}><I.check size={13} /></button>
                   <button className="btn icon ghost" title="Dismiss" onClick={() => onDismiss(d.id)}>
                     <I.x size={13} />
                   </button>
@@ -570,13 +576,20 @@ function DeliveryFace({ job, drafts, onAcceptAll, onAccept, onDismiss, onOpenRun
                   <div style={{ flex: 1, minWidth: 0 }}>
                     <div className="row-t">{d.name}</div>
                     <div className="row-s">{evidence.caption}</div>
+                    {/* The specific reason, when the audit left one — the caption is
+                        the class of doubt, this is the instance. */}
+                    {(job.report?.auditFindings?.[d.name] ?? []).map((note, k) => (
+                      <div key={k} className="row-s num" style={{ fontSize: 11, marginTop: 2 }}>{note}</div>
+                    ))}
                   </div>
                   <Chip text={evidence.chip} tone="var(--warn)" />
                   <div style={{ display: 'flex', gap: 4, flex: 'none' }}>
                     {d.validationRunId && (
-                      <button className="btn" onClick={() => onOpenRun(d.id, d.validationRunId!)}>See it run</button>
+                      <button className="btn icon" title="View execution" aria-label="View execution"
+                        onClick={() => onOpenRun(d.id, d.validationRunId!)}><I.eye size={13} /></button>
                     )}
-                    <button className="btn" onClick={() => onAccept(d.id)} disabled={busy}>Accept anyway</button>
+                    <button className="btn icon" title="Accept" aria-label="Accept"
+                      onClick={() => onAccept(d.id)} disabled={busy}><I.check size={13} /></button>
                     <button className="btn icon ghost" title="Dismiss" onClick={() => onDismiss(d.id)}>
                       <I.x size={13} />
                     </button>
