@@ -3,6 +3,7 @@ import type { CandidateNode } from '../../../types';
 import type { RevealCapture } from '../interfaces';
 import type { IObservability } from '../../observability/interfaces';
 import { normalizeHref, isSameOrigin } from './url-normalizer';
+import { isOpenerName } from './safety';
 
 /**
  * Interactive probe protocol — reveal states unreachable by URL (tabs,
@@ -90,9 +91,43 @@ async function collectRevealed(pwPage: any): Promise<{
             : t === 'search' ? 'searchbox' : 'textbox';
         } else role = tag;
       }
+      // Named the way the survey names things: an explicit label beats the
+      // placeholder. The first version read placeholder before label, so the
+      // New Test sheet's name field was "Sign in with valid credentials" and its
+      // "Target URL" field — labelled, no placeholder — had no name at all and
+      // never reached the writer, which then could not fill it.
+      let labelText = '';
+      const id = el.getAttribute('id');
+      if (id) {
+        const lab = document.querySelector('label[for="' + id.replace(/"/g, '\\"') + '"]') as HTMLElement | null;
+        if (lab) labelText = lab.innerText || lab.textContent || '';
+      }
+      if (!labelText) {
+        const wrap = el.closest('label') as HTMLElement | null;
+        if (wrap) {
+          // The label's text MINUS the control's own: a <select>'s innerText is
+          // every option, and "Suite My Suite … Checkout smoke Demo" was the
+          // name no later lookup could match once the options changed.
+          const clone = wrap.cloneNode(true) as HTMLElement;
+          clone.querySelectorAll('select, input, textarea, button, [role="combobox"], [role="listbox"]').forEach((n) => n.remove());
+          labelText = (clone.innerText || clone.textContent || '').replace((el as HTMLInputElement).value ?? '', '');
+        }
+      }
+      if (!labelText) {
+        const by = el.getAttribute('aria-labelledby');
+        if (by) labelText = by.split(/\s+/).map((i) => (document.getElementById(i)?.innerText ?? '')).join(' ');
+      }
+      if (!labelText && (tag === 'input' || tag === 'textarea' || tag === 'select')) {
+        // A field whose label sits just before it in the same block.
+        const prev = el.previousElementSibling as HTMLElement | null;
+        const t = (prev?.innerText ?? '').trim();
+        if (prev && t && t.length <= 40 && !/^(button|a|input|select|textarea)$/i.test(prev.tagName)) labelText = t;
+      }
       const name = (el.getAttribute('aria-label')
-        || (el as HTMLElement).innerText
+        || labelText
+        || (tag === 'input' || tag === 'textarea' || tag === 'select' ? '' : (el as HTMLElement).innerText)
         || el.getAttribute('placeholder')
+        || el.getAttribute('title')
         || '').trim().replace(/\s+/g, ' ').slice(0, 80);
       elements.push({ role, name });
       const href = el.getAttribute('href');
@@ -107,6 +142,45 @@ export type ProbeContext = {
   rootOrigin: string;
   obs: IObservability;
 };
+
+/** "New Test ⌘N", "Run now (⌘R)", "Next appearance ⇧⌘A" → the shortcut suffix
+ *  is chrome decoration, not identity. Stripped for dedup so a menu item and
+ *  its toolbar twin cost ONE probe, not two. */
+const SHORTCUT_SUFFIX = /\s*\(?[⌘⇧⌥⌃]+\s*[a-z0-9]*\)?\s*$/iu;
+
+const isOpenerLike = (name: string): boolean =>
+  isOpenerName(name.toLowerCase()) || /(…|\.\.\.)$/.test(name.trim());
+
+/**
+ * Order probe candidates by expected value, because the per-page budget slices
+ * this list. Survey order is DOM order, which made the harvest a lottery: run
+ * 18 probed the File menu and seven filters on /tests but never the "New Test"
+ * button, so the create-a-test form vanished from the site model that run —
+ * after run 16 HAD it (reachability board, 2026-08-20). On any site:
+ *
+ *   1. creation/flow openers ("New …", "Analyze …", trailing ellipsis) — the
+ *      form behind them is usually the page's reason to exist;
+ *   2. tabs — each is a sub-surface the crawl cannot reach by URL;
+ *   3. everything else in survey order.
+ *
+ * Duplicate names that differ only by a keyboard-shortcut suffix are probed
+ * once. Sort is stable: within a tier, survey order is preserved.
+ */
+export function rankProbeCandidates(candidates: CandidateNode[]): CandidateNode[] {
+  const seen = new Set<string>();
+  const deduped = candidates.filter((c) => {
+    const key = `${c.role}|${(c.name ?? '').replace(SHORTCUT_SUFFIX, '').trim().toLowerCase()}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const tier = (c: CandidateNode): number =>
+    isOpenerLike(c.name ?? '') ? 0 : c.role === 'tab' ? 1 : 2;
+  return deduped
+    .map((c, i) => ({ c, i }))
+    .sort((a, b) => tier(a.c) - tier(b.c) || a.i - b.i)
+    .map((x) => x.c);
+}
 
 /**
  * Probe up to `budget` safe-reveal candidates on the current page. Returns the
@@ -164,6 +238,30 @@ export async function runProbes(
       // Close whatever the probe opened (modal, menu) so the next probe starts
       // from a comparable state. Escape is harmless when nothing is open.
       await pwPage.keyboard.press('Escape').catch(() => {});
+
+      // An opener that revealed nothing usually means the click landed while a
+      // leftover menu or overlay swallowed it. These are the probes the whole
+      // protocol exists for — one retry from the now-cleared state.
+      if (revealedElements.length === 0 && revealedLinks.length === 0 && isOpenerLike(candidate.name ?? '')) {
+        try {
+          await pwPage.click(`[data-kaizen-id='${candidate.kaizenId}']`, { timeout: 3_000 });
+          await pwPage.waitForTimeout(SETTLE_MS);
+          if (pwPage.url() === ctx.pageUrl) {
+            const again = await collectRevealed(pwPage);
+            revealedElements = again.elements;
+            for (const href of again.hrefs) {
+              const normalized = normalizeHref(href, ctx.pageUrl);
+              if (normalized && isSameOrigin(normalized, ctx.rootOrigin)) revealedLinks.push(normalized);
+            }
+            if (revealedElements.length > 0) ctx.obs.increment('testwriter.probe_opener_retry_rescued');
+          } else {
+            await restoreUrl(pwPage, ctx.pageUrl);
+          }
+          await pwPage.keyboard.press('Escape').catch(() => {});
+        } catch {
+          ctx.obs.increment('testwriter.probe_click_failed');
+        }
+      }
     }
 
     if (revealedElements.length > 0 || revealedLinks.length > 0) {

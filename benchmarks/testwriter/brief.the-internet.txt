@@ -1,0 +1,51 @@
+PURPOSE
+"The Internet" (the-internet.herokuapp.com) is a public playground of small, independent
+demo pages, each exhibiting one web-UI behavior that real apps have: forms, dynamic
+content, widgets, tables, alerts, frames. There is no product flow spanning pages — every
+page is its own tiny feature, reached from the index list on the home page.
+
+ROLES
+Anonymous visitor everywhere. One page, /login, has form authentication: username
+"tomsmith", password "SuperSecretPassword!" signs in and lands on /secure with a success
+flash message and a Logout button. Wrong credentials show an error flash. That account
+owns nothing; logging in and out is free of consequences.
+
+CRITICAL FLOWS
+- The home page lists every example as a link; each link opens that example's page.
+- /login: valid login lands on /secure ("You logged into a secure area!"), logout returns
+  to /login ("You logged out of the secure area!"), invalid credentials flash an error.
+- /checkboxes: two checkboxes that toggle independently.
+- /dropdown: a select with Option 1 / Option 2.
+- /add_remove_elements/: "Add Element" adds a Delete button each click; "Delete" removes one.
+- /dynamic_loading: start buttons reveal "Hello World!" after a loading spinner.
+- /dynamic_controls: a checkbox that can be removed/added and an input enabled/disabled,
+  each with a "It's gone!"/"It's back!"/"It's enabled!"/"It's disabled!" message.
+- /inputs: a number input that accepts digits.
+- /hovers: three avatar figures that reveal a caption with a profile link on hover.
+- /key_presses: pressing a key reports "You entered: <KEY>".
+- /tabular data on /tables: two sortable tables of people and dues.
+- /notification_message_rendered: "Click here" shows a flash that is a success or an error.
+- /javascript_alerts: buttons fire an alert, a confirm, and a prompt, and the page
+  reports the result text.
+- /status_codes: links to pages returning 200/301/404/500 with explanatory text.
+- /challenging_dom: buttons with changing labels and a canvas answer.
+- /horizontal_slider, /entry_ad, /exit_intent, /floating_menu, /infinite_scroll,
+  /large, /shifting_content and the rest: each is one self-contained behavior.
+
+BUSINESS RULES
+- Pages are independent; nothing done on one page affects another.
+- All state is per-visit demo state (checkboxes, added elements, slider) — nothing persists.
+- /secure requires being logged in; visiting it logged out bounces to /login with an error flash.
+
+PRIORITIES
+The login/logout pair and its flash messages, checkboxes, dropdown, add/remove elements,
+dynamic loading and dynamic controls outcomes, inputs, key presses, hovers, tables
+content, javascript alerts results, notification messages, status code pages.
+
+CAUTIONS
+- /basic_auth and /digest_auth pop browser-native credential dialogs — skip them.
+- /download and /upload move files — read the pages, do not upload or download.
+- /exit_intent and /entry_ad show modals; closing them is fine.
+- /slow and /large are slow or huge by design — do not linger.
+- External links (Elemental Selenium) leave the site — never follow them.
+- Everything on this site is a public demo — synthetic data consent is safe.

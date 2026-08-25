@@ -53,6 +53,13 @@ const AnalyzeBody = z.object({
     safeMode: z.boolean().default(true),
     validate: z.boolean().default(true),
     planApproval: z.enum(['review', 'auto']).default('review'),
+    /** Fact tier (agentic shape, stages 1–3): granular per-screen checks,
+     *  batch-verified live. Opt-in while it earns default-on. */
+    factTier: z.boolean().default(false),
+    factsPerPage: z.number().int().min(5).max(40).default(25),
+    /** The explorer subagent (spec-agentic-testwriter.md §4). Opt-in. */
+    explore: z.boolean().default(false),
+    exploreTurns: z.number().int().min(5).max(80).default(40),
   }).default({}),
 });
 

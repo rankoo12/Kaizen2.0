@@ -21,6 +21,7 @@ export const SOURCES: Record<string, { label: string; short: string; color: stri
   vector:  { label: 'Similarity search', short: 'SIMILAR', color: 'var(--accent)', tokens: 0, note: 'Found by comparing this step to past resolutions on similar pages.' },
   global:  { label: 'Global brain', short: 'GLOBAL', color: 'var(--accent)', tokens: 0, note: 'Verified selector shared across all workspaces for this public site.' },
   llm:     { label: 'AI resolution', short: 'AI', color: 'var(--warn)', tokens: 1, note: 'No memory matched, so the model read the page and picked the element.' },
+  delta:   { label: 'What changed', short: 'CHANGED', color: 'var(--accent)', tokens: 0, note: 'Chosen from what the previous action changed on the page — nothing already there could be picked.' },
 };
 
 export const NAV = [

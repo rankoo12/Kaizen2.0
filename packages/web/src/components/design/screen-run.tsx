@@ -83,6 +83,7 @@ const SOURCE_OF: Record<string, string> = {
   pgvector_step: 'vector',     // L3 — similarity over past step resolutions
   pgvector_element: 'global',  // L4 — element-level vector / shared pool
   llm: 'llm',                  // L5 — the model read the page
+  delta: 'delta',              // Δ  — picked from what the previous action changed
 };
 
 function SourceBadge({ source, tokens }: { source: string | null; tokens: number }) {
@@ -328,9 +329,11 @@ function Inspector({ sr, text, runId, onVerdict, showToast }: any) {
             {tier ? tier.label : '—'} · {sr.tokens ? `${fmt.n(sr.tokens)} tok` : '0 tok'}</span>}>
           {tier
             ? <div style={{ fontSize: 13, color: 'var(--text-2)', lineHeight: 1.5 }}>
-                {tier.cached
-                  ? `Recalled from memory (${tier.code} · ${tier.label}) — no model call, no tokens.`
-                  : 'No memory matched, so the model read the page and picked the element. It is learned now.'}
+                {sr.resolutionSource === 'delta'
+                  ? 'Chosen from what the previous action changed on the page — nothing that was already there could be picked. No model call, no tokens. The list below is everything that changed; the highlighted row is what this check read.'
+                  : tier.cached
+                    ? `Recalled from memory (${tier.code} · ${tier.label}) — no model call, no tokens.`
+                    : 'No memory matched, so the model read the page and picked the element. It is learned now.'}
                 {/* Only the two vector tiers measure a similarity; every other tier matched
                     an exact key or a pattern, where a percentage would be invented. */}
                 {isVectorTier && sr.similarityScore != null && (
@@ -383,7 +386,7 @@ function Inspector({ sr, text, runId, onVerdict, showToast }: any) {
         )}
 
         {sr.domCandidates?.length ? (
-          <Disclose title="What the model was shown" badge={<span className="num" style={{ fontSize: 11, color: 'var(--text-2)' }}>{sr.domCandidates.length}</span>}>
+          <Disclose title={sr.resolutionSource === 'delta' ? 'What changed after the action' : 'What the model was shown'} defaultOpen={sr.resolutionSource === 'delta'} badge={<span className="num" style={{ fontSize: 11, color: 'var(--text-2)' }}>{sr.domCandidates.length}</span>}>
             <div style={{ display: 'flex', flexDirection: 'column', gap: 5 }}>
               {sr.domCandidates.slice(0, 12).map((c: any) => (
                 <div key={c.kaizenId} style={{ display: 'flex', gap: 7, alignItems: 'baseline', fontSize: 12,

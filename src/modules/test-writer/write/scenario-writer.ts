@@ -136,6 +136,7 @@ export function checkKnownEntityBinding(
 export function checkChromeOnly(
   steps: StepIntent[],
   elements: Map<string, GroundingElement>,
+  reachNames: string[] = [],
 ): string[] {
   const touched: GroundingElement[] = [];
   for (const step of steps) {
@@ -146,6 +147,16 @@ export function checkChromeOnly(
     if (element) touched.push(element);
   }
   if (touched.length === 0 || touched.some((el) => !el.chrome)) return [];
+  // Two chrome-only shapes ARE the page's behaviour, not wandering (run 15
+  // killed reference test 3 — "open a suite" — right here):
+  //  - the clicks are exactly how the PLANNED screen is reached (an SPA's
+  //    views are opened by sidebar clicks; testing the opening is legitimate);
+  //  - the control's name is a state verb (Hide/Show/Toggle) — chrome that
+  //    DOES something is a feature, only chrome that NAVIGATES elsewhere is noise.
+  const reach = new Set(reachNames.map((n) => n.toLowerCase()));
+  const allReach = touched.every((el) => reach.has(el.name.toLowerCase()));
+  const allBehaviour = touched.every((el) => /^(hide|show|toggle|collapse|expand|open|close|refresh)\b/i.test(el.name));
+  if (allReach || allBehaviour) return [];
 
   const pageSpecific = [...elements.values()].filter((el) => !el.chrome).slice(0, 8);
   return [
@@ -157,6 +168,46 @@ export function checkChromeOnly(
       ? `, for example: ${pageSpecific.map((el) => `${el.role} "${el.name}"`).join(', ')}.`
       : '. If that page has no controls of its own, assert its text instead.'),
   ];
+}
+
+/**
+ * Opposite-polarity assertions on the same target with no action between them
+ * cannot both hold — one of the two is guaranteed to fail against the live
+ * site. Run 18 shipped exactly this: click "Needs review", verify "ready,
+ * unused" visible, verify "ready, unused" NOT visible. The writer meant the
+ * 5b presence-then-absence pair but put the presence check AFTER the action
+ * that removes it. Deterministically wrong, so refused here rather than left
+ * for the judge (which passed it) or the live run (which paid for it).
+ */
+export function checkContradictoryAsserts(steps: StepIntent[]): string[] {
+  const keyOf = (step: StepIntent): string | null => {
+    if (step.action !== 'assert_visible' && step.action !== 'assert_not_visible') return null;
+    const target = 'target' in step ? step.target : undefined;
+    if (!target) return null;
+    return target.kind === 'element'
+      ? `el:${target.elementId}`
+      : `desc:${target.description.trim().toLowerCase()}`;
+  };
+  const errors: string[] = [];
+  let window = new Map<string, { action: string; index: number }>();
+  steps.forEach((step, index) => {
+    const key = keyOf(step);
+    if (key === null) {
+      // Any non-visibility-assert action resets the window: state may change.
+      if (!step.action.startsWith('assert_')) window = new Map();
+      return;
+    }
+    const prior = window.get(key);
+    if (prior && prior.action !== step.action) {
+      errors.push(
+        `steps ${prior.index + 1} and ${index + 1} assert the same element both visible and not `
+        + 'visible with nothing acting in between — they cannot both hold. If the scenario removes '
+        + 'or filters it, check its PRESENCE first, then perform the action, then check its absence.',
+      );
+    }
+    window.set(key, { action: step.action, index });
+  });
+  return errors;
 }
 
 /**
@@ -174,13 +225,41 @@ export function prependNavigate(
   expectation: ScenarioExpectation,
 ): { steps: StepIntent[]; expectation: ScenarioExpectation } {
   const url = plan.targetPages[0];
-  if (!url || steps[0]?.action === 'navigate') return { steps, expectation };
+  if (!url) return { steps, expectation };
+
+  // A screen reached by clicking: after the navigate come the clicks that get
+  // there — inserted after a navigate the model wrote itself, and never twice
+  // (the model was told not to write them, but a repeated click is dropped
+  // rather than trusted). Spec: docs/specs/test-writer/spec-screen-discovery.md §1.5
+  const hops: StepIntent[] = (plan.reachedBy ?? []).map((h) => ({
+    action: 'click',
+    target: { kind: 'description', description: `the "${h.name}" ${ROLE_NOUN_FOR_REACH[h.role] ?? 'button'}` },
+  }));
+  const hasNavigate = steps[0]?.action === 'navigate';
+  const body = hasNavigate ? steps.slice(1) : steps;
+  const trimmed = dropLeadingDuplicateHops(body, hops);
+  const prefix: StepIntent[] = [hasNavigate ? steps[0] : { action: 'navigate', url }, ...hops];
+  const added = prefix.length + trimmed.length - steps.length;
+  if (added === 0 && trimmed === body) return { steps, expectation };
   return {
-    steps: [{ action: 'navigate', url }, ...steps],
+    steps: [...prefix, ...trimmed],
     expectation: expectation.outcome === 'fail'
-      ? { ...expectation, failStepIndex: expectation.failStepIndex + 1 }
+      ? { ...expectation, failStepIndex: expectation.failStepIndex + added }
       : expectation,
   };
+}
+
+const ROLE_NOUN_FOR_REACH: Record<string, string> = { button: 'button', link: 'link', menuitem: 'menu item', tab: 'tab' };
+
+/** The model re-wrote the reach clicks at the top of the body: drop them, once. */
+function dropLeadingDuplicateHops(body: StepIntent[], hops: StepIntent[]): StepIntent[] {
+  let i = 0;
+  const same = (a: StepIntent, b: StepIntent): boolean =>
+    a.action === 'click' && b.action === 'click'
+    && a.target.kind === 'description' && b.target.kind === 'description'
+    && a.target.description.toLowerCase() === b.target.description.toLowerCase();
+  while (i < hops.length && i < body.length && same(body[i], hops[i])) i++;
+  return i > 0 ? body.slice(i) : body;
 }
 
 /**
@@ -232,6 +311,12 @@ export class ScenarioWriter {
     maxSteps: number;
     /** Widens the hard-block lexicon and re-reads synthetic consent (spec §6.5). */
     scope?: 'public' | 'authenticated';
+    /** Suite consent for throwaway records; with a public scope, softens "delete". */
+    syntheticDataConsent?: boolean;
+    /** Accounts the brief names — typed literally in sign-in tests. */
+    knownAccounts?: string[];
+    /** The target is a screen: the clicks that reach it. Spec: spec-screen-discovery.md §1.5 */
+    reachedBy?: Array<{ role: string; name: string }>;
     /**
      * Set when this is a REWRITE after the quality judge: the judge's failed
      * dimensions and the steps it read. Every attempt of a rewrite runs on the
@@ -260,7 +345,9 @@ export class ScenarioWriter {
       // it is the last. A mini model that failed a repair instruction once does
       // the same thing again (spec-judge-repair-loop.md §1.4, §2.3).
       const tier: 'mini' | 'frontier' = attempt > 0 || isRewrite ? 'frontier' : 'mini';
-      const generated = await this.gateway.generateScenario({
+      let generated: Awaited<ReturnType<ITestWriterGateway['generateScenario']>>;
+      try {
+        generated = await this.gateway.generateScenario({
         plan,
         grounding: params.grounding,
         formSummaries: params.formSummaries,
@@ -275,7 +362,18 @@ export class ScenarioWriter {
         tier,
         judgeFeedback: params.judgeFeedback,
         previousSteps: params.previousSteps,
+        knownAccounts: params.knownAccounts,
+        reachedBy: params.reachedBy,
       }, params.tenantId);
+      } catch (err) {
+        // A malformed or failed completion is this ATTEMPT's failure — the
+        // repair round asks again with the reason, and a second failure is an
+        // ordinary schema rejection. It is never the job's failure: run 27
+        // lost 30 minutes of proven work to one unparsable answer here.
+        repairErrors = [`your previous answer could not be used (${err instanceof Error ? err.message.slice(0, 120) : String(err)}) — return ONLY the JSON object described above`];
+        this.obs.increment('testwriter.write_gateway_failed', { attempt: String(attempt) });
+        continue;
+      }
 
       const gate = runSchemaGate(
         generated.steps, validIds, params.maxSteps, rolesById, params.seedTokens, newTabIds,
@@ -307,10 +405,19 @@ export class ScenarioWriter {
       // A scenario built entirely out of the nav bar and the footer is not a
       // test of the page it was planned for. One rewrite, on the frontier tier,
       // with the page's own controls named for it.
-      const chromeErrors = checkChromeOnly(gate.steps, elements);
+      const chromeErrors = checkChromeOnly(gate.steps, elements, (params.reachedBy ?? []).map((r) => r.name));
       if (chromeErrors.length > 0) {
         repairErrors = chromeErrors;
         this.obs.increment('testwriter.write_chrome_only_reject', { attempt: String(attempt) });
+        continue;
+      }
+
+      // Visible + not-visible on the same target with no action between is
+      // guaranteed to fail live — refuse now, with the fix spelled out.
+      const contradictionErrors = checkContradictoryAsserts(gate.steps);
+      if (contradictionErrors.length > 0) {
+        repairErrors = contradictionErrors;
+        this.obs.increment('testwriter.write_contradiction_reject', { attempt: String(attempt) });
         continue;
       }
 
@@ -338,6 +445,7 @@ export class ScenarioWriter {
         // Behind auth the proving run acts as a real, possibly admin, user —
         // the lexicon widens accordingly (spec §6.5).
         authenticated: params.scope === 'authenticated',
+        syntheticDataConsent: params.syntheticDataConsent,
       });
       if (safety.verdict === 'blocked') {
         this.obs.increment('testwriter.write_safety_block');

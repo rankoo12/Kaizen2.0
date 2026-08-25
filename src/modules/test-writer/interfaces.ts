@@ -80,6 +80,12 @@ export type PageCapture = {
    * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §2
    */
   pageText?: string;
+  /**
+   * For a screen reached by clicking rather than by URL: the clicks that get
+   * there from `urlObserved`, in order. Absent for ordinary pages.
+   * Spec: docs/specs/test-writer/spec-screen-discovery.md §1.3
+   */
+  reachedBy?: Array<{ role: string; name: string }>;
   requiresAuth: boolean;
   /**
    * 'capture-suppressed' marks a Tier A sensitive page (/api-keys, /billing…)
@@ -96,6 +102,9 @@ export type CrawlReport = {
   pagesCrawled: number;
   pagesBlocked: number;
   probesPerformed: number;
+  /** Screens reached by clicking that were kept as pages / that turned out to be the same page. */
+  screensDiscovered?: number;
+  screensDiscarded?: number;
   authScope: 'public' | 'authenticated';
   /** URLs discovered but not visited because the page budget was exhausted. */
   urlsSkippedByBudget: number;
@@ -110,6 +119,12 @@ export type CrawlReport = {
     /** The page whose link led here. Null for the crawl root. */
     linkedFrom?: string | null;
   }>;
+  /**
+   * The explorer subagent's outcome, when the job ran it (options.explore).
+   * Shape lives in recon/explorer.ts (ExploreReport): turns, screens recorded,
+   * and the APP-KNOWLEDGE it built. Spec: spec-agentic-testwriter.md §4
+   */
+  explorer?: Record<string, unknown>;
   /**
    * Signed-in exploration outcome. Present only on authenticated jobs; the
    * shape lives in recon/crawler.ts (AuthCrawlReport) and is mirrored into

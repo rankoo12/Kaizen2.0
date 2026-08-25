@@ -147,15 +147,56 @@ export async function reconFindings(
   );
   for (const row of unnamed) {
     const count = Number(row.n);
+    const plural = count !== 1;
+    // The role noun, pluralised the way a person would ("checkboxes", not
+    // "checkboxs"). And the second half of the old sentence — "Kaizen cannot
+    // write a test that refers to them" — stopped being true once derived
+    // names landed; the report was contradicting the tests listed above it.
+    const noun = plural ? `${row.role}${/(x|s|ch|sh)$/.test(row.role) ? 'es' : 's'}` : row.role;
     findings.push({
       kind: 'empty_accessible_name',
       severity: 'medium',
-      title: `${count} ${row.role}${count === 1 ? '' : 's'} on this page have no readable label`,
+      title: `${count} ${noun} on this page ${plural ? 'have' : 'has'} no readable label`,
       detail:
-        `On ${sanitizeForDisplay(row.url_normalized, 300)}, ${count} ${row.role}`
-        + `${count === 1 ? ' has' : 's have'} no accessible name. A screen reader announces nothing `
-        + 'for these, and Kaizen cannot write a test that refers to them.',
+        `On ${sanitizeForDisplay(row.url_normalized, 300)}, ${count} ${noun}`
+        + `${plural ? ' have' : ' has'} no accessible name, so a screen reader announces nothing `
+        + 'for them. Kaizen names them from the text beside them or from a developer attribute, '
+        + 'so tests can still refer to them — but users of assistive technology cannot.',
       evidence: { url: sanitizeForDisplay(row.url_normalized, 300), elementRef: row.role },
+      source: 'recon',
+    });
+  }
+
+  // Two controls with the SAME name on the same surface. Neither a screen-reader
+  // user, a human tester, nor an automated one can tell them apart — the Analyze
+  // sheet's two "Cancel" buttons (one closes it, one does not) cost two proving
+  // runs before a hand-check found the ambiguity. This is a defect in the page,
+  // and the earlier it is named, the fewer tests die guessing.
+  const { rows: dupes } = await tenantQuery<{ url_normalized: string; role: string; name: string; n: string }>(
+    tenantId,
+    `SELECT sp.url_normalized, pe.role, pe.name, count(*)::text AS n
+     FROM page_elements pe
+     JOIN site_pages sp ON sp.id = pe.page_id
+     WHERE pe.tenant_id = $1 AND sp.suite_id = $2
+       AND pe.kind IN ('button', 'link', 'input', 'select')
+       AND pe.name IS NOT NULL AND btrim(pe.name) <> ''
+     GROUP BY sp.url_normalized, pe.role, pe.name
+     HAVING count(*) > 1
+     ORDER BY count(*) DESC
+     LIMIT $3`,
+    [tenantId, suiteId, MAX_PER_KIND],
+  );
+  for (const row of dupes) {
+    findings.push({
+      kind: 'duplicate_control_name',
+      severity: 'medium',
+      title: `${row.n} controls named "${sanitizeForDisplay(row.name, 60)}" on one page`,
+      detail:
+        `On ${sanitizeForDisplay(row.url_normalized, 300)}, ${row.n} ${row.role}s share the exact `
+        + `name "${sanitizeForDisplay(row.name, 60)}". A user relying on assistive technology — or `
+        + 'anyone writing a test — cannot tell which one acts. If they do different things, name '
+        + 'them by what each does.',
+      evidence: { url: sanitizeForDisplay(row.url_normalized, 300), elementRef: sanitizeForDisplay(row.name, 60) },
       source: 'recon',
     });
   }

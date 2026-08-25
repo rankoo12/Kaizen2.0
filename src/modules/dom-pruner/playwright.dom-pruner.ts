@@ -61,8 +61,42 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
         // that the interactive-role query above never surfaces, so drag_and_drop
         // resolution otherwise falls back to the nearest link. Rare on non-drag
         // pages, so this adds negligible candidate noise elsewhere.
-        '[draggable="true"], [aria-grabbed], .ui-draggable, .ui-droppable, .ui-sortable, .ui-sortable > *',
+        '[draggable="true"], [aria-grabbed], .ui-draggable, .ui-droppable, .ui-sortable, .ui-sortable > *, ' +
+        // Figure images: the one kind of image a test hovers or clicks ON PURPOSE
+        // (a gallery tile, an avatar with a caption underneath). Narrow on
+        // purpose — every logo on the web is an <img>, and those are noise.
+        // the-internet's /hovers page had nothing citable without this.
+        'figure > img, .figure > img, figure > a > img',
       )) as HTMLElement[];
+
+      // ── 1b. Clickable containers: rows and cards ──────────────────────────
+      // A dashboard's list rows are routinely <div onClick> with no role — the
+      // query above cannot see them, which made open/edit/delete/timeline
+      // untestable on Kaizen itself (runs 6–11). cursor:pointer is the one
+      // universal tell. cursor INHERITS, so only the outermost pointer element
+      // (whose parent is not pointer) is the row; children are its content.
+      const semantic = new Set(elements);
+      let containerCount = 0;
+      for (const el of Array.from(document.querySelectorAll('div, li, tr, article, section')) as HTMLElement[]) {
+        if (containerCount >= 40) break;
+        if (semantic.has(el) || el.getAttribute('role')) continue;
+        if (getComputedStyle(el).cursor !== 'pointer') continue;
+        const parent = el.parentElement;
+        if (parent && getComputedStyle(parent).cursor === 'pointer') continue;
+        if (el.closest('button, a, select, label')) continue;
+        const rect = el.getBoundingClientRect();
+        if (rect.width < 40 || rect.height < 12) continue;
+        const lines = (el.innerText || '').split('\n').map((t) => t.trim()).filter(Boolean);
+        const firstLine = lines[0] || '';
+        if (firstLine.length < 3) continue;
+        el.setAttribute('data-kz-clickable', firstLine.slice(0, 60));
+        // The rest of the row is its state — "failing \u00b7 2m ago". Without it the
+        // writer GUESSED row statuses and lost four filter tests in run 13.
+        const context = lines.slice(1, 3).join(' \u00b7 ').slice(0, 48);
+        if (context) el.setAttribute('data-kz-context', context);
+        elements.push(el);
+        containerCount++;
+      }
 
       const results: any[] = [];
       let kaizenIndex = 1;
@@ -92,6 +126,12 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
           'id', 'name', 'placeholder', 'aria-label', 'aria-labelledby',
           'type', 'href', 'title', 'data-testid', 'data-qa', 'data-test', 'role', 'draggable', 'target',
           'aria-expanded', 'aria-haspopup', 'aria-controls', 'download',
+          // The mark WAI-ARIA gives an item in a set of navigation — a
+          // view-switch signal for the Test Writer's screen discovery.
+          // Spec: docs/specs/test-writer/spec-screen-discovery.md §1.1
+          'aria-current',
+          // Pressed-state buttons are view/filter switches — a probe signal.
+          'aria-pressed',
         ]) {
           const val = el.getAttribute(attr);
           if (val) attributes[attr] = val;
@@ -99,11 +139,20 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
 
         // ── 5. Compute ARIA role ──────────────────────────────────────────
         const tagName = el.tagName.toLowerCase();
+        const clickableText = el.getAttribute('data-kz-clickable') || '';
+        if (clickableText) el.removeAttribute('data-kz-clickable');
+        const clickableContext = el.getAttribute('data-kz-context') || '';
+        if (clickableContext) { el.removeAttribute('data-kz-context'); attributes['kz-context'] = clickableContext; }
         let role = el.getAttribute('role') || '';
+        // The honest name for a roleless clickable record. Everything downstream
+        // (dossier, planner, writer, fidelity gate) reads it as 'row "title"';
+        // buildCandidate never builds a role= selector for it (AX says generic).
+        if (!role && clickableText) role = 'row';
         if (!role) {
           if (tagName === 'button') role = 'button';
           else if (tagName === 'a') role = 'link';
           else if (tagName === 'select') role = 'combobox';
+          else if (tagName === 'img') role = 'img';
           else if (tagName === 'textarea') role = 'textbox';
           else if (tagName === 'input') {
             const t = (el.getAttribute('type') || 'text').toLowerCase();
@@ -151,8 +200,16 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
           if (wrappingLabel) {
             const wrappedControls = wrappingLabel.querySelectorAll('input, textarea, select');
             if (wrappedControls.length <= 1) {
+              // The control ITSELF is removed from the clone, not only native
+              // form tags: a custom combobox (a div with role=combobox) keeps
+              // its option texts as children, and the label's name became
+              // "Suite My Suite … Checkout smoke Demo" — every option, which
+              // no later lookup can match once the options change.
+              el.setAttribute('data-kaizen-self', '1');
               const clone = wrappingLabel.cloneNode(true) as HTMLElement;
-              clone.querySelectorAll('input, textarea, select').forEach((n) => n.remove());
+              el.removeAttribute('data-kaizen-self');
+              clone.querySelectorAll('input, textarea, select, [data-kaizen-self], [role="listbox"], [role="combobox"], [role="option"]')
+                .forEach((n) => n.remove());
               accessibleName = (clone.textContent || '').trim().replace(/\s+/g, ' ');
             } else {
               // Mark on the element so the Node-side observability can detect
@@ -193,6 +250,15 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
           el.classList.contains('ui-draggable') ||
           el.classList.contains('ui-droppable') ||
           el.classList.contains('ui-sortable');
+        // An image's name is its alt text — and when several figures share one
+        // alt ("User Avatar" ×3), the caption beside it tells them apart.
+        if (!accessibleName && tagName === 'img') {
+          const alt = (el.getAttribute('alt') || '').trim();
+          const caption = (el.parentElement?.querySelector('figcaption, .figcaption')?.textContent || '').replace(/\s+/g, ' ').trim();
+          accessibleName = caption ? `${alt || 'image'}: ${caption.slice(0, 40)}` : alt;
+        }
+        // A clickable container is named by its first text line (the row title).
+        if (!accessibleName && clickableText) accessibleName = clickableText;
         if (!accessibleName && (tagName === 'button' || tagName === 'a' || isDragEl)) {
           accessibleName = textContent.substring(0, 80);
         }
@@ -254,6 +320,37 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
           node = node.parentElement;
         }
 
+        // ── 8a. Navigation context ────────────────────────────────────────
+        // Where a control LIVES: a button in a sidebar or nav bar switches
+        // views; the same button in a form commits one. The Test Writer's
+        // screen discovery reads this to know which hrefless controls lead to
+        // a screen worth crawling. Landmarks first, then the class/id names
+        // apps actually use — Kaizen's own sidebar is <div class="sidebar">.
+        // Spec: docs/specs/test-writer/spec-screen-discovery.md §1.1
+        {
+          let nav: HTMLElement | null = el.parentElement;
+          let navContext = '';
+          let hops = 0;
+          while (nav && nav !== document.body && hops < 20 && !navContext) {
+            hops++;
+            const navTag = nav.tagName.toLowerCase();
+            const navRole = (nav.getAttribute('role') || '').toLowerCase();
+            if (navTag === 'nav' || navTag === 'aside' || navTag === 'header') navContext = navTag;
+            else if (['navigation', 'menubar', 'tablist', 'toolbar', 'menu'].includes(navRole)) navContext = navRole;
+            else {
+              // Whole class/id tokens only. Bare "menu" and "tab" were dropped:
+              // "menu-item" is a popover entry (a probe's business) and a row
+              // action inside one became a "screen" that started a real run.
+              const cls = `${typeof nav.className === 'string' ? nav.className : ''} ${nav.id || ''}`;
+              if (/(^|\s)(sidebar|sidenav|side-nav|nav|navbar|main-nav|primary-nav|site-nav|nav-menu|topbar|top-bar|appbar|app-bar|menubar|tabbar|tab-bar|tabs)(\s|$)/i.test(cls)) {
+                navContext = 'nav-class';
+              }
+            }
+            nav = nav.parentElement;
+          }
+          if (navContext) attributes['nav-context'] = navContext;
+        }
+
         // ── 8b. Repeated-item context (row / card / list-item) ────────────────
         // The walk above only finds form/fieldset/section/heading labels. For the
         // Class-A blind spot — "the Edit link in the row for Conway", "the about link
@@ -302,6 +399,7 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
           attributes,
           textContent,
           tagName,
+          clickable: !!clickableText,
           parentContext,
           centerPoint: {
             x: Math.round(rect.x + rect.width / 2),
@@ -360,7 +458,7 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
       // ── Priority 1: Playwright ARIA role selector ─────────────────────────
       // role=ROLE[name="accessible name"] — resolves against the AX tree,
       // completely immune to CSS class / DOM structure changes.
-      if (role && role !== 'generic' && accessibleName) {
+      if (role && role !== 'generic' && role !== 'row' && accessibleName) {
         selectors.push({
           selector: `role=${role}[name="${escapeAttr(accessibleName)}"]`,
           strategy: 'aria',
@@ -417,6 +515,17 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
           selector: `${tagName}[aria-label="${escapeAttr(ariaLabel)}"]`,
           strategy: 'aria',
           confidence: 0.80,
+        });
+      }
+
+      // ── Priority 5b: exact visible text — the only stable handle a roleless
+      // clickable row has. Playwright text= matches the innermost element with
+      // that text (the row's title span); the click bubbles to the row handler.
+      if (raw.clickable && accessibleName && selectors.length === 0) {
+        selectors.push({
+          selector: `text="${escapeAttr(accessibleName)}"`,
+          strategy: 'text',
+          confidence: 0.72,
         });
       }
 

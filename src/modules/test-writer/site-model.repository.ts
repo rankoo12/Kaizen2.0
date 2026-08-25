@@ -2,7 +2,7 @@ import { createHash } from 'crypto';
 import type { PoolClient } from 'pg';
 import { withTenantTransaction } from '../../db/transaction';
 import type { PageCapture } from './interfaces';
-import type { AppBrief, GroundingElement, Journey } from '../../types/test-writer';
+import type { AppBrief, GroundingElement, Journey, PageDossier } from '../../types/test-writer';
 import { deriveName } from './recon/derived-name';
 
 /**
@@ -75,8 +75,9 @@ export class SiteModelRepository {
       const { rows } = await client.query<{ id: string }>(
         `INSERT INTO site_pages (
            tenant_id, suite_id, url_normalized, title, headings, ax_outline,
-           content_hash, requires_auth, screenshot_key, page_text, url_observed, last_crawled_at
-         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, now())
+           content_hash, requires_auth, screenshot_key, page_text, url_observed, reached_by,
+           last_crawled_at
+         ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, now())
          ON CONFLICT (tenant_id, suite_id, url_normalized) DO UPDATE SET
            title = EXCLUDED.title,
            headings = EXCLUDED.headings,
@@ -86,6 +87,7 @@ export class SiteModelRepository {
            screenshot_key = COALESCE(EXCLUDED.screenshot_key, site_pages.screenshot_key),
            page_text = COALESCE(EXCLUDED.page_text, site_pages.page_text),
            url_observed = COALESCE(EXCLUDED.url_observed, site_pages.url_observed),
+           reached_by = EXCLUDED.reached_by,
            last_crawled_at = now(),
            -- content_hash-keyed classification cache: a re-crawl only invalidates
            -- the LLM classification of pages whose AX outline actually changed.
@@ -102,6 +104,7 @@ export class SiteModelRepository {
           capture.headings, capture.axOutline ?? null, capture.contentHash,
           capture.requiresAuth, capture.screenshotKey, capture.pageText || null,
           capture.urlObserved || null,
+          capture.reachedBy && capture.reachedBy.length > 0 ? JSON.stringify(capture.reachedBy) : null,
         ],
       );
       const pageId = rows[0].id;
@@ -396,7 +399,7 @@ export class SiteModelRepository {
     return withTenantTransaction(tenantId, async (client) => {
       const { rows } = await client.query<{
         id: string; page_url: string; role: string; name: string;
-        kind: string; revealed_by: string | null; selector: string | null; rn: string;
+        kind: string; revealed_by: string | null; selector: string | null; rn: string; context: string | null;
         target: string | null; chrome: boolean | null;
       }>(
         // The per-page cap is ROUND-ROBIN ACROSS KINDS, not a flat alphabetical
@@ -429,16 +432,23 @@ export class SiteModelRepository {
            HAVING (SELECT n FROM crawled) >= 5
               AND count(DISTINCT pe.page_id) >= 0.6 * (SELECT n FROM crawled)
          )
-         SELECT id, page_url, role, name, kind, revealed_by, selector, target, chrome, rn FROM (
-           SELECT id, page_url, role, name, kind, revealed_by, selector, target, chrome,
+         SELECT id, page_url, role, name, kind, revealed_by, selector, target, context, chrome, rn FROM (
+           SELECT id, page_url, role, name, kind, revealed_by, selector, target, context, chrome,
                   ROW_NUMBER() OVER (PARTITION BY page_id ORDER BY kind_rank, kind, name) AS rn
            FROM (
              SELECT pe.id, sp.url_normalized AS page_url, pe.role, pe.name, pe.kind,
                     pe.revealed_by, pe.selector, pe.page_id,
                     pe.attributes->>'target' AS target,
-                    (sw.name IS NOT NULL) AS chrome,
+                    pe.attributes->>'kz-context' AS context,
+                    -- \\y, not \y: in a JS template literal \y collapses to a
+                    -- plain y, so Postgres received '^(new|add|create)y' and the
+                    -- creation exception NEVER fired — suite-create died at the
+                    -- chrome gate in every run since it was "fixed" (run 16).
+                    (sw.name IS NOT NULL AND pe.name !~* '^(new|add|create)\\y') AS chrome,
                     -- Site-wide chrome ranks LAST within its kind: when the cap
                     -- bites, the page's own controls are the ones worth keeping.
+                    -- Creation controls are never chrome — same exception as the
+                    -- planner dossier (run 16: the write gate killed suite-create).
                     ROW_NUMBER() OVER (
                       PARTITION BY pe.page_id, pe.kind
                       ORDER BY (sw.name IS NOT NULL), pe.name
@@ -469,6 +479,7 @@ export class SiteModelRepository {
         revealedBy: r.revealed_by,
         selector: r.selector,
         opensNewTab: r.target === '_blank',
+        context: r.context ?? null,
         chrome: r.chrome === true,
       }));
     });
@@ -509,6 +520,132 @@ export class SiteModelRepository {
         [tenantId, suiteId],
       );
       return new Map(rows.map((r) => [r.url_normalized, r.url_observed as string]));
+    });
+  }
+
+  /**
+   * The pages as an engineer would read them, for the planner. One query per
+   * suite: elements come with the chrome flag so nav/footer can be dropped
+   * (chrome is context, never a subject), forms and text ride from ax_outline
+   * and page_text, and the URL is the NAVIGABLE one.
+   * Spec: docs/specs/test-writer/spec-planner-per-page.md §1.1
+   */
+  async listPageDossiers(
+    tenantId: string, suiteId: string, perPageElementCap = 30,
+  ): Promise<PageDossier[]> {
+    return withTenantTransaction(tenantId, async (client) => {
+      const { rows: pages } = await client.query<{
+        id: string; url_normalized: string; url_observed: string | null; title: string | null;
+        headings: string[] | null; page_text: string | null; purpose: string | null;
+        capabilities: string[] | null; requires_auth: boolean;
+        ax_outline: UnclassifiedPage['axOutline'];
+        reached_by: Array<{ role: string; name: string }> | null;
+      }>(
+        `SELECT id, url_normalized, url_observed, title, headings, page_text, purpose,
+                capabilities, requires_auth, ax_outline, reached_by
+         FROM site_pages
+         WHERE tenant_id = $1 AND suite_id = $2
+         ORDER BY first_seen_at`,
+        [tenantId, suiteId],
+      );
+      if (pages.length === 0) return [];
+
+      // Same chrome rule as getGroundingElements: role+name on >= 60% of pages.
+      const { rows: elements } = await client.query<{
+        page_id: string; role: string; name: string; kind: string; target: string | null; context: string | null; chrome: boolean;
+        revealed_by: string | null;
+      }>(
+        `WITH crawled AS (
+           SELECT count(*)::numeric AS n FROM site_pages WHERE tenant_id = $1 AND suite_id = $2
+         ),
+         site_wide AS (
+           SELECT pe.role, pe.name
+           FROM page_elements pe JOIN site_pages sp ON sp.id = pe.page_id
+           WHERE pe.tenant_id = $1 AND sp.suite_id = $2 AND pe.name <> ''
+           GROUP BY pe.role, pe.name
+           HAVING (SELECT n FROM crawled) >= 5
+              AND count(DISTINCT pe.page_id) >= 0.6 * (SELECT n FROM crawled)
+         )
+         SELECT pe.page_id, pe.role, pe.name, pe.kind, pe.attributes->>'target' AS target,
+                pe.attributes->>'kz-context' AS context,
+                -- Site-wide by count, OR a control the survey saw inside the
+                -- site's navigation. The count rule alone missed Kaizen's own
+                -- sidebar: its items carry live counts ("Tests 0" → "Tests 6")
+                -- and some screens hide the sidebar, so no name reached 60%.
+                -- Tabs and toolbars are NOT chrome: they are the page's own.
+                ((sw.name IS NOT NULL
+                  OR COALESCE(pe.attributes->>'nav-context', '') IN ('nav', 'aside', 'header', 'navigation', 'menubar', 'nav-class')
+                  OR pe.attributes ? 'aria-current')
+                  -- A creation control ("New suite") is never chrome: it CREATES,
+                  -- and both chrome rules hiding it blocked all suite-CRUD planning.
+                  -- \\y, not \y — see the grounding query's chrome expression.
+                  AND pe.name !~* '^(new|add|create)\\y') AS chrome,
+                pe.revealed_by
+         FROM page_elements pe
+         JOIN site_pages sp ON sp.id = pe.page_id
+         LEFT JOIN site_wide sw ON sw.role = pe.role AND sw.name = pe.name
+         WHERE pe.tenant_id = $1 AND sp.suite_id = $2 AND pe.name <> '' AND pe.kind <> 'form'
+         ORDER BY pe.page_id, pe.kind, pe.name`,
+        [tenantId, suiteId],
+      );
+      // Kinds share the cap ROUND-ROBIN. The sequential fill sorted kinds
+      // alphabetically, so a 70-button dashboard spent the whole cap on buttons
+      // and the planner never saw a single row: run 12 stored 86 clickable rows
+      // and planned zero tests about them.
+      const byPageKind = new Map<string, Map<string, PageDossier['elements']>>();
+      for (const el of elements) {
+        if (el.chrome) continue;
+        const kinds = byPageKind.get(el.page_id) ?? new Map<string, PageDossier['elements']>();
+        const list = kinds.get(el.kind) ?? [];
+        list.push({
+          role: el.role, name: el.name, kind: el.kind,
+          ...(el.context ? { context: el.context } : {}),
+          ...(el.target === '_blank' ? { opensNewTab: true } : {}),
+          // A control that only exists after another is clicked (the fields
+          // behind "New Test") — the planner must know the door, or it plans
+          // "type a name" on a page whose name field is not on screen.
+          ...(el.revealed_by ? { revealedBy: el.revealed_by } : {}),
+        });
+        kinds.set(el.kind, list);
+        byPageKind.set(el.page_id, kinds);
+      }
+      const byPage = new Map<string, PageDossier['elements']>();
+      for (const [pageId, kinds] of byPageKind) {
+        const queues = [...kinds.values()];
+        const merged: PageDossier['elements'] = [];
+        for (let i = 0; merged.length < perPageElementCap; i++) {
+          let took = false;
+          for (const queue of queues) {
+            if (i < queue.length && merged.length < perPageElementCap) { merged.push(queue[i]); took = true; }
+          }
+          if (!took) break;
+        }
+        byPage.set(pageId, merged);
+      }
+
+      // The opening words every page shares are the app's chrome — menu bar,
+      // sidebar, account — and on a dashboard they fill the whole 300-character
+      // window, so the planner read "Kaizen File View Account Help Tests Runs
+      // Analyses…" for every screen and nothing of the screen itself. Strip the
+      // common word prefix once there are enough pages to call it common.
+      const chromePrefixWords = commonWordPrefix(pages.map((p) => p.page_text ?? ''));
+
+      // Blocked captures are never stored (see upsertPage), so every row here is
+      // a page the crawl actually read.
+      return pages
+        .map((p) => ({
+          url: p.url_observed ?? p.url_normalized,
+          urlNormalized: p.url_normalized,
+          title: p.title ?? '',
+          headings: Array.isArray(p.headings) ? p.headings.slice(0, 6) : [],
+          pageText: stripWordPrefix(p.page_text ?? '', chromePrefixWords).slice(0, 300),
+          purpose: p.purpose ?? '',
+          capabilities: Array.isArray(p.capabilities) ? p.capabilities : [],
+          elements: byPage.get(p.id) ?? [],
+          forms: formSummaryLines(p.ax_outline),
+          requiresAuth: p.requires_auth,
+          ...(Array.isArray(p.reached_by) && p.reached_by.length > 0 ? { reachedBy: p.reached_by } : {}),
+        }));
     });
   }
 
@@ -592,3 +729,23 @@ async function insertElement(
     ],
   );
 }
+
+/**
+ * Words that open EVERY page's text (three pages or more): the chrome. Only a
+ * run of at least five words counts — two pages that both start "Welcome to"
+ * share a phrase, not a sidebar.
+ */
+export function commonWordPrefix(texts: string[]): number {
+  const lists = texts.filter((t) => t.trim()).map((t) => t.split(/\s+/));
+  if (lists.length < 3) return 0;
+  let n = 0;
+  const shortest = Math.min(...lists.map((l) => l.length));
+  while (n < shortest && lists.every((l) => l[n] === lists[0][n])) n++;
+  return n >= 5 ? n : 0;
+}
+
+export function stripWordPrefix(text: string, words: number): string {
+  if (words <= 0) return text;
+  return text.split(/\s+/).slice(words).join(' ');
+}
+

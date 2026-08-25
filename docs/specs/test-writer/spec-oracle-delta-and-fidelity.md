@@ -1,8 +1,10 @@
 # Spec: Oracle delta + scenario fidelity — what the-internet run taught us
 
 **Created:** 2026-08-18
+**Updated:** 2026-08-18 — §1.2 from Kaizen-on-Kaizen (state, removals, settle, no-action)
 **Updated:** 2026-08-18 — §1 and §5 built (Batch 1a) with the real-browser measurement below;
-§2 built (Batch 1b); §3 and §4 built (Batch 2, which absorbed Batch 3's two report fixes)
+§2 built (Batch 1b); §3 and §4 built (Batch 2, which absorbed Batch 3's two report fixes); §2.2
+added from run 2 and built
 **Status:** Built — all of §1–§5. Remaining follow-up: HTTP Basic credentials as a suite setting
 (separate spec) and hardening discover oracles from harvested deltas.
 **Owner:** test-writer / worker
@@ -103,6 +105,28 @@ the login negatives resolve to the flash text instead of its "×" button.
 > Four of the five false passes in the run that prompted this spec are answered directly by that
 > table; the fifth (the download link) has no delta and now fails.
 
+### 1.2 What Kaizen-on-Kaizen taught (2026-08-18, runs 3–5 of `spec-screen-discovery.md`)
+
+- **State is identity.** The key gains `|state` (`aria-pressed/selected/checked/expanded/current`,
+  `aria-disabled`, `disabled`, `checked`). A filter button that becomes pressed, a tab that becomes
+  selected, a Save that becomes enabled — each is the element the action changed. Before this, a
+  filter on Kaizen's own Runs view was "nothing changed" (rows were only *hidden*, and hiding adds
+  nothing).
+- **Removals count.** `walk()` returns `removed` — baseline keys with fewer occurrences now. Nothing
+  added but something gone (rows filtered, a banner dismissed, an item deleted) is a change; the
+  assertion is then checked against the whole page with a log line saying why, instead of
+  `AssertionNothingChanged`.
+- **The DOM settles before the after-snapshot** (`settleDom`, 400 ms quiet / 2 s ceiling), and again
+  before the re-diff at assertion time. A click returns before the app that fetches has answered.
+- **A discover oracle with no action before it fails** — `AssertionNoAction`, "no action came before
+  this check on this page". Its definition is *what the previous action changed*; with none, page-wide
+  resolution passed on whatever it found. That is how the vacuity probe (navigates + assertions,
+  actions removed) called every delta-scoped test vacuous — seven of seven in run 5 — and how a test
+  could be green while checking nothing. Filed as the test's defect, never the app's; the validation
+  runner names it in plain words.
+- The delta oracle makes the vacuity probe redundant for description-target assertions by
+  construction; the probe still catches literal-value assertions that were true before the action.
+
 ## 2. Scenario fidelity (writer + judge)
 
 - **Site chrome.** After recon, an element (role+name+href) present on ≥ 60 % of crawled pages
@@ -151,6 +175,38 @@ the login negatives resolve to the flash text instead of its "×" button.
   with the inserted step.
 - **Page text for control-less pages moves to Batch 2**, with the nearby-text names (§3): both are
   changes to what recon captures, and they belong in one pass.
+
+### 2.2 What the second run taught (2026-08-18, run 2: 9 proposed / 2 proven / 19 rejected)
+
+The delta oracle worked — every proposed test bound to what the action produced, and the login
+negatives showed the picked flash text next to its "×". Yield did not move, and most of the loss was
+self-inflicted:
+
+- **Page text became an escape hatch.** Offered alongside a full element list, it answered twelve
+  different plans with "navigate to the home page, verify 'Welcome to the-internet' is shown"; dedup
+  ate eleven. Fix: page text goes to WRITE **only when the element list is empty**, and the schema
+  gate rejects a scenario that never interacts on a page that has controls.
+- **`select` was lumped in with `type`** by the "don't assert what you typed" rule — but reading back
+  the option you chose IS the dropdown's oracle. Exempted.
+- **A 260-character `assert_text` was rejected**, killing a sound status-codes test. It is a substring
+  check, so the first sentence proves the same thing; the gate now trims instead.
+- **No `assert_not_checked`** existed, so the writer improvised "verify the checkbox 1 is unchecked is
+  not visible". Added, engine to template.
+- **Three alert tests asserted dialog contents.** The writer is now told what the runner cannot see
+  (dialogs are auto-answered; downloads are never opened; iframe internals are unreachable).
+- **A no-action test was PROVEN.** "Hover Interaction" ran `navigate → verify text` green — hovering
+  nothing — and the vacuity probe cannot catch it because there is nothing to remove. A scenario
+  with no state-changing step is now labelled **PAGE LOADS**, never PROVEN, unless the assertion is
+  about where the navigation landed (a redirect check is a real test).
+- **`[data-kz-delta="kz-d-0"]` was unverifiable to a person.** The delta now rides as its own
+  resolution source (`delta`); the run page opens "What changed after the action" with the picked
+  row highlighted.
+- The unlabelled-control finding still said "Kaizen cannot write a test that refers to them",
+  contradicting the tests above it. Reworded.
+
+What this run did NOT explain — and what the next spec addresses — is why 30 requested became 9:
+the planner plans the whole app in one call from a compressed brief, and every stage after it can
+only subtract. See `spec-planner-per-page.md`.
 
 ## 3. Names for the nameless (recon)
 

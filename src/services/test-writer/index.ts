@@ -21,6 +21,8 @@ import { ScreenshotService } from '../../modules/media/screenshot.service';
 import { PlaywrightDOMPruner } from '../../modules/dom-pruner/playwright.dom-pruner';
 import { PageChallengeDetector } from '../../modules/execution-engine/challenge-detector';
 import { ReconCrawler } from '../../modules/test-writer/recon/crawler';
+import { FactVerifier } from '../../modules/test-writer/transcribe/fact-verifier';
+import { Explorer } from '../../modules/test-writer/recon/explorer';
 import { SiteModelRepository } from '../../modules/test-writer/site-model.repository';
 import { runTestWriterJob } from '../../modules/test-writer/pipeline';
 import { PageClassifier } from '../../modules/test-writer/comprehend/classifier';
@@ -95,14 +97,16 @@ const authAssertionResolver = new CompositeElementResolver(
   llm,
 );
 
+const authEngine = new PlaywrightExecutionEngine(obs);
+const authChallenges = new PageChallengeDetector();
 const crawler = new ReconCrawler({
   pool,
   surveyor: domPruner,
-  challenges: new PageChallengeDetector(),
+  challenges: authChallenges,
   obs,
   screenshots: new ScreenshotService(obs),
   auth: {
-    engine: new PlaywrightExecutionEngine(obs),
+    engine: authEngine,
     resolver: authResolver,
     assertionResolver: authAssertionResolver,
   },
@@ -128,6 +132,24 @@ const deps = {
   // the job's tenant, and never written to the global compile cache when the
   // step carries a literal value (§12.3).
   llm,
+  // Fact tier (spec-agentic-testwriter.md §4): batch verification shares the
+  // crawler's browser pool and sign-in machinery — same conservatism, same
+  // no-shared-pool prohibition behind auth.
+  factVerifier: new FactVerifier(pool, obs, {
+    engine: authEngine,
+    resolver: authResolver,
+    challenges: authChallenges,
+  }),
+  // The explorer subagent: the crawler's eyes and safety gate, the model's
+  // judgment about where to go. Spec: spec-agentic-testwriter.md §4
+  explorer: new Explorer({
+    pool,
+    surveyor: domPruner,
+    challenges: authChallenges,
+    obs,
+    gateway,
+    auth: { engine: authEngine, resolver: authResolver, assertionResolver: authAssertionResolver },
+  }),
 };
 
 const worker = new Worker<TestWriterJobPayload>(

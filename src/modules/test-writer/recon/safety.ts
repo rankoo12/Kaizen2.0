@@ -31,7 +31,7 @@ const HARD_DESTRUCTIVE = [
   'deactivate', 'publish', 'unpublish',
 ] as const;
 
-const SESSION_ENDING = [
+export const SESSION_ENDING = [
   'logout', 'log out', 'sign out', 'signout', 'log off', 'logoff', 'end session',
 ] as const;
 
@@ -125,7 +125,13 @@ export type SensitiveTier = 'capture-suppressed' | 'passive-only' | null;
 export function sensitiveTier(rawUrl: string): SensitiveTier {
   let segments: string[];
   try {
-    segments = new URL(rawUrl).pathname.toLowerCase().split('/').filter(Boolean);
+    const url = new URL(rawUrl);
+    segments = url.pathname.toLowerCase().split('/').filter(Boolean);
+    // A screen reached by clicking has no path of its own: "Settings → API
+    // keys" lives at /tests#screen=settings/api-keys. Its slugs are its path.
+    // Spec: docs/specs/test-writer/spec-screen-discovery.md §1.4
+    const screen = /^#screen=(.+)$/.exec(url.hash);
+    if (screen) segments.push(...decodeURIComponent(screen[1]).toLowerCase().split('/').filter(Boolean));
   } catch {
     segments = rawUrl.toLowerCase().split('?')[0].split('/').filter(Boolean);
   }
@@ -171,17 +177,22 @@ const REVEAL_NAMES = [
  */
 const OPENER_PREFIXES = [
   'new ', 'create new', 'compose', 'write a', 'start a', 'start new',
+  // Verbs that begin a multi-step flow behind a sheet or wizard. Kaizen's
+  // "Analyze an app" fell to the default 'mutating' and the URL field behind
+  // it was never observed — reference test 22 was unwritable (reachability
+  // board, 2026-08-19). Same shape as "New …": the click opens a form.
+  'analyze ', 'import ', 'scan ', 'generate ', 'upload ',
 ] as const;
 
 /** Exact names that are openers on their own. */
 const OPENER_EXACT = ['new', '+', 'create', 'add new'] as const;
 
-function isOpenerName(name: string): boolean {
+export function isOpenerName(name: string): boolean {
   if (OPENER_EXACT.includes(name as never)) return true;
   return OPENER_PREFIXES.some((p) => name.startsWith(p));
 }
 
-function matchesAny(name: string, lexicon: readonly string[]): boolean {
+export function matchesAny(name: string, lexicon: readonly string[]): boolean {
   return lexicon.some((term) =>
     new RegExp(`(^|\\b)${term.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}(\\b|$)`).test(name));
 }
@@ -250,8 +261,11 @@ export function classifyInteraction(node: CandidateNode, ctx: SafetyContext): In
   // 5. Positive safe-reveal signals.
   if (node.role === 'tab') return 'safe-reveal';               // switches a view
   if ('aria-expanded' in attrs) return 'safe-reveal';          // disclosure toggle
+  if ('aria-pressed' in attrs) return 'safe-reveal';           // view/filter switch — reverts on re-click
   if ('aria-haspopup' in attrs) return 'safe-reveal';          // menu/dialog opener
   if (matchesAny(name, REVEAL_NAMES)) return 'safe-reveal';
+  // The ellipsis convention: a control whose label ends "…" announces a dialog.
+  if (/(…|\.\.\.)$/.test(name)) return 'safe-reveal';
   // Creation-form openers. Reached only AFTER the submit-type and
   // destructive-verb gates above, so "Add to cart" and `type="submit"` are
   // already excluded. This is what makes every create/edit form in an app

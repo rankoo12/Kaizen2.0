@@ -22,6 +22,19 @@ export type RunJobPayload = {
   stepIds?: string[];
   baseUrl: string;
   /**
+   * §2b (spec-parallel-pipeline): Redis key of a Playwright storageState an
+   * earlier proving run of the same generation job exported. The worker starts
+   * this run's context pre-authenticated from it, and compiledSteps carry no
+   * login prefix — the batch signs in once instead of submitting the same
+   * credentials N times in parallel.
+   */
+  sessionSeedKey?: string;
+  /**
+   * §2b: on a passing run, export the context's storageState to this Redis key
+   * (short TTL, tenant-scoped). Session material never touches Postgres or logs.
+   */
+  sessionExportKey?: string;
+  /**
    * Pre-seeded run-scoped variables (generated form data) made available to
    * steps via {{token}} interpolation. Generated fresh per run by the API so
    * each run registers unique data. Optional for backwards-compat.
@@ -86,6 +99,31 @@ export type TestWriterJobPayload = {
     /** How the job was requested. Distinguishes a scoped suggestion from an
      *  analyze in reports and history without a schema change. */
     mode?: 'analyze' | 'suggest';
+    /**
+     * Opt-in: seed the plan with what previous jobs on this site proved and
+     * the per-page lessons they persisted. OFF by default — an analyze must
+     * stand on the crawl, the brief, and what it learns within its own run,
+     * so results on a first-visit site mean what they claim.
+     */
+    useCrossRunMemory?: boolean;
+    /**
+     * Fact tier: after the journey rounds, transcribe granular per-screen
+     * checks and batch-verify them in one live browser session. This is the
+     * volume half of the agentic shape. OFF by default while it earns its way
+     * to being the default. Spec: spec-agentic-testwriter.md §4–§5
+     */
+    factTier?: boolean;
+    /** Facts a fully-covered dense screen deserves (default 25). */
+    factsPerPage?: number;
+    /**
+     * The explorer subagent: after the crawler's BFS, a model drives the
+     * browser to find the screens rules cannot reason about (sidebar
+     * sections, detail views, sheets). OFF by default while it earns its way.
+     * Spec: spec-agentic-testwriter.md §4
+     */
+    explore?: boolean;
+    /** Explorer turns (one frontier call each). Default 40. */
+    exploreTurns?: number;
   };
   /**
    * Set when the job is re-enqueued by the plan-approval endpoint: RECON and

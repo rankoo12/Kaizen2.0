@@ -576,7 +576,18 @@ function DeliveryFace({ job, drafts, onAcceptAll, onAccept, onDismiss, onOpenRun
           <div className="label" style={{ marginBottom: 8, color: 'var(--warn)' }}>Needs a decision</div>
           <div className="list">
             {unproven.map((d) => {
-              const evidence = EVIDENCE[d.validationState as keyof typeof EVIDENCE] ?? EVIDENCE.unvalidated;
+              const notes = job.report?.auditFindings?.[d.name] ?? [];
+              // A test that performs no action shares the vacuous label but
+              // not the vacuous story: nothing was removed, there was nothing to
+              // remove. Say what it actually is.
+              const pageLoadOnly = notes.some((n) => n.startsWith('page_load_only'));
+              const evidence = pageLoadOnly
+                ? {
+                    chip: 'PAGE LOADS',
+                    caption: 'Ran green, but performs no action — it only shows the page loads and shows this text. '
+                      + 'Fine as a smoke check; it does not test the feature the page is about.',
+                  }
+                : (EVIDENCE[d.validationState as keyof typeof EVIDENCE] ?? EVIDENCE.unvalidated);
               return (
                 <div key={d.id} className="row" style={{ padding: '11px 14px' }}>
                   <I.sparkle size={13} style={{ color: 'var(--warn)', flex: 'none' }} />
@@ -585,7 +596,7 @@ function DeliveryFace({ job, drafts, onAcceptAll, onAccept, onDismiss, onOpenRun
                     <div className="row-s">{evidence.caption}</div>
                     {/* The specific reason, when the audit left one — the caption is
                         the class of doubt, this is the instance. */}
-                    {(job.report?.auditFindings?.[d.name] ?? []).map((note, k) => (
+                    {notes.filter((n) => !n.startsWith('page_load_only')).map((note, k) => (
                       <div key={k} className="row-s num" style={{ fontSize: 11, marginTop: 2 }}>{note}</div>
                     ))}
                   </div>

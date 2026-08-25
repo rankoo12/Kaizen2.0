@@ -61,3 +61,14 @@ kaizen-codebase.*.txt
 
 # Throwaway debug scripts (underscore prefix = session scratch, never shipped)
 _*.mjs
+benchmarks/testwriter/results/
+
+# local LLM inbox (prompts contain page text)
+.kaizen-llm/
+
+# QA-agent baseline artifacts — specs are committed, generated outputs are not
+benchmarks/claude-qa/**/.auth-state.json
+benchmarks/claude-qa/whitebox/test-results/
+benchmarks/claude-qa/whitebox/playwright-report/
+benchmarks/claude-qa/whitebox/results-full.json
+benchmarks/claude-qa/blackbox/results-full.json

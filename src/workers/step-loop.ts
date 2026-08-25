@@ -28,7 +28,17 @@ export type StepLoopDeps = {
   ) => Promise<void>;
   onStepFailed?: (stepIndex: number, step: StepAST) => void;
   onCancelled?: (stepsCompleted: number) => void;
+  /** Per-step ceiling in ms; a step that outlives it fails the run. */
+  stepWatchdogMs?: number;
 };
+
+/**
+ * A Playwright call with no timeout of its own (run 30: post-Save navigation
+ * wait) can wedge a worker slot forever. The watchdog fails the step — and so
+ * the run — instead; the orphaned call is abandoned to the browser context's
+ * eventual teardown.
+ */
+const STEP_WATCHDOG_MS = 60_000;
 
 export type StepLoopResult = {
   runPassed: boolean;
@@ -62,7 +72,25 @@ export async function runStepLoop(
     }
 
     const step = compiledSteps[i];
-    const { status, healed, afterPng } = await deps.executeStep(step, i, previousAfterPng, runContext);
+    const execution = deps.executeStep(step, i, previousAfterPng, runContext);
+    let watchdog: ReturnType<typeof setTimeout> | undefined;
+    const timedOut = Symbol('step watchdog');
+    const raced = await Promise.race([
+      execution,
+      new Promise<typeof timedOut>((resolve) => {
+        watchdog = setTimeout(() => resolve(timedOut), deps.stepWatchdogMs ?? STEP_WATCHDOG_MS);
+      }),
+    ]).finally(() => clearTimeout(watchdog));
+    if (raced === timedOut) {
+      // The abandoned call settles (or never does) against a run already over.
+      execution.catch(() => {});
+      runPassed = false;
+      stepsExecuted = i;
+      deps.onStepFailed?.(i, step);
+      await deps.recordSkippedSteps(compiledSteps, i + 1, 'prior_step_failed');
+      break;
+    }
+    const { status, healed, afterPng } = raced;
     previousAfterPng = afterPng;
     stepsExecuted = i + 1;
 

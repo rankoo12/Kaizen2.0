@@ -21,6 +21,9 @@ const TIERS: Record<string, ResolutionTier> = {
   pgvector_step:    { code: 'L3', label: 'Vector (tenant)',    cached: true },
   pgvector_element: { code: 'L4', label: 'Vector (shared)',    cached: true },
   llm:              { code: 'L5', label: 'LLM',                cached: false },
+  // Not a cache tier: the element was chosen from what the previous action
+  // changed on the page. No model call, no memory — a different kind of answer.
+  delta:            { code: 'Δ',  label: 'What changed',       cached: true },
 };
 
 export function resolutionTier(source: string | null | undefined): ResolutionTier | null {
