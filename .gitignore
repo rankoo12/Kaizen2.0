@@ -71,3 +71,4 @@ benchmarks/claude-qa/**/.auth-state.json
 benchmarks/claude-qa/whitebox/test-results/
 benchmarks/claude-qa/whitebox/playwright-report/
 benchmarks/claude-qa/whitebox/results-full.json
+benchmarks/claude-qa/blackbox/results-full.json
