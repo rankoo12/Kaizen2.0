@@ -166,6 +166,10 @@ services:
       - CHOKIDAR_USEPOLLING=true
       - NEXT_TELEMETRY_DISABLED=1
       - KAIZEN_API_URL=http://api:3000
+      # Dev server under sustained automation load (test-writer benches, QA
+      # agent suites) trips Next's heap watchdog at the default ~2GB and
+      # self-restarts mid-run. 6GB keeps it standing.
+      - NODE_OPTIONS=--max-old-space-size=6144
     volumes:
       - ./packages/web:/app
       - /app/node_modules

@@ -146,11 +146,16 @@ function serve(port: number): void {
         });
       }
       if (req.method === 'POST' && req.url?.endsWith('/embeddings')) {
-        const parsed = JSON.parse(body) as { input: string | string[]; model?: string };
+        const parsed = JSON.parse(body) as { input: string | string[]; model?: string; encoding_format?: string };
         const inputs = Array.isArray(parsed.input) ? parsed.input : [parsed.input];
+        // The OpenAI Node SDK asks for base64 by default and decodes the answer
+        // unconditionally — a float array sent back would be "decoded" into
+        // 384 garbage floats and every pgvector write would fail.
+        const encode = (v: number[]): number[] | string =>
+          parsed.encoding_format === 'base64' ? Buffer.from(new Float32Array(v).buffer).toString('base64') : v;
         return send(200, {
           object: 'list', model: parsed.model ?? 'text-embedding-3-small',
-          data: inputs.map((text, index) => ({ object: 'embedding', index, embedding: embedding(String(text)) })),
+          data: inputs.map((text, index) => ({ object: 'embedding', index, embedding: encode(embedding(String(text))) })),
           usage: { prompt_tokens: 0, total_tokens: 0 },
         });
       }
