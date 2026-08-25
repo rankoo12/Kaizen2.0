@@ -16,8 +16,13 @@ import { SESSION_ENDING, isOpenerName, matchesAny } from './safety';
  * the gate below, which re-checks the destructive and session-ending lexicons.
  */
 
-/** One hop of the recipe that reaches a screen from the page it was found on. */
-export type ReachHop = { role: string; name: string };
+/**
+ * One hop of the recipe that reaches a screen from the page it was found on.
+ * `css`/`xpath` are the surveyor's selectors captured at click time — the
+ * name alone died in run 30 (14 run-detail facts) when the surveyed role was
+ * heuristic ('row' on divs) and the named data row had left the feed.
+ */
+export type ReachHop = { role: string; name: string; css?: string; xpath?: string };
 
 /** Ceiling on view-switch candidates per page — a sidebar, not a data table. */
 export const SCREEN_CANDIDATES_PER_PAGE = 12;

@@ -65,3 +65,9 @@ benchmarks/testwriter/results/
 
 # local LLM inbox (prompts contain page text)
 .kaizen-llm/
+
+# QA-agent baseline artifacts — specs are committed, generated outputs are not
+benchmarks/claude-qa/**/.auth-state.json
+benchmarks/claude-qa/whitebox/test-results/
+benchmarks/claude-qa/whitebox/playwright-report/
+benchmarks/claude-qa/whitebox/results-full.json

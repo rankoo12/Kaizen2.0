@@ -215,6 +215,8 @@ export class TestPlanner {
     tenantBrief: TenantBrief | null;
     pages: PageDossier[];
     existingCaseNames: string[];
+    /** Scenario names a previous run proved — a floor for this plan, not duplicates. */
+    provenBaseline?: string[];
     scope: 'public' | 'authenticated';
     syntheticDataConsent: boolean;
     maxScenarios: number;
@@ -243,24 +245,41 @@ export class TestPlanner {
     // found by it. A screen is quoted by its identity (the header shows that).
     const byNavigable = new Map(dossiers.filter((p) => !p.reachedBy?.length).map((p) => [p.url, p]));
     const fromModel: PlannedScenario[] = [];
-    for (const batch of batchDossiers(dossiers, params.batchSize ?? 6)) {
-      if (!batch.some((p) => !p.excludedBy && !p.isIndex)) continue;
-      const raw = await this.gateway.planPageBatch({
-        pages: batch,
-        tenantBrief: params.tenantBrief,
-        appSummary: params.appSummary,
-        repertoire: repertoireHints,
-        ledger: params.ledger,
-        perPage,
-        scope: params.scope,
-        syntheticDataConsent: params.syntheticDataConsent,
-        existingCaseNames: params.existingCaseNames,
-      }, params.tenantId).catch((e: unknown) => {
-        this.obs.log('warn', 'testwriter.plan_batch_failed', { error: e instanceof Error ? e.message : String(e) });
-        return [] as PlannedScenario[];
-      });
-      fromModel.push(...raw);
-    }
+    // §4b (spec-parallel-pipeline): the per-batch plan calls are independent —
+    // ~60s x ~8 batches was the biggest serial stretch left in run 34. Fan out
+    // four wide; results merge in batch order so step 3's dedup (first name
+    // wins) stays deterministic.
+    const PLAN_CONCURRENCY = 4;
+    const batches = [...batchDossiers(dossiers, params.batchSize ?? 6)]
+      .filter((batch) => batch.some((p) => !p.excludedBy && !p.isIndex));
+    const perBatch: Array<PlannedScenario[] | null> = new Array(batches.length).fill(null);
+    let nextBatch = 0;
+    await Promise.all(Array.from(
+      { length: Math.min(PLAN_CONCURRENCY, batches.length) },
+      async () => {
+        for (;;) {
+          const idx = nextBatch++;
+          if (idx >= batches.length) return;
+          perBatch[idx] = await this.gateway.planPageBatch({
+            pages: batches[idx],
+            tenantBrief: params.tenantBrief,
+            appSummary: params.appSummary,
+            repertoire: repertoireHints,
+            ledger: params.ledger,
+            perPage,
+            scope: params.scope,
+            syntheticDataConsent: params.syntheticDataConsent,
+            existingCaseNames: params.existingCaseNames,
+            provenBaseline: params.provenBaseline,
+            targetTotal: params.maxScenarios,
+          }, params.tenantId).catch((e: unknown) => {
+            this.obs.log('warn', 'testwriter.plan_batch_failed', { error: e instanceof Error ? e.message : String(e) });
+            return [] as PlannedScenario[];
+          });
+        }
+      },
+    ));
+    for (const raw of perBatch) fromModel.push(...(raw ?? []));
 
     // 3. Normalise — the same disposal rules as plan(): observed pages only,
     //    scope respected, names unique. Plus: nothing on an index or excluded page.

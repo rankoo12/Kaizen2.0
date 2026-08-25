@@ -156,7 +156,7 @@ export type PageDossier = {
   capabilities: string[];
   /** Page-specific interactive elements: nav/footer chrome excluded. `revealedBy`
    *  names the control that has to be clicked first for this one to exist. */
-  elements: Array<{ role: string; name: string; kind: string; opensNewTab?: boolean; revealedBy?: string }>;
+  elements: Array<{ role: string; name: string; kind: string; context?: string; opensNewTab?: boolean; revealedBy?: string }>;
   /** "login form: username, password, [Login]" */
   forms: string[];
   requiresAuth: boolean;
@@ -180,6 +180,10 @@ export type PlanBatchInput = {
   scope: 'public' | 'authenticated';
   syntheticDataConsent: boolean;
   existingCaseNames: string[];
+  /** Scenario names a previous run proved — a floor for this plan, not duplicates. */
+  provenBaseline?: string[];
+  /** What the user asked for across the whole site — the batches should collectively approach it. */
+  targetTotal?: number;
 };
 
 export type PlanInput = {
@@ -187,6 +191,8 @@ export type PlanInput = {
   tenantBrief: TenantBrief | null;
   capabilitiesByPage: Record<string, string[]>;
   existingCaseNames: string[];
+  /** Scenario names a previous run proved — a floor for this plan, not duplicates. */
+  provenBaseline?: string[];
   scope: 'public' | 'authenticated';
   syntheticDataConsent: boolean;
   maxScenarios: number;
@@ -264,6 +270,8 @@ export type GroundingElement = {
   kind: string;
   /** Non-null when the element only appears after a safe-reveal probe. */
   revealedBy: string | null;
+  /** A clickable row's state text ("failing · 2m ago") — the writer must not guess. */
+  context?: string | null;
   /**
    * The selector recon observed. NEVER sent to the model — the prompt builder
    * emits id/role/name/kind/page only, because a test must bind to meaning, not
@@ -343,6 +351,107 @@ export type WriteInput = {
   previousSteps?: string[];
 };
 
+// ─── EXPLORE (the explorer subagent) ─────────────────────────────────────────
+
+/**
+ * One control the explorer may act on, as shown to the model. `clickable` is
+ * decided by OUR safety gate; the model chooses among clickable controls only.
+ * Spec: docs/specs/test-writer/spec-agentic-testwriter.md §4 (explorer)
+ */
+export type ExploreControl = {
+  index: number;
+  role: string;
+  name: string;
+  context?: string;
+  /** In a navigation container or marked aria-current. */
+  nav?: boolean;
+  clickable: boolean;
+  /** Already clicked earlier in this exploration. */
+  tried?: boolean;
+};
+
+export type ExploreStepInput = {
+  appSummary: string;
+  tenantBrief: TenantBrief | null;
+  view: {
+    url: string;
+    title: string;
+    headings: string[];
+    textExcerpt: string;
+    /** The clicks made since the last URL navigation — the screen's reach recipe. */
+    hops: Array<{ role: string; name: string }>;
+    controls: ExploreControl[];
+  };
+  recorded: Array<{ url: string; name: string; purpose: string }>;
+  lastResult: string | null;
+  turnsLeft: number;
+  screensLeft: number;
+};
+
+export type ExploreAction =
+  | { action: 'click'; control: number; why?: string }
+  | { action: 'open'; url: string; why?: string }
+  | { action: 'record'; name: string; purpose: string; claims: string[]; why?: string }
+  | { action: 'home'; why?: string }
+  | { action: 'done'; why?: string };
+
+// ─── TRANSCRIBE (fact tier) ──────────────────────────────────────────────────
+
+/**
+ * One granular check the transcriber wrote for a screen. Steps use the same
+ * intent grammar as WRITE but under the fact-tier contract: element-id targets
+ * only, read-only interactions, machine-verifiable oracles.
+ * Spec: docs/specs/test-writer/spec-agentic-testwriter.md §4
+ */
+export type FactTest = {
+  name: string;
+  steps: StepIntent[];
+  rationale: string;
+};
+
+/**
+ * The transcriber's answer for one screen: its facts, and optionally ONE
+ * fixture recipe — steps that create a record named by the literal
+ * {{fixture}} — so facts about rows, counts, search and detail views are
+ * written against data the test itself created (the only honest way).
+ */
+export type TranscribeResult = {
+  facts: FactTest[];
+  fixture?: StepIntent[] | null;
+};
+
+export type TranscribeInput = {
+  page: {
+    url: string;
+    urlNormalized: string;
+    title: string;
+    headings: string[];
+    pageText: string;
+    purpose: string;
+    forms: string[];
+    reachedBy?: Array<{ role: string; name: string }>;
+  };
+  /** The screen's citable elements — the ONLY things a fact may target. */
+  grounding: GroundingElement[];
+  /**
+   * What THIS RUN's calibration phase learned the hard way — each line was paid
+   * for with a validation failure. In-run only (memoryless mandate).
+   */
+  conventions: string[];
+  /** How many facts a fully-covered screen of this density deserves. */
+  factsPerPage: number;
+  scope: 'public' | 'authenticated';
+  /** The suite consented to throwaway records: the screen may define a fixture. */
+  fixturesAllowed: boolean;
+  /**
+   * Which slice of the screen this call covers. One screen is transcribed
+   * through three focused calls — a model answers a narrow ask fully and a
+   * wide one thinly (run 29: 6 facts on a 75-control screen from one call).
+   * Absent = everything in one call (tests, legacy).
+   */
+  lens?: 'structure' | 'interactions' | 'fixture';
+};
+
 // ─── JUDGE ───────────────────────────────────────────────────────────────────
 
 export type JudgeDimension =
@@ -410,6 +519,7 @@ export type OracleHarvest = {
 export type FindingKind =
   | 'crawl_error_page'
   | 'empty_accessible_name'
+  | 'duplicate_control_name'
   | 'possible_app_defect'
   | 'unverified_auth_partition'
   | 'console_or_network_errors'
@@ -437,7 +547,8 @@ export type Finding = {
 
 export type ScenarioRejection = {
   name: string;
-  stage: 'safety' | 'schema' | 'render' | 'compile' | 'dedup' | 'judge' | 'validation' | 'consent';
+  stage: 'safety' | 'schema' | 'render' | 'compile' | 'dedup' | 'judge' | 'validation' | 'consent'
+    | 'transcribe' | 'fact_verify';
   reason: string;
   runId?: string;
   /**

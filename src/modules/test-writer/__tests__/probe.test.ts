@@ -1,4 +1,4 @@
-import { runProbes } from '../recon/probe';
+import { runProbes, rankProbeCandidates } from '../recon/probe';
 import type { CandidateNode } from '../../../types';
 import type { IObservability } from '../../observability/interfaces';
 
@@ -113,6 +113,63 @@ describe('runProbes', () => {
 
     expect(probesPerformed).toBe(2);
     expect(page.click).toHaveBeenCalledTimes(2);
+  });
+
+  it('retries an opener once when it revealed nothing, and rescues the reveal', async () => {
+    const page = makePage();
+    page.evaluate
+      .mockResolvedValueOnce(undefined)                                   // baseline
+      .mockResolvedValueOnce({ elements: [], hrefs: [] })                 // first collect: nothing
+      .mockResolvedValueOnce({                                            // retry collect: the sheet
+        elements: [{ role: 'textbox', name: 'Target URL' }], hrefs: [],
+      });
+
+    const { reveals, probesPerformed } = await runProbes(
+      page, [makeCandidate('New Test')], 8, ctx);
+
+    expect(probesPerformed).toBe(1);
+    expect(page.click).toHaveBeenCalledTimes(2);
+    expect(reveals).toHaveLength(1);
+    expect(reveals[0].revealedElements).toEqual([{ role: 'textbox', name: 'Target URL' }]);
+  });
+
+  it('does not retry a non-opener that revealed nothing', async () => {
+    const page = makePage();
+    page.evaluate
+      .mockResolvedValueOnce(undefined)
+      .mockResolvedValueOnce({ elements: [], hrefs: [] });
+
+    const { reveals } = await runProbes(page, [makeCandidate('Show more')], 8, ctx);
+
+    expect(page.click).toHaveBeenCalledTimes(1);
+    expect(reveals).toHaveLength(0);
+  });
+});
+
+describe('rankProbeCandidates', () => {
+  const cand = (name: string, role = 'button'): CandidateNode =>
+    ({ ...makeCandidate(name), role });
+
+  it('puts creation/flow openers before tabs before the rest, stable within tiers', () => {
+    const ranked = rankProbeCandidates([
+      cand('Healed'), cand('Failed'), cand('Details', 'tab'),
+      cand('New Test'), cand('Analyze an app…'), cand('History', 'tab'),
+    ]);
+    expect(ranked.map((c) => c.name)).toEqual([
+      'New Test', 'Analyze an app…', 'Details', 'History', 'Healed', 'Failed',
+    ]);
+  });
+
+  it('collapses names differing only by a keyboard-shortcut suffix into one probe', () => {
+    const ranked = rankProbeCandidates([
+      cand('New Test ⌘N'), cand('New Test'), cand('Run now (⌘R)'), cand('Run now'),
+    ]);
+    expect(ranked.map((c) => c.name)).toEqual(['New Test ⌘N', 'Run now (⌘R)']);
+  });
+
+  it('treats a trailing ellipsis as an opener signal', () => {
+    const ranked = rankProbeCandidates([cand('Sort by'), cand('Export report...')]);
+    expect(ranked.map((c) => c.name)).toEqual(['Export report...', 'Sort by']);
   });
 });
 

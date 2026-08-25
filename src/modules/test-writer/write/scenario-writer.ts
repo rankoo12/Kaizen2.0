@@ -136,6 +136,7 @@ export function checkKnownEntityBinding(
 export function checkChromeOnly(
   steps: StepIntent[],
   elements: Map<string, GroundingElement>,
+  reachNames: string[] = [],
 ): string[] {
   const touched: GroundingElement[] = [];
   for (const step of steps) {
@@ -146,6 +147,16 @@ export function checkChromeOnly(
     if (element) touched.push(element);
   }
   if (touched.length === 0 || touched.some((el) => !el.chrome)) return [];
+  // Two chrome-only shapes ARE the page's behaviour, not wandering (run 15
+  // killed reference test 3 — "open a suite" — right here):
+  //  - the clicks are exactly how the PLANNED screen is reached (an SPA's
+  //    views are opened by sidebar clicks; testing the opening is legitimate);
+  //  - the control's name is a state verb (Hide/Show/Toggle) — chrome that
+  //    DOES something is a feature, only chrome that NAVIGATES elsewhere is noise.
+  const reach = new Set(reachNames.map((n) => n.toLowerCase()));
+  const allReach = touched.every((el) => reach.has(el.name.toLowerCase()));
+  const allBehaviour = touched.every((el) => /^(hide|show|toggle|collapse|expand|open|close|refresh)\b/i.test(el.name));
+  if (allReach || allBehaviour) return [];
 
   const pageSpecific = [...elements.values()].filter((el) => !el.chrome).slice(0, 8);
   return [
@@ -157,6 +168,46 @@ export function checkChromeOnly(
       ? `, for example: ${pageSpecific.map((el) => `${el.role} "${el.name}"`).join(', ')}.`
       : '. If that page has no controls of its own, assert its text instead.'),
   ];
+}
+
+/**
+ * Opposite-polarity assertions on the same target with no action between them
+ * cannot both hold — one of the two is guaranteed to fail against the live
+ * site. Run 18 shipped exactly this: click "Needs review", verify "ready,
+ * unused" visible, verify "ready, unused" NOT visible. The writer meant the
+ * 5b presence-then-absence pair but put the presence check AFTER the action
+ * that removes it. Deterministically wrong, so refused here rather than left
+ * for the judge (which passed it) or the live run (which paid for it).
+ */
+export function checkContradictoryAsserts(steps: StepIntent[]): string[] {
+  const keyOf = (step: StepIntent): string | null => {
+    if (step.action !== 'assert_visible' && step.action !== 'assert_not_visible') return null;
+    const target = 'target' in step ? step.target : undefined;
+    if (!target) return null;
+    return target.kind === 'element'
+      ? `el:${target.elementId}`
+      : `desc:${target.description.trim().toLowerCase()}`;
+  };
+  const errors: string[] = [];
+  let window = new Map<string, { action: string; index: number }>();
+  steps.forEach((step, index) => {
+    const key = keyOf(step);
+    if (key === null) {
+      // Any non-visibility-assert action resets the window: state may change.
+      if (!step.action.startsWith('assert_')) window = new Map();
+      return;
+    }
+    const prior = window.get(key);
+    if (prior && prior.action !== step.action) {
+      errors.push(
+        `steps ${prior.index + 1} and ${index + 1} assert the same element both visible and not `
+        + 'visible with nothing acting in between — they cannot both hold. If the scenario removes '
+        + 'or filters it, check its PRESENCE first, then perform the action, then check its absence.',
+      );
+    }
+    window.set(key, { action: step.action, index });
+  });
+  return errors;
 }
 
 /**
@@ -294,7 +345,9 @@ export class ScenarioWriter {
       // it is the last. A mini model that failed a repair instruction once does
       // the same thing again (spec-judge-repair-loop.md §1.4, §2.3).
       const tier: 'mini' | 'frontier' = attempt > 0 || isRewrite ? 'frontier' : 'mini';
-      const generated = await this.gateway.generateScenario({
+      let generated: Awaited<ReturnType<ITestWriterGateway['generateScenario']>>;
+      try {
+        generated = await this.gateway.generateScenario({
         plan,
         grounding: params.grounding,
         formSummaries: params.formSummaries,
@@ -312,6 +365,15 @@ export class ScenarioWriter {
         knownAccounts: params.knownAccounts,
         reachedBy: params.reachedBy,
       }, params.tenantId);
+      } catch (err) {
+        // A malformed or failed completion is this ATTEMPT's failure — the
+        // repair round asks again with the reason, and a second failure is an
+        // ordinary schema rejection. It is never the job's failure: run 27
+        // lost 30 minutes of proven work to one unparsable answer here.
+        repairErrors = [`your previous answer could not be used (${err instanceof Error ? err.message.slice(0, 120) : String(err)}) — return ONLY the JSON object described above`];
+        this.obs.increment('testwriter.write_gateway_failed', { attempt: String(attempt) });
+        continue;
+      }
 
       const gate = runSchemaGate(
         generated.steps, validIds, params.maxSteps, rolesById, params.seedTokens, newTabIds,
@@ -343,10 +405,19 @@ export class ScenarioWriter {
       // A scenario built entirely out of the nav bar and the footer is not a
       // test of the page it was planned for. One rewrite, on the frontier tier,
       // with the page's own controls named for it.
-      const chromeErrors = checkChromeOnly(gate.steps, elements);
+      const chromeErrors = checkChromeOnly(gate.steps, elements, (params.reachedBy ?? []).map((r) => r.name));
       if (chromeErrors.length > 0) {
         repairErrors = chromeErrors;
         this.obs.increment('testwriter.write_chrome_only_reject', { attempt: String(attempt) });
+        continue;
+      }
+
+      // Visible + not-visible on the same target with no action between is
+      // guaranteed to fail live — refuse now, with the fix spelled out.
+      const contradictionErrors = checkContradictoryAsserts(gate.steps);
+      if (contradictionErrors.length > 0) {
+        repairErrors = contradictionErrors;
+        this.obs.increment('testwriter.write_contradiction_reject', { attempt: String(attempt) });
         continue;
       }
 

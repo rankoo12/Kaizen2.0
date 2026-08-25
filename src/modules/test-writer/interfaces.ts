@@ -120,6 +120,12 @@ export type CrawlReport = {
     linkedFrom?: string | null;
   }>;
   /**
+   * The explorer subagent's outcome, when the job ran it (options.explore).
+   * Shape lives in recon/explorer.ts (ExploreReport): turns, screens recorded,
+   * and the APP-KNOWLEDGE it built. Spec: spec-agentic-testwriter.md §4
+   */
+  explorer?: Record<string, unknown>;
+  /**
    * Signed-in exploration outcome. Present only on authenticated jobs; the
    * shape lives in recon/crawler.ts (AuthCrawlReport) and is mirrored into
    * generation_jobs.report.auth.

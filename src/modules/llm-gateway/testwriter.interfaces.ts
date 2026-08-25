@@ -1,7 +1,7 @@
 import type {
-  AppBrief, AppBriefInput, GeneratedScenario, JudgeInput, JudgeVerdict,
-  PageClassification, PageClassifyInput, PlanBatchInput, PlanInput, PlannedScenario,
-  TenantBrief, WriteInput,
+  AppBrief, AppBriefInput, ExploreAction, ExploreStepInput, GeneratedScenario,
+  JudgeInput, JudgeVerdict, PageClassification, PageClassifyInput, PlanBatchInput, PlanInput,
+  PlannedScenario, TenantBrief, TranscribeInput, TranscribeResult, WriteInput,
 } from '../../types/test-writer';
 
 /**
@@ -59,4 +59,23 @@ export interface ITestWriterGateway {
    * spec-judge-repair-loop.md §2.1).
    */
   judgeScenarios(input: JudgeInput, tenantId: string): Promise<JudgeVerdict[]>;
+
+  /**
+   * Fact tier: ONE call per screen returning MANY granular checks — the volume
+   * half of the agentic shape. FRONTIER tier: the call replaces dozens of
+   * per-scenario writes, so it carries the judgment. The caller gates every
+   * fact (grounding, roles, safety) and batch-verifies them in a live browser.
+   * Spec: docs/specs/test-writer/spec-agentic-testwriter.md §4
+   */
+  transcribeFactTests(input: TranscribeInput, tenantId: string): Promise<TranscribeResult>;
+
+  /**
+   * The explorer subagent's turn: given what the browser shows now and what has
+   * been recorded so far, decide the next move (click / open / record / home /
+   * done). One FRONTIER call per turn — this IS the judgment the rule-based
+   * screen discovery lacked. The caller executes the move under its own safety
+   * gate; the model never overrides what is clickable.
+   * Spec: docs/specs/test-writer/spec-agentic-testwriter.md §4 (explorer)
+   */
+  exploreStep(input: ExploreStepInput, tenantId: string): Promise<ExploreAction>;
 }

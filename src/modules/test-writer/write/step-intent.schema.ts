@@ -338,7 +338,21 @@ function findUnfalsifiableOracles(steps: StepIntent[]): string[] {
       const echoed = typed.find((t) => t.value.trim().toLowerCase() === value.trim().toLowerCase());
       const readsElsewhere =
         target?.kind === 'element' && echoed?.elementId != null && target.elementId !== echoed.elementId;
-      if (echoed && !readsElsewhere) {
+      // A creation flow types a name, clicks SAVE, then asserts that name in
+      // the list — write rule 4 demands exactly this, and this gate killed it
+      // twice (runs 21–22). Clicking a DIFFERENT element between the type and
+      // the assert is that submit; the delta oracle then reads what the submit
+      // changed (the new row, or the refusal message), not the input's echo.
+      // press_key stays refused: type-Enter-assert is the search false-green
+      // this gate exists for (case 73cc9af4).
+      const submittedElsewhere = echoed !== undefined && steps
+        .slice(echoed.index + 1, index)
+        .some((s) => {
+          if (isAssertion(s.action) || s.action === 'type' || s.action === 'wait' || s.action === 'press_key') return false;
+          const t = 'target' in s ? s.target : undefined;
+          return t?.kind === 'element' && t.elementId !== echoed.elementId;
+        });
+      if (echoed && !readsElsewhere && !submittedElsewhere) {
         errors.push(
           `step ${index + 1}: asserts "${value}", the same text step ${echoed.index + 1} typed — ` +
           'assert the effect of the input (a result, a message, a count), not the input itself',

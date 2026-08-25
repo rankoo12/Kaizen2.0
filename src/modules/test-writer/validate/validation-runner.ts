@@ -23,8 +23,15 @@ import { auditRunOracles, planVacuityProbe, isPageLoadOnly, type AuditObservatio
  */
 
 const POLL_INTERVAL_MS = 2_000;
-const RUN_TIMEOUT_MS = 5 * 60_000;
+const RUN_TIMEOUT_MS = 60_000;
 const CONCURRENCY = 2;
+/**
+ * §2b (spec-parallel-pipeline): width of the seeded authenticated pool. The
+ * batch holds ONE signed-in session (storageState in Redis, exported by the
+ * first proving run); these workers reuse it, so no credentials are ever
+ * submitted in parallel.
+ */
+const SEEDED_AUTH_CONCURRENCY = 3;
 
 /**
  * The failure classes that mean THE APP REFUSED, as opposed to the test falling
@@ -124,32 +131,58 @@ export class ValidationRunner {
     }
     const effective = { ...params, signinAssertionProves };
 
-    let cursor = 0;
-    const worker = async (): Promise<void> => {
-      for (;;) {
-        const scenario = params.scenarios[cursor++];
-        if (!scenario) return;
-        try {
-          await this.validateOne(scenario, effective, outcome);
-        } catch (err) {
-          outcome.rejected.push({
-            name: scenario.name, steps: scenario.steps.map((s) => s.text),
-            stage: 'validation',
-            reason: err instanceof Error ? err.message : String(err),
-          });
-        }
+    const tryOne = async (
+      scenario: WrittenScenario,
+      session?: { seedKey?: string; exportKey?: string },
+    ): Promise<void> => {
+      try {
+        await this.validateOne(scenario, effective, outcome, session);
+      } catch (err) {
+        outcome.rejected.push({
+          name: scenario.name, steps: scenario.steps.map((s) => s.text),
+          stage: 'validation',
+          reason: err instanceof Error ? err.message : String(err),
+        });
       }
     };
 
-    // Authenticated jobs validate ONE at a time. Two concurrent proving runs
-    // sign in with the same credentials seconds apart, which is exactly the
-    // pattern that trips rate limiting, anomaly detection and account lockout —
-    // locking the customer out of the account they consented with. Sequential
-    // costs wall-clock, not correctness. Spec §5.1.
-    const concurrency = params.loginPrefix ? 1 : CONCURRENCY;
-    await Promise.all(
-      Array.from({ length: Math.min(concurrency, params.scenarios.length) }, worker),
-    );
+    // Two concurrent proving runs signing in with the same credentials seconds
+    // apart is the pattern that trips rate limiting and account lockout — that
+    // is what kept authenticated validation at ONE run at a time (spec §5.1).
+    // §2b (spec-parallel-pipeline): the batch signs in ONCE — the first
+    // scenario runs with the full login prefix and exports its session
+    // (storageState) to Redis; the rest start pre-authenticated from it and
+    // validate concurrently. One credential submission either way, and every
+    // passing seeded run re-exports so the shared session stays fresh.
+    if (params.loginPrefix && params.validate && params.scenarios.length > 1) {
+      const sessionKey = `tw:session:${params.tenantId}:${params.jobId}`;
+      await tryOne(params.scenarios[0], { exportKey: sessionKey });
+      let cursor = 1;
+      const seeded = async (): Promise<void> => {
+        for (;;) {
+          const scenario = params.scenarios[cursor++];
+          if (!scenario) return;
+          await tryOne(scenario, { seedKey: sessionKey, exportKey: sessionKey });
+        }
+      };
+      await Promise.all(Array.from(
+        { length: Math.min(SEEDED_AUTH_CONCURRENCY, params.scenarios.length - 1) },
+        seeded,
+      ));
+    } else {
+      let cursor = 0;
+      const worker = async (): Promise<void> => {
+        for (;;) {
+          const scenario = params.scenarios[cursor++];
+          if (!scenario) return;
+          await tryOne(scenario);
+        }
+      };
+      const concurrency = params.loginPrefix ? 1 : CONCURRENCY;
+      await Promise.all(
+        Array.from({ length: Math.min(concurrency, params.scenarios.length) }, worker),
+      );
+    }
     return outcome;
   }
 
@@ -157,6 +190,7 @@ export class ValidationRunner {
     scenario: WrittenScenario,
     params: Parameters<ValidationRunner['validateAll']>[0],
     outcome: ValidationOutcome,
+    session?: { seedKey?: string; exportKey?: string },
   ): Promise<void> {
     const consentBlocked = scenario.needsConsent && !params.syntheticDataConsent;
     const willRun = params.validate && !consentBlocked;
@@ -228,8 +262,16 @@ export class ValidationRunner {
       await this.runQueue.add('run', {
         runId: id,
         tenantId: params.tenantId,
-        compiledSteps: [...prefix.map((s) => s.ast), ...scenario.steps.map((s) => s.ast)],
-        stepIds: created.steps.map((s) => s.id),
+        // §2b: a seeded run starts pre-authenticated from the shared session,
+        // so it carries no login prefix; its step results align to the case's
+        // body steps. The FIRST run of the batch keeps the full prefix, which
+        // is what proves the login flow itself.
+        compiledSteps: [
+          ...(session?.seedKey ? [] : prefix.map((s) => s.ast)),
+          ...scenario.steps.map((s) => s.ast),
+        ],
+        stepIds: (session?.seedKey ? created.steps.slice(prefix.length) : created.steps)
+          .map((s) => s.id),
         baseUrl: params.baseUrl,
         seedVariables,
         // Nothing this run learns behind the login wall may leave the tenant: no
@@ -238,6 +280,8 @@ export class ValidationRunner {
         // A proving run must not teach the cache where an ORACLE's anchor lives,
         // and may not be certified by an assertion heal (§9).
         triggeredBy: 'testwriter',
+        ...(session?.seedKey ? { sessionSeedKey: session.seedKey } : {}),
+        ...(session?.exportKey ? { sessionExportKey: session.exportKey } : {}),
       });
 
       return { runId: id, status: await this.pollToTerminal(params.tenantId, id) };
@@ -395,9 +439,15 @@ export class ValidationRunner {
       // for an injection and goes red BECAUSE THE APP IS VULNERABLE is filed as
       // Kaizen's mistake and deleted.
       const failure = await this.firstFailure(params.tenantId, runId);
+      // The engine does not always classify an assertion failure (error_type
+      // arrives NULL) — run 19's "the app saved a test with no steps" defect
+      // was silently unfiled that way. The step's own text says what it was.
+      const failedStepText = failure ? scenario.steps[failure.stepIndex - prefix.length]?.text ?? '' : '';
+      const assertionByText = /^(verify|check)\b/i.test(failedStepText);
       // AssertionNoAction is the TEST's defect (a discover oracle with no action
       // before it), never the app's — it files nothing against the customer.
-      if (status === 'failed' && failure && isAssertionFailure(failure) && failure.errorType !== 'AssertionNoAction') {
+      if (status === 'failed' && failure && (isAssertionFailure(failure) || assertionByText)
+          && failure.errorType !== 'AssertionNoAction') {
         outcome.findings.push(appDefectFinding({
           scenarioName: scenario.name,
           runId,
@@ -454,7 +504,31 @@ export class ValidationRunner {
             + 'which Kaizen answers automatically — its contents cannot be checked',
         };
       }
-      return { accepted: false, reason: 'the generated test failed against the live site' };
+      if (failure?.whatChanged) {
+        return {
+          accepted: false,
+          reason: `at step ${failure.stepIndex + 1} the action produced only: ${failure.whatChanged} — `
+            + 'none of it is what the check describes; the check (or the steps before it) must match what the app actually does',
+        };
+      }
+      // Name the step that failed, in its own words. "it failed at step 8"
+      // carries nothing a next run can act on, so run 18 persisted zero page
+      // lessons while three scenarios died on assertion failures the writer
+      // will now repeat. The step text is what makes the lesson actionable.
+      const failedStepText = failure
+        ? scenario.steps[failure.stepIndex - prefixLength]?.text
+        : undefined;
+      if (failure && failedStepText) {
+        return {
+          accepted: false,
+          reason: `at step ${failure.stepIndex + 1} ("${failedStepText}") the page did not offer what `
+            + 'this step needs — match the check (or the actions before it) to what the app actually shows there',
+        };
+      }
+      return {
+        accepted: false,
+        reason: failure ? `it failed at step ${failure.stepIndex + 1} against the live site` : 'the generated test failed against the live site',
+      };
     }
 
     // Tier-2 expected-fail. Accepting any failure at all was the bug: a negative
@@ -619,19 +693,26 @@ export class ValidationRunner {
   private async firstFailure(
     tenantId: string,
     runId: string,
-  ): Promise<{ stepIndex: number; failureClass: string | null; errorType: string | null } | null> {
+  ): Promise<{ stepIndex: number; failureClass: string | null; errorType: string | null; whatChanged: string | null } | null> {
     const { rows } = await tenantQuery<{
-      step_index: number | null; failure_class: string | null; error_type: string | null;
+      step_index: number | null; failure_class: string | null; error_type: string | null; dom_candidates: unknown;
     }>(
       tenantId,
-      `SELECT step_index, failure_class, error_type FROM step_results
+      `SELECT step_index, failure_class, error_type, dom_candidates FROM step_results
        WHERE run_id = $1 AND status = 'failed' AND step_index IS NOT NULL
        ORDER BY step_index ASC LIMIT 1`,
       [runId],
     );
     const row = rows[0];
     if (!row || typeof row.step_index !== 'number') return null;
-    return { stepIndex: row.step_index, failureClass: row.failure_class, errorType: row.error_type };
+    // dom_candidates of a failed delta assertion hold the delta itself — the
+    // page's own answer to "what did the action do".
+    let whatChanged: string | null = null;
+    const cands = row.dom_candidates as Array<{ kaizenId?: string; name?: string }> | null;
+    if (Array.isArray(cands) && cands.length > 0 && String(cands[0]?.kaizenId ?? '').startsWith('kz-d-')) {
+      whatChanged = cands.map((c) => String(c.name ?? '').slice(0, 60)).filter(Boolean).slice(0, 4).join(' · ') || null;
+    }
+    return { stepIndex: row.step_index, failureClass: row.failure_class, errorType: row.error_type, whatChanged };
   }
 
   private async pollToTerminal(tenantId: string, runId: string): Promise<TerminalStatus | 'timeout'> {

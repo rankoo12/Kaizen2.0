@@ -177,6 +177,11 @@ const REVEAL_NAMES = [
  */
 const OPENER_PREFIXES = [
   'new ', 'create new', 'compose', 'write a', 'start a', 'start new',
+  // Verbs that begin a multi-step flow behind a sheet or wizard. Kaizen's
+  // "Analyze an app" fell to the default 'mutating' and the URL field behind
+  // it was never observed — reference test 22 was unwritable (reachability
+  // board, 2026-08-19). Same shape as "New …": the click opens a form.
+  'analyze ', 'import ', 'scan ', 'generate ', 'upload ',
 ] as const;
 
 /** Exact names that are openers on their own. */
@@ -256,8 +261,11 @@ export function classifyInteraction(node: CandidateNode, ctx: SafetyContext): In
   // 5. Positive safe-reveal signals.
   if (node.role === 'tab') return 'safe-reveal';               // switches a view
   if ('aria-expanded' in attrs) return 'safe-reveal';          // disclosure toggle
+  if ('aria-pressed' in attrs) return 'safe-reveal';           // view/filter switch — reverts on re-click
   if ('aria-haspopup' in attrs) return 'safe-reveal';          // menu/dialog opener
   if (matchesAny(name, REVEAL_NAMES)) return 'safe-reveal';
+  // The ellipsis convention: a control whose label ends "…" announces a dialog.
+  if (/(…|\.\.\.)$/.test(name)) return 'safe-reveal';
   // Creation-form openers. Reached only AFTER the submit-type and
   // destructive-verb gates above, so "Add to cart" and `type="submit"` are
   // already excluded. This is what makes every create/edit form in an app

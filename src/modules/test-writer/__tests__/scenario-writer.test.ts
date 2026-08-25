@@ -1,4 +1,4 @@
-import { ScenarioWriter, summariseRawSteps, checkChromeOnly, prependNavigate } from '../write/scenario-writer';
+import { ScenarioWriter, summariseRawSteps, checkChromeOnly, checkContradictoryAsserts, prependNavigate } from '../write/scenario-writer';
 import { groundingNotes } from '../write/grounding-notes';
 import type { ITestWriterGateway } from '../../llm-gateway/testwriter.interfaces';
 import type { IObservability } from '../../observability/interfaces';
@@ -210,6 +210,54 @@ describe('checkChromeOnly', () => {
 
   it('says nothing about a scenario that interacts with nothing at all', () => {
     expect(checkChromeOnly([{ action: 'assert_title', value: 'x' }], elements)).toEqual([]);
+  });
+});
+
+describe('checkContradictoryAsserts', () => {
+  /**
+   * Run 18 shipped: click "Needs review" → verify "ready, unused" visible →
+   * verify "ready, unused" NOT visible. Nothing acts between the two checks, so
+   * one of them is guaranteed to fail live. The 5b pair the writer meant puts
+   * the presence check BEFORE the removing action.
+   */
+  const el = { kind: 'element' as const, elementId: '77777777-7777-4777-8777-777777777777' };
+
+  it('refuses visible-then-not-visible on the same target with no action between', () => {
+    const steps: StepIntent[] = [
+      { action: 'click', target: { kind: 'description', description: 'the "Needs review" button' } },
+      { action: 'assert_visible', target: el },
+      { action: 'assert_not_visible', target: el },
+    ];
+    const errors = checkContradictoryAsserts(steps);
+    expect(errors).toHaveLength(1);
+    expect(errors[0]).toMatch(/cannot both hold/);
+    expect(errors[0]).toMatch(/PRESENCE first/);
+  });
+
+  it('catches the same contradiction on matching description targets', () => {
+    const steps: StepIntent[] = [
+      { action: 'assert_not_visible', target: { kind: 'description', description: 'the row' } },
+      { action: 'assert_visible', target: { kind: 'description', description: 'The Row' } },
+    ];
+    expect(checkContradictoryAsserts(steps)).toHaveLength(1);
+  });
+
+  it('allows the 5b pair when an action separates presence from absence', () => {
+    const steps: StepIntent[] = [
+      { action: 'assert_visible', target: el },
+      { action: 'click', target: { kind: 'description', description: 'the "Healed" button' } },
+      { action: 'assert_not_visible', target: el },
+    ];
+    expect(checkContradictoryAsserts(steps)).toEqual([]);
+  });
+
+  it('allows repeated same-polarity checks and different targets', () => {
+    const steps: StepIntent[] = [
+      { action: 'assert_visible', target: el },
+      { action: 'assert_visible', target: el },
+      { action: 'assert_not_visible', target: { kind: 'description', description: 'another thing' } },
+    ];
+    expect(checkContradictoryAsserts(steps)).toEqual([]);
   });
 });
 

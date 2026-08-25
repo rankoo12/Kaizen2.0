@@ -6,7 +6,7 @@ import type { IObservability } from '../../observability/interfaces';
 import type { ScreenshotService } from '../../media/screenshot.service';
 import type { CrawlBudgets, CrawlReport, LinkCapture, PageCapture } from '../interfaces';
 import { classifyInteraction, isSessionEndingUrl, sensitiveTier } from './safety';
-import { runProbes } from './probe';
+import { runProbes, rankProbeCandidates } from './probe';
 import { capturePageMeta, captureForms, captureLinks, condenseOutline } from './page-capture';
 import { normalizeUrl, isSameOrigin, pathOf, stripFragment } from './url-normalizer';
 import { fetchRobots, isAllowed } from './robots';
@@ -422,8 +422,11 @@ export class ReconCrawler {
         // revealing is not. One auditable decision per page. Spec §5.2.
         const passiveOnly = !!auth && sensitiveTier(landed) === 'passive-only';
         if (passiveOnly && auth) auth.probesSuppressed++;
+        // Ranked, because the budget slices the list: openers and tabs first,
+        // shortcut-suffix duplicates collapsed. Unranked, whether the page's
+        // "New …" form ever entered the site model depended on DOM order.
         const { reveals, probesPerformed } = await runProbes(
-          page, passiveOnly ? [] : safeReveals, budgets.probesPerPage,
+          page, passiveOnly ? [] : rankProbeCandidates(safeReveals), budgets.probesPerPage,
           { pageUrl: page.url(), rootOrigin, obs },
         );
         report.probesPerformed += probesPerformed;

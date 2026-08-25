@@ -399,7 +399,7 @@ export class SiteModelRepository {
     return withTenantTransaction(tenantId, async (client) => {
       const { rows } = await client.query<{
         id: string; page_url: string; role: string; name: string;
-        kind: string; revealed_by: string | null; selector: string | null; rn: string;
+        kind: string; revealed_by: string | null; selector: string | null; rn: string; context: string | null;
         target: string | null; chrome: boolean | null;
       }>(
         // The per-page cap is ROUND-ROBIN ACROSS KINDS, not a flat alphabetical
@@ -432,16 +432,23 @@ export class SiteModelRepository {
            HAVING (SELECT n FROM crawled) >= 5
               AND count(DISTINCT pe.page_id) >= 0.6 * (SELECT n FROM crawled)
          )
-         SELECT id, page_url, role, name, kind, revealed_by, selector, target, chrome, rn FROM (
-           SELECT id, page_url, role, name, kind, revealed_by, selector, target, chrome,
+         SELECT id, page_url, role, name, kind, revealed_by, selector, target, context, chrome, rn FROM (
+           SELECT id, page_url, role, name, kind, revealed_by, selector, target, context, chrome,
                   ROW_NUMBER() OVER (PARTITION BY page_id ORDER BY kind_rank, kind, name) AS rn
            FROM (
              SELECT pe.id, sp.url_normalized AS page_url, pe.role, pe.name, pe.kind,
                     pe.revealed_by, pe.selector, pe.page_id,
                     pe.attributes->>'target' AS target,
-                    (sw.name IS NOT NULL) AS chrome,
+                    pe.attributes->>'kz-context' AS context,
+                    -- \\y, not \y: in a JS template literal \y collapses to a
+                    -- plain y, so Postgres received '^(new|add|create)y' and the
+                    -- creation exception NEVER fired — suite-create died at the
+                    -- chrome gate in every run since it was "fixed" (run 16).
+                    (sw.name IS NOT NULL AND pe.name !~* '^(new|add|create)\\y') AS chrome,
                     -- Site-wide chrome ranks LAST within its kind: when the cap
                     -- bites, the page's own controls are the ones worth keeping.
+                    -- Creation controls are never chrome — same exception as the
+                    -- planner dossier (run 16: the write gate killed suite-create).
                     ROW_NUMBER() OVER (
                       PARTITION BY pe.page_id, pe.kind
                       ORDER BY (sw.name IS NOT NULL), pe.name
@@ -472,6 +479,7 @@ export class SiteModelRepository {
         revealedBy: r.revealed_by,
         selector: r.selector,
         opensNewTab: r.target === '_blank',
+        context: r.context ?? null,
         chrome: r.chrome === true,
       }));
     });
@@ -544,7 +552,7 @@ export class SiteModelRepository {
 
       // Same chrome rule as getGroundingElements: role+name on >= 60% of pages.
       const { rows: elements } = await client.query<{
-        page_id: string; role: string; name: string; kind: string; target: string | null; chrome: boolean;
+        page_id: string; role: string; name: string; kind: string; target: string | null; context: string | null; chrome: boolean;
         revealed_by: string | null;
       }>(
         `WITH crawled AS (
@@ -559,14 +567,19 @@ export class SiteModelRepository {
               AND count(DISTINCT pe.page_id) >= 0.6 * (SELECT n FROM crawled)
          )
          SELECT pe.page_id, pe.role, pe.name, pe.kind, pe.attributes->>'target' AS target,
+                pe.attributes->>'kz-context' AS context,
                 -- Site-wide by count, OR a control the survey saw inside the
                 -- site's navigation. The count rule alone missed Kaizen's own
                 -- sidebar: its items carry live counts ("Tests 0" → "Tests 6")
                 -- and some screens hide the sidebar, so no name reached 60%.
                 -- Tabs and toolbars are NOT chrome: they are the page's own.
-                (sw.name IS NOT NULL
+                ((sw.name IS NOT NULL
                   OR COALESCE(pe.attributes->>'nav-context', '') IN ('nav', 'aside', 'header', 'navigation', 'menubar', 'nav-class')
-                  OR pe.attributes ? 'aria-current') AS chrome,
+                  OR pe.attributes ? 'aria-current')
+                  -- A creation control ("New suite") is never chrome: it CREATES,
+                  -- and both chrome rules hiding it blocked all suite-CRUD planning.
+                  -- \\y, not \y — see the grounding query's chrome expression.
+                  AND pe.name !~* '^(new|add|create)\\y') AS chrome,
                 pe.revealed_by
          FROM page_elements pe
          JOIN site_pages sp ON sp.id = pe.page_id
@@ -575,20 +588,39 @@ export class SiteModelRepository {
          ORDER BY pe.page_id, pe.kind, pe.name`,
         [tenantId, suiteId],
       );
-      const byPage = new Map<string, PageDossier['elements']>();
+      // Kinds share the cap ROUND-ROBIN. The sequential fill sorted kinds
+      // alphabetically, so a 70-button dashboard spent the whole cap on buttons
+      // and the planner never saw a single row: run 12 stored 86 clickable rows
+      // and planned zero tests about them.
+      const byPageKind = new Map<string, Map<string, PageDossier['elements']>>();
       for (const el of elements) {
         if (el.chrome) continue;
-        const list = byPage.get(el.page_id) ?? [];
-        if (list.length >= perPageElementCap) continue;
+        const kinds = byPageKind.get(el.page_id) ?? new Map<string, PageDossier['elements']>();
+        const list = kinds.get(el.kind) ?? [];
         list.push({
           role: el.role, name: el.name, kind: el.kind,
+          ...(el.context ? { context: el.context } : {}),
           ...(el.target === '_blank' ? { opensNewTab: true } : {}),
           // A control that only exists after another is clicked (the fields
           // behind "New Test") — the planner must know the door, or it plans
           // "type a name" on a page whose name field is not on screen.
           ...(el.revealed_by ? { revealedBy: el.revealed_by } : {}),
         });
-        byPage.set(el.page_id, list);
+        kinds.set(el.kind, list);
+        byPageKind.set(el.page_id, kinds);
+      }
+      const byPage = new Map<string, PageDossier['elements']>();
+      for (const [pageId, kinds] of byPageKind) {
+        const queues = [...kinds.values()];
+        const merged: PageDossier['elements'] = [];
+        for (let i = 0; merged.length < perPageElementCap; i++) {
+          let took = false;
+          for (const queue of queues) {
+            if (i < queue.length && merged.length < perPageElementCap) { merged.push(queue[i]); took = true; }
+          }
+          if (!took) break;
+        }
+        byPage.set(pageId, merged);
       }
 
       // The opening words every page shares are the app's chrome — menu bar,
