@@ -1,0 +1,4 @@
+.auth-state.json
+test-results/
+playwright-report/
+node_modules/

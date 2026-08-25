@@ -36,7 +36,7 @@ BUSINESS RULES
 
 PRIORITIES
 Suite and test CRUD, running a test and reading its results, run status transitions, the
-runs list and its filter, the Analyze flow's start-and-progress, sign-in redirect for
+runs list and its filter, the Analyze sheet (open, fields, cancel), sign-in redirect for
 protected pages.
 
 CAUTIONS
@@ -45,6 +45,8 @@ CAUTIONS
 - Do not delete suites (they may hold real tests); deleting a single test that this run
   created is fine.
 - Never accept or dismiss a Test Writer draft that already exists; only inspect.
-- Do not start more than one Analyze job in a test.
+- Never START a real Analyze job: it launches a background exploration that runs for many
+  minutes and outlives the test. Test the sheet by opening it, checking its fields, and
+  cancelling. An analysis that already exists in the list may be inspected read-only.
 - Do not change workspace name or invite members.
 - All data in this workspace is throwaway demo data — synthetic data consent is safe.

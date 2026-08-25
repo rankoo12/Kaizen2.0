@@ -22,7 +22,11 @@ const API = process.env.KAIZEN_API ?? 'http://localhost:3000';
 const TARGET = process.env.KAIZEN_TARGET ?? 'https://the-internet.herokuapp.com/';
 const OUT_DIR = join(__dirname, 'results');
 
-type Args = { pages: number; tests: number; brief: string; label: string; target: string; login: string | null };
+type Args = {
+  pages: number; tests: number; brief: string; label: string; target: string; login: string | null;
+  facts: number;
+  explore: number;
+};
 function parseArgs(): Args {
   const a = process.argv.slice(2);
   const get = (k: string, d: string) => { const i = a.indexOf(`--${k}`); return i >= 0 ? a[i + 1] : d; };
@@ -36,6 +40,10 @@ function parseArgs(): Args {
     // suite and runs the analyze in authenticated scope with consent. The steps
     // are plain English, exactly as a user types them.
     login: get('login', ''),
+    // --facts N: fact tier ON with N facts per screen (0 = off, the old shape).
+    facts: Number(get('facts', '0')),
+    // --explore N: the explorer subagent with N turns (0 = off).
+    explore: Number(get('explore', '0')),
   };
 }
 
@@ -78,8 +86,16 @@ type Job = {
   id: string; status: string; error: string | null;
   testPlan: { scenarios?: Array<{ name: string; targetPages: string[]; outline: string; source: { kind: string } }> } | null;
   report: {
-    progress?: { phase?: string };
-    recon?: { pagesCrawled?: number; screensDiscovered?: number; errorPages?: unknown[] };
+    progress?: { phase?: string; factsTranscribed?: number; factsVerified?: number; factsTotal?: number };
+    facts?: {
+      pages?: number; transcribed?: number; rejectedAtGate?: number; verified?: number;
+      failedVerify?: number; delivered?: number; auditSample?: number; auditDelivered?: number;
+      auditFailed?: number; quarantineAdvised?: boolean; error?: string | null;
+    };
+    recon?: {
+      pagesCrawled?: number; screensDiscovered?: number; errorPages?: unknown[];
+      explorer?: { turns?: number; screensRecorded?: number; clicksMade?: number; endedBy?: string; error?: string; knowledge?: Array<{ name: string; url: string; purpose: string }> };
+    };
     plan?: { scenariosPlanned?: number; fromCatalog?: number; fromLlm?: number; fromRepertoire?: number; pagesPlannedFor?: number; pagesExcludedByBrief?: string[]; dropped?: unknown[] };
     write?: Record<string, number | string | null>;
     validate?: { proposed?: number; validated?: number; unvalidated?: number };
@@ -123,12 +139,18 @@ async function main(): Promise<void> {
       initBrief: readFileSync(args.brief, 'utf8'),
       allowSyntheticData: true,
       ...(auth ? { scope: 'authenticated', loginCaseId: auth.loginCaseId, authConsent: true } : {}),
-      options: { maxPages: args.pages, maxScenarios: args.tests, planApproval: 'auto' },
+      options: {
+        maxPages: args.pages, maxScenarios: args.tests, planApproval: 'auto',
+        ...(args.facts > 0 ? { factTier: true, factsPerPage: args.facts } : {}),
+        ...(args.explore > 0 ? { explore: true, exploreTurns: args.explore } : {}),
+      },
     }),
   }));
   const jobId = started.jobId ?? started.job?.id;
   if (!jobId) throw new Error(`no jobId in ${JSON.stringify(started)}`);
-  process.stdout.write(`job ${jobId} on suite ${suite.id} — ${args.pages} pages / ${args.tests} tests\n`);
+  process.stdout.write(`job ${jobId} on suite ${suite.id} — ${args.pages} pages / ${args.tests} tests`
+    + (args.facts > 0 ? ` / fact tier ${args.facts} per screen` : '')
+    + (args.explore > 0 ? ` / explorer ${args.explore} turns` : '') + '\n');
 
   let job: Job | null = null;
   let lastPhase = '';
@@ -136,17 +158,33 @@ async function main(): Promise<void> {
     await new Promise((r) => setTimeout(r, 5_000));
     // Access tokens live 15 minutes; a screen-discovery crawl of a real app
     // outlives one. Re-authenticate rather than lose the run's ledger.
-    let res = await fetch(`${API}/testwriter/jobs/${jobId}`, { headers: h });
-    if (res.status === 401) {
-      token = await getToken();
-      h = { ...h, authorization: `Bearer ${token}` };
-      res = await fetch(`${API}/testwriter/jobs/${jobId}`, { headers: h });
+    // One flaky poll must not kill the watcher: run 24's launcher died on a
+    // transient ECONNRESET while the job ran on for half an hour unreported.
+    try {
+      let res = await fetch(`${API}/testwriter/jobs/${jobId}`, { headers: h });
+      if (res.status === 401) {
+        token = await getToken();
+        h = { ...h, authorization: `Bearer ${token}` };
+        res = await fetch(`${API}/testwriter/jobs/${jobId}`, { headers: h });
+      }
+      job = (await json<{ job: Job }>(res)).job;
+    } catch (e) {
+      process.stdout.write(`  poll failed (${e instanceof Error ? e.message : e}) — retrying\n`);
+      continue;
     }
-    job = (await json<{ job: Job }>(res)).job;
-    const phase = job.report?.progress?.phase ?? job.status;
-    if (phase !== lastPhase) { process.stdout.write(`  ${Math.round((Date.now() - t0) / 1000)}s ${phase}\n`); lastPhase = phase; }
+    const prog = job.report?.progress;
+    const phase = prog?.phase ?? job.status;
+    const phaseLine = phase === 'fact_verify' && prog?.factsTotal
+      ? `${phase} ${prog.factsVerified ?? 0}/${prog.factsTotal}`
+      : phase === 'transcribe' && prog?.factsTranscribed
+        ? `${phase} ${prog.factsTranscribed} facts`
+        : phase;
+    if (phaseLine !== lastPhase) { process.stdout.write(`  ${Math.round((Date.now() - t0) / 1000)}s ${phaseLine}\n`); lastPhase = phaseLine; }
     if (['completed', 'failed', 'blocked', 'cancelled'].includes(job.status)) break;
-    if (Date.now() - t0 > 40 * 60_000) throw new Error('bench timed out after 40 minutes');
+    // 180, not 70: a fact-tier run adds one transcriber call per screen (each
+    // hand-answered at the endpoint window), the batch session, and the engine
+    // audit sample on top of the journey rounds.
+    if (Date.now() - t0 > 180 * 60_000) throw new Error('bench timed out after 180 minutes');
   }
 
   // ── the ledger ────────────────────────────────────────────────────────────
@@ -193,10 +231,25 @@ async function main(): Promise<void> {
     tokens: r.tokenUsage?.total ?? null,
     pagesWithDelivery: [...perPage.values()].filter((v) => v.delivered > 0).length,
     pagesPlannedFor: perPage.size,
+    facts: r.facts ?? null,
+    totalDelivered: proposedCount + (r.facts?.delivered ?? 0),
   };
 
   process.stdout.write('\n' + '═'.repeat(72) + '\n');
   process.stdout.write(`  ${args.label}: requested ${args.tests} → planned ${summary.planned} → proposed ${summary.proposed} (proven ${summary.proven}, review ${summary.needsReview}) · rejected ${summary.rejected}\n`);
+  if (r.facts) {
+    const f = r.facts;
+    process.stdout.write(`  FACT TIER: ${f.pages ?? 0} screens → transcribed ${f.transcribed ?? 0} (gate -${f.rejectedAtGate ?? 0}) → batch-verified ${f.verified ?? 0} (failed ${f.failedVerify ?? 0}) → delivered ${f.delivered ?? 0}`
+      + ` · engine audit ${f.auditDelivered ?? 0}/${f.auditSample ?? 0}${f.quarantineAdvised ? ' ⚠ QUARANTINE ADVISED' : ''}${f.error ? ` · ERROR: ${f.error}` : ''}\n`);
+    process.stdout.write(`  TOTAL DELIVERED (journeys + facts): ${summary.totalDelivered}\n`);
+  }
+  if (r.recon?.explorer) {
+    const e = r.recon.explorer;
+    process.stdout.write(`  EXPLORER: ${e.turns ?? 0} turns, ${e.clicksMade ?? 0} clicks → recorded ${e.screensRecorded ?? 0} screens (ended: ${e.endedBy ?? '?'}${e.error ? ` — ${e.error}` : ''})
+`);
+    for (const k of e.knowledge ?? []) process.stdout.write(`    · ${k.name} — ${k.purpose.slice(0, 80)}
+`);
+  }
   process.stdout.write(`  pages crawled ${summary.pagesCrawled} (screens ${summary.screens}) · pages planned for ${summary.pagesPlannedFor} · pages with a delivered test ${summary.pagesWithDelivery} · ${summary.seconds}s · ${summary.tokens ?? '?'} tok\n`);
   process.stdout.write(`  rejected by stage: ${JSON.stringify(byStage)}\n`);
   process.stdout.write('─'.repeat(72) + '\n  per page (delivered/planned):\n');
