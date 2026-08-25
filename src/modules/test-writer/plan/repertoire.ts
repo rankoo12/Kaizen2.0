@@ -148,4 +148,3 @@ export function repertoireScenarios(pages: PageDossier[], brief: TenantBrief | n
   return out;
 }
 
-export const REPERTOIRE_KEYS = RULES.map((r) => r.key);

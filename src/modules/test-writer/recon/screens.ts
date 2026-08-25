@@ -103,10 +103,6 @@ export function screenUrl(baseNormalized: string, hops: ReachHop[]): string | nu
   return `${base}#screen=${slugs.join('/')}`;
 }
 
-/** The hops encoded in a screen URL, or [] for an ordinary page. */
-export function isScreenUrl(url: string): boolean {
-  return /#screen=/.test(url);
-}
 
 /** What a captured page looked like, for the newness test. */
 export type ScreenFingerprint = {
