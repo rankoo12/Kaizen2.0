@@ -1,6 +1,7 @@
 # Spec: The LLM inbox — Claude answers the model calls, locally, through files
 
 **Created:** 2026-08-18
+**Updated:** 2026-08-18 — §3: base64 embeddings; §3: the answerer must return the exact schema
 **Status:** Approved by the founder (2026-08-18: "you (claude) should be used instead of my api key")
 **Owner:** test-writer / dev tooling
 **Scope:** local development only. Nothing here runs in prod; prod has no `OPENAI_BASE_URL`.
@@ -61,6 +62,14 @@ Claude works the inbox with a directory watch: read `pending/N.json`, write `ans
 - Answers are cached by exact normalized prompt; the same run on the same site becomes free the
   second time, a changed page invalidates only the calls that saw it.
 - The cache and inbox live under `.kaizen-llm/`, gitignored: prompts contain page text.
+- Embeddings must honour `encoding_format`. The OpenAI Node SDK asks for `base64` by default and
+  base64-decodes the reply unconditionally; a float array sent back "decodes" into 384 garbage
+  floats and every pgvector write fails (`expected 1536 dimensions, not 384`) — which is exactly
+  what run 9's worker log showed 30 times before the inbox encoded Float32 as base64.
+- The answerer must return exactly the JSON shape the prompt ends with. The gateway reads
+  `result.scenarios` and nothing else; run 9's plan answer put pages 2–6 under `__page2__`… keys
+  and 12 of 15 planned scenarios were silently lost. A cached answer can be repaired in place
+  (`.kaizen-llm/cache/<hash>.json`) — the next run replays it.
 
 ## 4. Files
 
