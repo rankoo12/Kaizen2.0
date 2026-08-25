@@ -221,6 +221,40 @@ describe('pickDeltaMatch', () => {
     const badge = { marker: 'kz-d-3', role: 'span', name: 'running', text: 'running', interactive: false };
     expect(pickDeltaMatch('the running status indicator on the row that was just run', [...menu, badge])?.marker).toBe('kz-d-3');
   });
+
+  it('never picks the control the action itself targeted — its state change is not its effect', () => {
+    const chip = { marker: 'kz-d-0', role: 'button', name: 'Needs review', text: 'Needs review', interactive: true };
+    const row = { marker: 'kz-d-1', role: 'div', name: '', text: 'login button — needs review', interactive: false };
+    // run 9: the clicked chip satisfied "a row flagged as needing review".
+    expect(pickDeltaMatch('a learned element row flagged as needing review', [chip], 'Needs review')).toBeNull();
+    expect(pickDeltaMatch('a learned element row flagged as needing review', [chip, row], 'Needs review')?.marker).toBe('kz-d-1');
+  });
+
+  it('refuses unrelated prose for a record-like description', () => {
+    // run 9: "Target URL needs to start with http://" proved "the newly saved
+    // test's row now listed in the suite" — a validated test that created nothing.
+    const refusal = { marker: 'kz-d-0', role: 'div', name: '', text: 'Target URL needs to start with http:// or https://', interactive: false };
+    expect(pickDeltaMatch("the newly saved test's row now listed in the suite", [refusal])).toBeNull();
+  });
+
+  it('still accepts free prose for a message-like description', () => {
+    const flash2 = { marker: 'kz-d-0', role: 'div', name: '', text: 'Your username is invalid!', interactive: false };
+    expect(pickDeltaMatch('the error message', [flash2])?.marker).toBe('kz-d-0');
+  });
+
+  it('matches on stems — a no-matching-results message finds "Nothing matches"', () => {
+    const empty = { marker: 'kz-d-0', role: 'div', name: '', text: 'Nothing matches', interactive: false };
+    expect(pickDeltaMatch('a no-matching-results message shown in place of the learned elements', [empty])?.marker).toBe('kz-d-0');
+  });
+
+  it('the FIRST noun decides prose vs record — a trailing "message" mention is not the subject', () => {
+    const refusal = { marker: 'kz-d-0', role: 'div', name: '', text: 'Target URL needs to start with http:// or https://', interactive: false };
+    // run 10: "…replacing the empty-state message" re-armed the prose pass and
+    // validated a create-test flow that created nothing.
+    expect(pickDeltaMatch('a test row now listed in the Demo suite, replacing the empty-state message, after the New Test form closed', [refusal])).toBeNull();
+    // …while a description ABOUT a message still takes prose freely.
+    expect(pickDeltaMatch('an empty-state message indicating no healed runs are found', [refusal])?.marker).toBe('kz-d-0');
+  });
 });
 
 describe('isDeltaScoped', () => {
@@ -231,6 +265,14 @@ describe('isDeltaScoped', () => {
   it('is off for a grounded assertion and for absence assertions', () => {
     expect(isDeltaScoped({ action: 'assert_visible', targetDescription: 'the "Login" button' })).toBe(false);
     expect(isDeltaScoped({ action: 'assert_not_visible', oracleScope: 'delta', targetDescription: 'the row' })).toBe(false);
+  });
+
+  it('is off for survivor assertions — what did not change is not in the delta', () => {
+    // run 11: every paired filter assertion ("a failed run row still shown")
+    // died delta-scoped, because the surviving row never changed.
+    expect(isDeltaScoped({ action: 'assert_visible', oracleScope: 'delta', targetDescription: 'a failed run row still shown in the list' })).toBe(false);
+    expect(isDeltaScoped({ action: 'assert_visible', oracleScope: 'delta', targetDescription: 'the banner that remains after dismissal' })).toBe(false);
+    expect(isDeltaScoped({ action: 'assert_visible', oracleScope: 'delta', targetDescription: 'the success message' })).toBe(true);
   });
 });
 

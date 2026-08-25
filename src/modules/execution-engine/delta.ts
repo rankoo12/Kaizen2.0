@@ -77,12 +77,18 @@ const DELTA_SCOPED_ASSERTIONS = new Set([
   'assert_checked', 'assert_attribute',
 ]);
 
+const SURVIVOR_WORDS = /\b(still|remains?|unchanged|kept)\b/i;
+
 export function isDeltaScoped(
   step: { action: string; oracleScope?: string | null; targetDescription: string | null },
 ): boolean {
-  return step.oracleScope === 'delta'
-    && step.targetDescription != null
-    && DELTA_SCOPED_ASSERTIONS.has(step.action);
+  if (step.oracleScope !== 'delta' || step.targetDescription == null
+      || !DELTA_SCOPED_ASSERTIONS.has(step.action)) return false;
+  // "a failed run row STILL shown after filtering": a survivor did not change,
+  // so by definition it is not in the delta — every paired filter assertion in
+  // run 11 died on this. Survivors are verified against the whole page.
+  if (SURVIVOR_WORDS.test(step.targetDescription)) return false;
+  return true;
 }
 
 /** Minimal Playwright surface, so this module never imports playwright. */
@@ -271,7 +277,11 @@ const STOP_WORDS = new Set([
   'appear', 'shows', 'show', 'new', 'now', 'page', 'element',
 ]);
 
+const PROSE_NOUNS = /\b(message|confirmation|result|notification|banner|toast|alert|error|warning|success|state|text|summary|empty)\b/;
+const RECORD_NOUNS = /\b(rows?|list|listed|items?|entry|entries|records?|badges?|chips?|indicators?|status|counts?|totals?)\b/;
+
 /** Nouns a rendered step uses for a role — see `describeElement` in the writer. */
+
 const NOUN_ROLE: Record<string, string[]> = {
   button: ['button'],
   link: ['a', 'link'],
@@ -297,25 +307,49 @@ function tokens(text: string): string[] {
  * what a person means by "the message" — prose over a one-character close
  * button, and the role the sentence actually asked for.
  */
-export function pickDeltaMatch(description: string, elements: DeltaElement[]): DeltaElement | null {
+/**
+ * `actedOn` is the quoted name of the element the previous action targeted, when
+ * known. That control's own state change (aria-pressed, a spinner on the button)
+ * always sits in the delta, and run 9 validated three tests on it — "Needs
+ * review" satisfied "a row flagged as needing review", "Run suite" satisfied
+ * "a Running status on the suite's tests". The control that was clicked is not
+ * evidence of its own effect: it never qualifies as the pick.
+ */
+export function pickDeltaMatch(description: string, elements: DeltaElement[], actedOn?: string | null): DeltaElement | null {
   if (elements.length === 0) return null;
 
+  const norm = (v: string) => v.toLowerCase().replace(/[^a-z0-9]+/g, ' ').trim();
+  const acted = actedOn ? norm(actedOn) : null;
   const want = tokens(description);
   const lower = description.toLowerCase();
   const wantedRoles = Object.entries(NOUN_ROLE)
     .filter(([noun]) => new RegExp(`\\b${noun}s?\\b`).test(lower))
     .flatMap(([, roles]) => roles);
 
-  // "the error message", "the confirmation", "the empty state", "the status
-  // indicator": prose the action wrote. Any non-interactive text in the delta
-  // is a candidate for those; a control is not.
-  const wantsProse = /\b(message|confirmation|result|notification|banner|toast|alert|error|warning|success|indicator|status|state|badge|label|text|list|row|count|total|summary|title|name|empty)\b/.test(lower);
+  // "the error message", "the confirmation", "the empty state": prose the
+  // action wrote. Any non-interactive text in the delta is a candidate for
+  // THOSE — but only when a message-like noun is what the description is
+  // ABOUT. Record-like nouns (row, list, status, count…) name a thing with an
+  // identity, and the free pass let "Target URL needs to start with http://"
+  // prove "the newly saved test's row now listed in the suite" in run 9 — a
+  // validated test whose test was never created. Run 10 showed the noun test
+  // must be POSITIONAL: "a test row …, replacing the empty-state message"
+  // mentions a message, but the row is the subject — the first noun wins.
+  const proseMatch = PROSE_NOUNS.exec(lower);
+  const recordMatch = RECORD_NOUNS.exec(lower);
+  const wantsProse = proseMatch !== null && (recordMatch === null || proseMatch.index < recordMatch.index);
 
   let best: DeltaElement | null = null;
   let bestScore = -Infinity;
   for (const element of elements) {
+    if (acted && element.interactive
+        && (norm(element.name) === acted || norm(element.text) === acted)) continue;
     const hay = new Set(tokens(`${element.name} ${element.text} ${element.role}`));
     const overlap = want.length > 0 ? want.filter((w) => hay.has(w)).length / want.length : 0;
+    // Stemmed agreement: "a no-matching-results message" and "Nothing matches"
+    // share no exact token (matching~matches) but are about the same thing.
+    const stems = want.some((w) => [...hay].some((h) =>
+      w === h || (w.length >= 4 && h.length >= 4 && w.slice(0, 4) === h.slice(0, 4))));
     let score = overlap * 3;
     if (wantedRoles.length > 0 && wantedRoles.includes(element.role)) score += 0.6;
     // Prose is what "message", "confirmation", "result" mean; the "×" close
@@ -327,7 +361,7 @@ export function pickDeltaMatch(description: string, elements: DeltaElement[]): D
     // be the kind of element it names. Otherwise the best of an unrelated delta
     // (a menu that opened because the wrong button was clicked) would satisfy
     // "the running status indicator on the row" — and it did.
-    const about = overlap > 0
+    const about = overlap > 0 || stems
       || (wantedRoles.length > 0 && wantedRoles.includes(element.role))
       || (wantsProse && !element.interactive && element.text.length > 0);
     if (!about) continue;

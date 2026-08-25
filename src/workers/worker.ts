@@ -75,6 +75,7 @@ import type { RunJobPayload } from '../queue';
 import type { StepAST, ClassifiedFailure, SelectorSet, SelectorEntry, RunContext } from '../types';
 import { isSecretStep, redactStepText, REDACTED } from '../modules/test-writer/secret-steps';
 import { settleAfterNavigation, settleDom } from '../modules/execution-engine/settle';
+import { quotedName, nameOverlaps, countDriftMatch } from './name-fidelity';
 
 // ─── Module Setup ─────────────────────────────────────────────────────────────
 
@@ -179,26 +180,13 @@ async function markRunRunning(tenantId: string, runId: string): Promise<void> {
   );
 }
 
-/** The double-quoted name in a step's target, if any: `the "Save" button` → Save. */
-export function quotedName(target: string | null | undefined): string | null {
-  if (!target) return null;
-  const m = /["“”]([^"“”]{1,80})["“”]/.exec(target);
-  return m ? m[1].trim() : null;
-}
-
-/** Whether a resolved element's descriptor shares a distinctive word with the quoted name. */
-export function nameOverlaps(quoted: string, descriptor: string): boolean {
-  const STOP = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'button', 'link', 'field']);
-  const words = quoted.toLowerCase().split(/[^a-z0-9]+/).filter((w) => w.length > 1 && !STOP.has(w));
-  if (words.length === 0) return true;             // "⌘R" alone — nothing to check against
-  const hay = descriptor.toLowerCase();
-  return words.some((w) => hay.includes(w));
-}
-
 /** aria-label / label / title / placeholder / name / value / text of the resolved element; null if unreadable. */
 async function describeResolved(page: Page, selector: string): Promise<string | null> {
   try {
-    return await (page as any).$eval(selector, (el: Element) => {
+    // locator(), not $eval: $eval cannot parse role= selectors (run 10's cached
+    // role=textbox[name="e.g. click the “Sign in” button"] read as null, and null
+    // means "cannot check" — the gate silently passed the placeholder-named pick).
+    return await (page as any).locator(selector).first().evaluate((el: Element) => {
       const e = el as HTMLElement;
       const id = e.getAttribute('id');
       const lab = id ? (document.querySelector('label[for="' + id + '"]') as HTMLElement | null) : null;
@@ -207,7 +195,7 @@ async function describeResolved(page: Page, selector: string): Promise<string | 
         e.getAttribute('title') ?? '', e.getAttribute('placeholder') ?? '', e.getAttribute('name') ?? '',
         (e as HTMLInputElement).value ?? '', e.innerText ?? e.textContent ?? '',
       ].join(' ').replace(/\s+/g, ' ').trim().slice(0, 300);
-    });
+    }, undefined, { timeout: 3000 });
   } catch {
     return null;
   }
@@ -289,7 +277,21 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
   // idle after BROWSER_MAX_RUNS runs (memory hygiene). This run closes ONLY
   // its context; the browser outlives it for concurrent + subsequent runs.
   const browser = await browserPool.acquire();
-  const context = await browser.newContext({ baseURL: baseUrl });
+  // §2b (spec-parallel-pipeline): a seeded proving run starts from the
+  // storageState a sibling run of the same job exported — one sign-in for the
+  // whole validation batch. A missing or expired seed is logged and the run
+  // proceeds cold: its first step then fails honestly instead of silently
+  // re-submitting credentials.
+  let sessionSeed: unknown = null;
+  if (payload.sessionSeedKey) {
+    const raw = await cacheRedis.get(payload.sessionSeedKey).catch(() => null);
+    if (raw) { try { sessionSeed = JSON.parse(raw); } catch { sessionSeed = null; } }
+    if (!sessionSeed) obs.log('warn', 'worker.session_seed_missing', { runId, key: payload.sessionSeedKey });
+  }
+  const context = await browser.newContext({
+    baseURL: baseUrl,
+    ...(sessionSeed ? { storageState: sessionSeed as never } : {}),
+  });
 
   // __name shim: tsx/esbuild (keepNames) wraps named inner declarations inside
   // functions passed to page.$eval/page.evaluate with __name(...) calls. That
@@ -400,6 +402,17 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
     await captureFinalState(tabs.current, runLog, sideChannel).catch((e: any) =>
       obs.log('warn', 'worker.final_state_capture_failed', { runId, error: e?.message }));
     await runLog.flush().catch(() => { /* the run's outcome does not depend on this */ });
+
+    // §2b: a passing run asked to seed the batch exports its authenticated
+    // storageState for sibling proving runs. Redis only, 30-minute TTL.
+    if (payload.sessionExportKey && loopResult?.runPassed) {
+      try {
+        const state = await context.storageState();
+        await cacheRedis.setex(payload.sessionExportKey, 1800, JSON.stringify(state));
+      } catch (e: any) {
+        obs.log('warn', 'worker.session_export_failed', { runId, error: e?.message });
+      }
+    }
 
     // Close only this run's context — the pooled browser stays up for other
     // runs; release() lets the pool recycle it once idle and past budget.
@@ -774,6 +787,20 @@ async function executeStep(
   // Resolve the assertion against the whole page instead of declaring the
   // action a no-op — and say so in the log.
   const onlyRemovals = deltaScoped && delta.last!.elements.length === 0 && (delta.last!.removed ?? 0) > 0;
+  // A click that swaps the whole view (a nav chip, a screen switch) puts the
+  // ENTIRE new screen in the delta — and then anything on it "proves" any
+  // claim. Run 13: "a run entry tied to the Demo suite" matched an old run
+  // named "Demo Save And Run Test 2761" this way. A delta that large is a view
+  // change, not a reaction: resolve such assertions against the whole page,
+  // where the resolver and gates apply, instead of blessing the delta.
+  const viewSwapped = deltaScoped && delta.last!.elements.length >= 20;
+  if (viewSwapped) {
+    obs.increment('worker.delta_oracle_view_swap');
+    runLog?.log('resolve',
+      `"${delta.last!.afterStep}" replaced the whole view (${delta.last!.elements.length} new elements) — `
+      + 'checking the assertion against the page, not the delta',
+      { stepIndex, data: { deltaSize: delta.last!.elements.length } });
+  }
   if (onlyRemovals) {
     obs.increment('worker.delta_oracle_only_removals');
     runLog?.log('resolve',
@@ -812,9 +839,9 @@ async function executeStep(
   // ── Resolve selectors ─────────────────────────────────────────────────────
   // navigate and press_key act on the page/keyboard, not a specific DOM element.
   let selectorSet: SelectorSet;
-  if (deltaScoped && !onlyRemovals) {
+  if (deltaScoped && !onlyRemovals && !viewSwapped) {
     const elements = delta.last!.elements;
-    const pick = pickDeltaMatch(step.targetDescription ?? '', elements);
+    const pick = pickDeltaMatch(step.targetDescription ?? '', elements, quotedName(delta.last!.afterStep));
     // The whole delta rides as candidates and the pick is marked, so the run
     // page shows "what changed" with the chosen element highlighted — a person
     // can check the choice, not just read an opaque [data-kz-delta] selector.
@@ -828,7 +855,17 @@ async function executeStep(
             selector: `[data-kz-delta="${el.marker}"]`,
           })),
         }
-      : { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+      : {
+          selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null,
+          // No pick, but the delta itself is the diagnosis: the validation
+          // runner reads these to tell the fill round WHAT the action actually
+          // produced ("Target URL needs to start with http://…"), which is the
+          // feedback a rewrite needs.
+          candidates: elements.slice(0, 10).map((el) => ({
+            kaizenId: el.marker, role: el.role, name: el.text || el.name,
+            selector: `[data-kz-delta="${el.marker}"]`,
+          })),
+        };
     obs.increment('worker.delta_oracle_resolved', { matched: String(!!pick) });
     runLog?.log('resolve',
       pick
@@ -963,25 +1000,53 @@ async function executeStep(
   // ── Fidelity gate: a quoted name must be ON the element we resolved ─────────
   // `click the "Checkout smoke 6" button` resolved (from cache) to the menubar's
   // "File", the click opened a menu, and the run went green. A step that NAMES
-  // its target in quotes is explicit; an element that shares no word with that
-  // name is not it — refuse it, evict it from the caches that served it, and let
-  // the step fail into healing (a page still rendering is what adaptive wait is
-  // for) rather than act on the wrong control and call it proof.
-  if (selectorSet.selectors.length > 0 && selectorSet.resolutionSource !== 'delta'
-      && step.action !== 'assert_text' && step.action !== 'assert_not_text' && step.action !== 'assert_count') {
+  // its target in quotes is explicit; an element that does not carry that name
+  // is not it — refuse it, evict it from the caches that served it, and let
+  // the step fail into healing rather than act on the wrong control and call it
+  // proof. Shared with the one settled retry below.
+  const gateApplies = selectorSet.resolutionSource !== 'delta'
+    && step.action !== 'assert_text' && step.action !== 'assert_not_text' && step.action !== 'assert_count';
+  const refuseWrongName = async (): Promise<void> => {
+    if (selectorSet.selectors.length === 0 || !gateApplies) return;
     const quoted = quotedName(step.targetDescription);
-    if (quoted) {
-      const sel = selectorSet.selectors[0].selector;
-      const descriptor = await describeResolved(page, sel);
-      if (descriptor !== null && !nameOverlaps(quoted, descriptor)) {
-        obs.increment('worker.quoted_name_mismatch', { source: selectorSet.resolutionSource ?? 'unknown' });
-        runLog?.log('resolve',
-          `refused: "${quoted}" resolved to ${sel.slice(0, 80)} (${descriptor.slice(0, 60)}) — not the named element`,
-          { stepIndex, level: 'warn', data: { selector: sel, source: selectorSet.resolutionSource } });
-        if (selectorSet.fromCache) await evictWrongSelector(tenantId, step.targetHash, sel).catch(() => {});
-        selectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
-      }
+    if (!quoted) return;
+    const sel = selectorSet.selectors[0].selector;
+    const descriptor = await describeResolved(page, sel);
+    // Interactions tolerate COUNT DRIFT ("Demo 5" clicking "Demo 6"): the
+    // trailing number is a live badge the run's own tests change. Assertions
+    // never get this leniency — gateApplies already keeps them strict, and
+    // countDriftMatch demands the same residue + a count in the same spot.
+    const agrees = descriptor !== null
+      && (nameOverlaps(quoted, descriptor)
+        || (!step.action.startsWith('assert') && countDriftMatch(quoted, descriptor)));
+    if (descriptor !== null && !agrees) {
+      obs.increment('worker.quoted_name_mismatch', { source: selectorSet.resolutionSource ?? 'unknown' });
+      runLog?.log('resolve',
+        `refused: "${quoted}" resolved to ${sel.slice(0, 80)} (${descriptor.slice(0, 60)}) — not the named element`,
+        { stepIndex, level: 'warn', data: { selector: sel, source: selectorSet.resolutionSource } });
+      if (selectorSet.fromCache) await evictWrongSelector(tenantId, step.targetHash, sel).catch(() => {});
+      selectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
     }
+  };
+  await refuseWrongName();
+
+  // ── One settled retry when resolution has nothing ──────────────────────────────
+  // `click the "Checkout smoke 8" button` resolved to NOTHING six times in run 9:
+  // the suites sidebar had not painted when the pruner snapshotted. Refusing to
+  // guess is right; giving up before the page finishes rendering is not. Let the
+  // DOM go quiet, resolve once more (the retry pick faces the same gate), and
+  // only then fail into healing.
+  const RETRYABLE_INTERACTIONS = new Set(['click', 'double_click', 'right_click', 'type', 'select', 'check', 'uncheck', 'hover', 'clear']);
+  if (selectorSet.selectors.length === 0 && RETRYABLE_INTERACTIONS.has(step.action)) {
+    obs.increment('worker.resolution_retry_after_settle', { action: step.action });
+    runLog?.log('resolve', 'nothing resolved — letting the page settle and resolving once more', { stepIndex, level: 'warn' });
+    await settleDom(page);
+    try {
+      selectorSet = await resolver.resolve(step, resolutionContext);
+    } catch (e: any) {
+      obs.log('warn', 'worker.resolution_failed', { runId, action: step.action, error: e.message });
+    }
+    await refuseWrongName();
   }
 
   // Assertions must never be persisted to the selector cache — re-verify every run.
