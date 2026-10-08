@@ -194,7 +194,17 @@ export async function acquireSession(
       } as unknown as SelectorSet;
 
       const isAssertion = ast.action.startsWith(ASSERTION_PREFIX);
-      if (!NO_ELEMENT_ACTIONS.has(ast.action)) {
+      if (ast.action === 'assert_text' || ast.action === 'assert_not_text') {
+        // Whole-page content assertions mirror the worker exactly: the engine
+        // scans the page body itself, so demanding a resolved element here
+        // blocks a legitimate recipe. `verify the text "Products" is shown`
+        // compiles with no target description, the resolver early-exits empty,
+        // and the old element check failed the whole sign-in on it.
+        selectorSet = {
+          selectors: [{ selector: 'body', strategy: 'css', confidence: 1 }],
+          fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null,
+        } as unknown as SelectorSet;
+      } else if (!NO_ELEMENT_ACTIONS.has(ast.action)) {
         try {
           selectorSet = await resolver.resolve(ast, {
             tenantId,

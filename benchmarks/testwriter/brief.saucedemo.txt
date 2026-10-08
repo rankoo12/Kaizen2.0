@@ -1,0 +1,54 @@
+PURPOSE
+Sauce Demo (saucedemo.com) is a small demo e-commerce store: a login page, a product
+catalog of six items, a cart, and a three-step checkout. It exists to be tested; all data
+is synthetic and resets per session. One real product flow spans the whole site:
+sign in → browse → add to cart → checkout → order confirmation.
+
+ROLES
+Everything is behind login. The account "standard_user" (password "secret_sauce") is a
+normal shopper and owns nothing persistent — cart and app state live in the browser
+session only. Signed out, every inner page redirects back to the login form with an
+error message.
+
+CRITICAL FLOWS
+- Login: valid credentials land on the Products page (/inventory.html). Wrong password
+  shows "Epic sadface: Username and password do not match any user in this service".
+  An empty username shows "Epic sadface: Username is required"; a filled username with
+  empty password shows "Epic sadface: Password is required".
+- Products page: six product cards, each with name, price, image, and an "Add to cart"
+  button that flips to "Remove" once added. The cart badge in the header counts items.
+- Sort dropdown: Name (A to Z), Name (Z to A), Price (low to high), Price (high to low)
+  reorder the product list.
+- Product detail: clicking a product name or image opens its detail page with the same
+  add/remove button and a "Back to products" link.
+- Cart (/cart.html): lists added items with quantity, "Remove" per item,
+  "Continue Shopping" returns to products, "Checkout" starts checkout.
+- Checkout step one: first name, last name, and zip/postal code are all required — each
+  missing field has its own "Error:" message. "Continue" with valid data reaches step two.
+- Checkout step two (overview): line items, payment/shipping info, item total, tax, and
+  grand total. "Finish" completes the order.
+- Order confirmation: "Thank you for your order!" with a "Back Home" button returning to
+  the products page (cart is emptied).
+- Burger menu: All Items, About, Logout, Reset App State. Logout returns to the login
+  page.
+
+BUSINESS RULES
+- Cart contents and add/remove button states persist while navigating within the session.
+- The cart badge always equals the number of items in the cart, and disappears at zero.
+- Checkout requires at least the three identity fields; totals on the overview are
+  consistent with the cart's items (item total + tax = total).
+- Signed-out access to any inner page bounces to login with an error.
+
+PRIORITIES
+The full purchase journey end to end; login error messages for each bad-credential case;
+add/remove from both the catalog and the detail page with the cart badge tracking; the
+four sort orders actually reordering; checkout field validation one field at a time;
+cart contents surviving navigation; logout.
+
+CAUTIONS
+- "Reset App State" in the burger menu wipes the session's cart — never click it in a
+  test; it is a state-destroying lever, not a feature to cover.
+- The "About" menu link leaves the site to saucelabs.com — never follow it.
+- Product images and social footer links leave the site or go nowhere useful — skip them.
+- Every account is a shared public demo login; there is nothing real to damage, and
+  synthetic checkout data (any name and zip) is safe and expected.
