@@ -179,6 +179,7 @@ services:
           - site-vue
           - site-jquery
           - site-stress
+          - site-social
 
   web:
     build:

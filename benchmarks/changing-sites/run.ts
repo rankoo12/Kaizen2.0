@@ -113,7 +113,7 @@ async function benchSite(site: SiteDef, args: Args): Promise<string> {
   if (!suiteId) {
     suiteId = await createSuite(authRef, `sites-bench ${site.id} ${new Date().toISOString().slice(0, 16)}`);
     const brief = readFileSync(join(__dirname, site.brief), 'utf8');
-    const jobId = await startAnalyze(authRef, suiteId, `http://${site.host}/`, brief);
+    const jobId = await startAnalyze(authRef, suiteId, `http://${site.host}/`, brief, site.analyze);
     slog(`analyze: job ${jobId} on suite ${suiteId}`);
     const job = await pollJob(authRef, jobId, { onPhase: (p) => slog(`analyze: ${p}`) });
     if (job.status !== 'completed') throw new Error(`[${site.id}] analyze ended ${job.status}: ${job.error}`);

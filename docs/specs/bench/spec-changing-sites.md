@@ -66,6 +66,7 @@ Load-bearing decisions:
 | vue-cart | site-vue | Vue 3 CDN, list/cart | repeated similar elements | **decoy-added** ("Checkout tips", data-decoy); element-moved (real Checkout below list) |
 | jquery-classic | site-jquery | jQuery 3 DOM-manip (tabs/accordion/modal) | exists-hidden vs created-on-demand elements | dom-restructure (accordion reordered+wrapped); **feature-removed (must-fail: Reports tab gone)** |
 | stress | site-stress | vanilla JS, skeletons, chunked lists | timing robustness, compound failures | delayed-render (refresh widget 20s late) + cosmetic churn under the delay |
+| social | site-social | React 18 SPA, 7 views, tunable per-endpoint latency | **flagship complexity** — feed/stories/composer/search/profiles/friends/messages/groups/notifications; most tests + most failure points | label-rename+decoy (Post→Publish), feature-removed (Stories), assertion-changed (share copy), element-moved, dom-restructure, cosmetic-churn, Accept→Confirm, notifications 6s + feed batch-2 4s late |
 
 Design rules: every v2 keeps ≥1 untouched flow held to strict
 `pass-unchanged`; **no settings-toggle / delete-own-record levers anywhere**
@@ -212,6 +213,18 @@ finding (docs/reports/2026-10-08.md has the full narrative):
 | 3 | **Delta memory not fed after a heal**: a delta-scoped assertion after a healed action errors AssertionNoAction — honest failure, wrong reason. | OPEN (stress) |
 | 4 | **Volatile-DOM interactions**: chunked re-renders detach nodes mid-action; clear/type/click lose the race. | OPEN (stress — the site exists to measure this) |
 | 5 | Heals via FallbackSelector/AdaptiveWait persist nothing — healed-not-learned re-heals every run (GAP verdicts). | OPEN (engine backlog) |
+| 6 | **Assertions / actions do not wait for content that renders AFTER an async action** (no navigation). assert_text scans `body` once and Escalation cannot heal it → fail; `type`/`click` resolve onto the nearest already-existing same-named element (a 900ms-late message input lost to the "Messages" nav link). The single most common real-world pattern (optimistic UI, XHR responses). Surfaced by the `social` flagship site. | OPEN — highest-value finding |
+
+### `social` (Buzzly) — flagship complexity site, added 2026-10-08
+
+A 7-view React social app (feed, stories, composer, explore/search, profiles,
+friends, messages, groups, notifications) with every loading time in one
+tunable table (`data.js` `BUZZLY_LATENCY_MS`) and ~10 named v2 mutations.
+First run: **9 PASS / 2 GAP / 3 FAIL / 0 false-pass / 0 decoy** (24-scenario
+analyze budget + 12 seeds). The must-fails (Stories removed, share copy
+changed) failed honestly; the renamed "Post"→"Publish" (beside a decoy) and
+"Accept"→"Confirm" healed to the right control with the click re-executed
+(GAP only on persistence); the 3 FAILs are all finding #6.
 
 Positive proofs from the same runs: honest failure on changed assertion text
 (all strategies refused, twice) and on a removed feature; decoy resisted;

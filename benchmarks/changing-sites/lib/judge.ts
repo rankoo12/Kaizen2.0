@@ -104,17 +104,22 @@ function judgeCase(
         fail(`no heal had an allowed failure class (saw ${heals.map((h) => h.class).join(', ')})`);
       }
       const learned = heals.some((h) => LEARNING_STRATEGIES.has(h.strategy));
-      if (exp.outcome === 'heal-learned' && !learned) {
-        fail(`expected a LEARNING heal (resolve_and_retry), saw ${heals.map((h) => h.strategy).join(', ')}`);
-      }
-      if (learned) {
-        // r3 is the proof the learning stuck: cache-served, token-free, heal-free.
+      if (exp.outcome === 'heal-learned') {
+        // The whole promise is that the heal STICKS — a clean, cache-served,
+        // heal-free r3 is the proof. A re-heal breaks the promise → FAIL.
+        if (!learned) { fail(`expected a LEARNING heal (resolve_and_retry), saw ${heals.map((h) => h.strategy).join(', ')}`); break; }
         if (!r3) fail('no r3 run to prove the heal persisted');
         else if (r3.status !== 'passed') fail(`r3 after a learning heal should pass clean, got ${r3.status}`);
         else if (healsOf(r3).length > 0) fail('r3 re-healed — the "learned" selector did not stick');
-      } else if (exp.outcome === 'heal-any') {
-        // Healed but nothing persisted: the documented engine gap.
-        reasons.push('healed-not-learned: strategy persists nothing; next run re-heals');
+        break;
+      }
+      // heal-any: the successful heal IS the bar. Whether it then serves clean
+      // on r3 is the difference between a clean PASS and the documented
+      // healed-not-learned GAP (re-heals every run) — never a FAIL, because the
+      // engine did recover the action; it just did not persist the recovery.
+      const r3Clean = !!r3 && r3.status === 'passed' && healsOf(r3).length === 0;
+      if (!r3Clean) {
+        reasons.push('healed-not-learned: the heal does not serve clean on the next run (re-heals)');
         if (verdict === 'PASS') verdict = 'GAP';
       }
       break;

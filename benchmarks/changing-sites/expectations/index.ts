@@ -5,6 +5,7 @@ import angularForms from './expected.angular-forms';
 import vueCart from './expected.vue-cart';
 import jqueryClassic from './expected.jquery-classic';
 import stress from './expected.stress';
+import social from './expected.social';
 
 export const EXPECTATIONS: Record<string, SiteExpectations> = {
   'vanilla': vanilla,
@@ -13,4 +14,5 @@ export const EXPECTATIONS: Record<string, SiteExpectations> = {
   'vue-cart': vueCart,
   'jquery-classic': jqueryClassic,
   'stress': stress,
+  'social': social,
 };
