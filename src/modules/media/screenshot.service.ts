@@ -98,6 +98,23 @@ export class ScreenshotService {
   }
 
   /**
+   * Upload a run's recorded browser video (WebM). One video per run at a
+   * deterministic key; same GCS-or-local fallback and retry policy as
+   * screenshots. Spec: docs/specs/tests-ux/spec-run-video.md §2
+   */
+  async uploadVideo(webm: Buffer | null | undefined, tenantId: string, runId: string): Promise<string | null> {
+    if (!webm || !Buffer.isBuffer(webm) || webm.length === 0) return null;
+
+    const key = `${tenantId}/${runId}/video.webm`;
+
+    if (this.gcsEnabled) {
+      return this.uploadToGCS(webm, key, 'video/webm');
+    }
+
+    return this.saveLocally(webm, key);
+  }
+
+  /**
    * Download a PNG from GCS or local disk by its key.
    * Used to fetch the last-known-good screenshot for Signal C classification.
    * Returns null if the key is a GCS path but GCS is not configured, or on error.
@@ -169,10 +186,10 @@ export class ScreenshotService {
     }
   }
 
-  private async uploadToGCS(png: Buffer, key: string): Promise<string | null> {
+  private async uploadToGCS(png: Buffer, key: string, contentType = 'image/png'): Promise<string | null> {
     for (let attempt = 1; attempt <= 3; attempt++) {
       try {
-        await this.writeOnce(png, key);
+        await this.writeOnce(png, key, contentType);
         this.observability.increment('screenshot.gcs_uploaded');
         return this.storedKey(key);
       } catch (e: any) {
@@ -187,14 +204,14 @@ export class ScreenshotService {
     return null;
   }
 
-  private writeOnce(png: Buffer, key: string): Promise<void> {
+  private writeOnce(png: Buffer, key: string, contentType = 'image/png'): Promise<void> {
     return new Promise((resolve, reject) => {
       const file = this.newStorage().bucket(this.bucket).file(key);
       const stream = file.createWriteStream({
-        contentType: 'image/png',
+        contentType,
         resumable: false,
         validation: false,
-        metadata: { contentType: 'image/png' },
+        metadata: { contentType },
       });
       stream.once('error', reject);
       stream.once('finish', resolve);

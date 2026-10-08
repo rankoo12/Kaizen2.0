@@ -28,6 +28,7 @@ async function forwardRequest(
   accessToken: string,
   body: string | undefined,
   ifNoneMatch?: string | null,
+  range?: string | null,
 ): Promise<Response> {
   const headers: Record<string, string> = {
     Authorization: `Bearer ${accessToken}`,
@@ -36,6 +37,9 @@ async function forwardRequest(
   // Forward the conditional-request validator so cacheable upstream responses
   // (e.g. immutable screenshots from GET /media) can answer 304 Not Modified.
   if (ifNoneMatch) headers['If-None-Match'] = ifNoneMatch;
+  // Forward byte-range requests so the run-video player can seek — the <video>
+  // element re-requests `Range: bytes=start-` and upstream answers 206 slices.
+  if (range) headers['Range'] = range;
   return fetch(url, { method, headers, body, cache: 'no-store' });
 }
 
@@ -45,6 +49,14 @@ function copyCacheHeaders(from: Response, to: NextResponse): void {
   const etag = from.headers.get('etag');
   if (cacheControl) to.headers.set('Cache-Control', cacheControl);
   if (etag) to.headers.set('ETag', etag);
+}
+
+/** Copy byte-range headers so 206 partial-content responses stay meaningful. */
+function copyRangeHeaders(from: Response, to: NextResponse): void {
+  const contentRange = from.headers.get('content-range');
+  const acceptRanges = from.headers.get('accept-ranges');
+  if (contentRange) to.headers.set('Content-Range', contentRange);
+  if (acceptRanges) to.headers.set('Accept-Ranges', acceptRanges);
 }
 
 function buildUpstreamUrl(pathSegments: string[], search: string): string {
@@ -70,7 +82,7 @@ async function buildResponse(res: Response, cookieUpdates?: {
     const data = await res.json();
     response = NextResponse.json(data, { status: res.status });
   } else {
-    // Handle binary data (images, etc)
+    // Handle binary data (images, video, etc)
     const buffer = await res.arrayBuffer();
     response = new NextResponse(buffer, {
       status: res.status,
@@ -80,6 +92,7 @@ async function buildResponse(res: Response, cookieUpdates?: {
     });
     // Propagate upstream caching so the browser serves repeat views from cache.
     copyCacheHeaders(res, response);
+    copyRangeHeaders(res, response);
   }
 
   if (cookieUpdates) {
@@ -106,13 +119,14 @@ async function handler(
   const upstreamUrl = buildUpstreamUrl(path, request.nextUrl.search);
   const method = request.method;
   const ifNoneMatch = request.headers.get('if-none-match');
+  const range = request.headers.get('range');
   const body = ['GET', 'HEAD', 'DELETE'].includes(method)
     ? undefined
     : await request.text();
 
   // First attempt with current access token
   if (accessToken) {
-    const res = await forwardRequest(upstreamUrl, method, accessToken, body, ifNoneMatch);
+    const res = await forwardRequest(upstreamUrl, method, accessToken, body, ifNoneMatch, range);
 
     if (res.status !== 401) {
       return buildResponse(res);
@@ -136,7 +150,7 @@ async function handler(
   }
 
   // Retry with new access token and return updated cookies in response
-  const retryRes = await forwardRequest(upstreamUrl, method, newTokens.accessToken, body, ifNoneMatch);
+  const retryRes = await forwardRequest(upstreamUrl, method, newTokens.accessToken, body, ifNoneMatch, range);
   return buildResponse(retryRes, {
     access:  newTokens.accessToken,
     refresh: newTokens.refreshToken,

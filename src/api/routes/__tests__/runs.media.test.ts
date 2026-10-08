@@ -29,7 +29,9 @@ jest.mock('ioredis', () => ({
 
 jest.mock('../../../modules/media/screenshot.service', () => ({
   ScreenshotService: jest.fn().mockImplementation(() => ({
-    download: jest.fn(async () => Buffer.from('fake-png-bytes')),
+    // 10 known bytes for a video so the Range tests can assert exact slices.
+    download: jest.fn(async (key: string) =>
+      key.endsWith('.webm') ? Buffer.from('0123456789') : Buffer.from('fake-png-bytes')),
   })),
 }));
 
@@ -114,6 +116,109 @@ describe('runsRoutes — GET /media (auth, tenant scoping, caching)', () => {
   it('returns 400 when key is missing', async () => {
     const res = await app.inject({ method: 'GET', url: '/media' });
     expect(res.statusCode).toBe(400);
+  });
+});
+
+const VIDEO_KEY = 'gs://kaizen-screenshots/tenant-1/run-9/video.webm';
+
+describe('runsRoutes — GET /media run videos (spec-run-video.md §4)', () => {
+  let app: ReturnType<typeof Fastify>;
+  let mockQuery: jest.Mock;
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.decorateRequest('tenantId', '');
+    app.decorateRequest('keyScope', '');
+    app.decorateRequest('userId', '');
+    await app.register(runsRoutes);
+    await app.ready();
+  });
+
+  afterAll(async () => { await app.close(); });
+
+  beforeEach(() => {
+    mockQuery = jest.fn();
+    (getPool as jest.Mock).mockReturnValue({ query: mockQuery });
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  it('authorizes a .webm key against runs.video_key and serves video/webm with Accept-Ranges', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ '?column?': 1 }] }); // authz hit
+
+    const res = await app.inject({ method: 'GET', url: `/media?key=${encodeURIComponent(VIDEO_KEY)}` });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['content-type']).toBe('video/webm');
+    expect(res.headers['accept-ranges']).toBe('bytes');
+    expect(res.body).toBe('0123456789');
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining('video_key = $1 AND tenant_id = $2'),
+      [VIDEO_KEY, 'tenant-1'],
+    );
+  });
+
+  it('returns 404 for a video key not owned by the caller tenant', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [] }); // authz miss
+
+    const res = await app.inject({ method: 'GET', url: '/media?key=tenant-2/run-1/video.webm' });
+
+    expect(res.statusCode).toBe(404);
+  });
+
+  it('serves a bounded Range as a 206 slice with Content-Range', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/media?key=${encodeURIComponent(VIDEO_KEY)}`,
+      headers: { range: 'bytes=2-5' },
+    });
+
+    expect(res.statusCode).toBe(206);
+    expect(res.headers['content-range']).toBe('bytes 2-5/10');
+    expect(res.body).toBe('2345');
+  });
+
+  it('serves an open-ended Range (bytes=start-) to the end of the video', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/media?key=${encodeURIComponent(VIDEO_KEY)}`,
+      headers: { range: 'bytes=4-' },
+    });
+
+    expect(res.statusCode).toBe(206);
+    expect(res.headers['content-range']).toBe('bytes 4-9/10');
+    expect(res.body).toBe('456789');
+  });
+
+  it('answers 416 with the total size for an unsatisfiable Range', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/media?key=${encodeURIComponent(VIDEO_KEY)}`,
+      headers: { range: 'bytes=99-' },
+    });
+
+    expect(res.statusCode).toBe(416);
+    expect(res.headers['content-range']).toBe('bytes */10');
+  });
+
+  it('screenshots are untouched by Range handling — whole body, no Accept-Ranges', async () => {
+    mockQuery.mockResolvedValueOnce({ rows: [{ '?column?': 1 }] });
+
+    const res = await app.inject({
+      method: 'GET',
+      url: `/media?key=${encodeURIComponent(OWNED_KEY)}`,
+      headers: { range: 'bytes=0-3' },
+    });
+
+    expect(res.statusCode).toBe(200);
+    expect(res.headers['accept-ranges']).toBeUndefined();
+    expect(res.body).toBe('fake-png-bytes');
   });
 });
 
