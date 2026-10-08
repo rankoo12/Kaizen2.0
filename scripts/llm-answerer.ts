@@ -63,11 +63,21 @@ function answerOne(file: string, p: Pending): void {
   child.stdout.on('data', (chunk) => { out += String(chunk); });
   child.stderr.on('data', (chunk) => { err += String(chunk); });
 
+  // Claude (haiku especially) sometimes wraps JSON in markdown fences. The
+  // production path never sees fences (OpenAI's response_format forbids them),
+  // and the gateway's strict parse treats a fenced payload as NO ANSWER —
+  // which is how every jquery-classic click resolved to NoSelectorsError on
+  // 2026-10-08. Delivering a clean payload is the answerer's job.
+  const stripFences = (s: string): string => {
+    const m = /^```[a-zA-Z]*\s*\n([\s\S]*?)\n?```\s*$/.exec(s);
+    return m ? m[1].trim() : s;
+  };
+
   const killer = setTimeout(() => { child.kill(); }, ANSWER_TIMEOUT_MS);
   child.on('close', (code) => {
     clearTimeout(killer);
     inFlight.delete(p.id);
-    const answer = out.trim();
+    const answer = stripFences(out.trim());
     const seconds = Math.round((Date.now() - started) / 1000);
     if (code === 0 && answer) {
       // Atomic write: the inbox reads the file the moment it exists.
