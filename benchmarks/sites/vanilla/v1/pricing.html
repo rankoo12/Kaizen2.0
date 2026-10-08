@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Pricing — Lumen Notes</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <span class="brand" id="brand">Lumen Notes</span>
+    <nav aria-label="Main">
+      <a href="index.html" id="nav-home">Home</a>
+      <a href="pricing.html" id="nav-pricing">Pricing</a>
+      <a href="contact.html" id="nav-contact">Contact</a>
+      <a href="login.html" id="nav-login">Login</a>
+    </nav>
+  </header>
+  <main>
+    <h1 id="pricing-title">Pricing</h1>
+    <p class="lede">Three plans. No surprises. Switch or cancel whenever you like.</p>
+
+    <div class="cards" id="plan-cards">
+      <div class="card" id="plan-starter">
+        <h2>Starter</h2>
+        <p class="price">$9<span style="font-size:13px">/mo</span></p>
+        <p>Up to 3 teammates, 500 notes, 30-day history.</p>
+        <button class="btn" id="choose-starter" data-plan="Starter">Choose Starter</button>
+      </div>
+      <div class="card" id="plan-pro">
+        <h2>Pro</h2>
+        <p class="price">$29<span style="font-size:13px">/mo</span></p>
+        <p>Unlimited teammates, unlimited notes, full history.</p>
+        <button class="btn" id="choose-pro" data-plan="Pro">Choose Pro</button>
+      </div>
+      <div class="card" id="plan-enterprise">
+        <h2>Enterprise</h2>
+        <p class="price">$99<span style="font-size:13px">/mo</span></p>
+        <p>SSO, audit log, dedicated support, custom retention.</p>
+        <button class="btn" id="choose-enterprise" data-plan="Enterprise">Choose Enterprise</button>
+      </div>
+    </div>
+
+    <p class="status" id="plan-status" role="status"></p>
+  </main>
+  <footer id="footer">Lumen Notes is a synthetic site for the Kaizen engine bench.</footer>
+  <script src="app.js"></script>
+</body>
+</html>

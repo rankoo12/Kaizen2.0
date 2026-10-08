@@ -1,0 +1,50 @@
+﻿<!doctype html>
+<html lang="en" ng-app="fieldstone">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Directory — Fieldstone HR</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="angular.min.js"></script>
+</head>
+<body ng-controller="DirectoryCtrl">
+  <header class="topbar">
+    <span class="brand">Fieldstone HR</span>
+    <nav aria-label="Main">
+      <a href="index.html" id="nav-home">Home</a>
+      <a href="register.html" id="nav-register">Register</a>
+      <a href="profile.html" id="nav-profile">Profile</a>
+      <a href="directory.html" id="nav-directory">Directory</a>
+    </nav>
+  </header>
+  <main>
+    <h1 id="directory-title">People directory</h1>
+
+    <label for="dir-search">Search people</label>
+    <input type="text" id="dir-search" ng-model="query" placeholder="Name or team">
+
+    <p class="lede" id="dir-count">{{(people | filter:query).length}} people shown</p>
+
+    <table class="people" id="people-table">
+      <thead><tr><th>Name</th><th>Team</th><th>Office</th></tr></thead>
+      <tbody>
+        <tr ng-repeat="p in people | filter:query">
+          <td>{{p.name}}</td><td>{{p.team}}</td><td>{{p.office}}</td>
+        </tr>
+      </tbody>
+    </table>
+  </main>
+  <footer>Fieldstone HR is a synthetic site for the Kaizen engine bench.</footer>
+  <script>
+    angular.module('fieldstone', []).controller('DirectoryCtrl', function ($scope) {
+      $scope.people = [
+        { name: 'Amara Osei', team: 'Platform', office: 'Lisbon' },
+        { name: 'Ben Ito', team: 'Design', office: 'Osaka' },
+        { name: 'Carla Reyes', team: 'Platform', office: 'Austin' },
+        { name: 'Dev Narang', team: 'Support', office: 'Lisbon' },
+        { name: 'Elin Sorensen', team: 'Design', office: 'Oslo' },
+      ];
+    });
+  </script>
+</body>
+</html>

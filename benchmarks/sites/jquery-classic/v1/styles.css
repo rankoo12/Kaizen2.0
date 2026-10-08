@@ -1,0 +1,27 @@
+﻿* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, sans-serif; color: #26221c; background: #faf8f4; }
+.hidden { display: none !important; }
+.topbar { background: #4a3b2a; color: #fff; padding: 14px 28px; display: flex; align-items: baseline; gap: 16px; }
+.brand { font-weight: 700; font-size: 18px; }
+.tagline { color: #cbbda9; font-size: 12px; }
+main { max-width: 820px; margin: 0 auto; padding: 32px 20px 60px; }
+h1 { font-size: 28px; margin: 0 0 16px; }
+h2 { font-size: 19px; }
+.btn { display: inline-block; background: #8c5a2b; color: #fff; border: none; border-radius: 6px; padding: 10px 18px; font-size: 15px; cursor: pointer; }
+.btn:hover { background: #774b21; }
+.tabbar { display: flex; gap: 6px; border-bottom: 2px solid #d8cdbd; margin-bottom: 18px; }
+.tab { background: none; border: none; padding: 10px 16px; font-size: 14px; cursor: pointer; color: #6b5d49; border-bottom: 2px solid transparent; margin-bottom: -2px; }
+.tab.active { color: #26221c; font-weight: 600; border-bottom-color: #8c5a2b; }
+.accordion { border: 1px solid #d8cdbd; border-radius: 8px; background: #fff; max-width: 560px; }
+.acc-item + .acc-item { border-top: 1px solid #e8e0d2; }
+.acc-head { width: 100%; text-align: left; background: none; border: none; padding: 12px 16px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.acc-body { display: none; padding: 0 16px 12px; font-size: 14px; color: #55493a; }
+.acc-body.open { display: block; }
+.status { margin-top: 16px; padding: 10px 14px; border-radius: 6px; font-size: 14px; max-width: 460px; }
+.status.ok { background: #e9f6e4; color: #2c6b1f; border: 1px solid #6aae57; }
+table.log { margin-top: 16px; width: 100%; max-width: 560px; border-collapse: collapse; background: #fff; border: 1px solid #d8cdbd; }
+table.log th, table.log td { text-align: left; padding: 8px 12px; border-bottom: 1px solid #efe9de; font-size: 14px; }
+.modal-scrim { position: fixed; inset: 0; background: rgba(20, 15, 8, .45); display: flex; align-items: center; justify-content: center; }
+.modal { background: #fff; border-radius: 10px; padding: 26px; max-width: 420px; box-shadow: 0 18px 50px rgba(0,0,0,.3); }
+.modal h2 { margin-top: 0; }
+footer { text-align: center; color: #a3937c; font-size: 12px; padding: 24px; }

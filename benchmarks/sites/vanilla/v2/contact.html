@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Contact — Lumen Notes</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <span class="brand" id="brand">Lumen Notes</span>
+    <nav aria-label="Main">
+      <a href="index.html" id="nav-home">Home</a>
+      <a href="pricing.html" id="nav-pricing">Pricing</a>
+      <a href="contact.html" id="nav-contact">Contact</a>
+      <a href="login.html" id="nav-login">Login</a>
+    </nav>
+  </header>
+  <main>
+    <h1 id="contact-heading">Contact us</h1>
+    <p class="lede">Questions, feedback, or a plan that doesn't fit? Write to us.</p>
+
+    <!-- v2 mutation: cosmetic-churn, same contract as login.html — ids and the
+         submit button class renamed, visible text identical to v1. -->
+    <form id="form-contact" novalidate>
+      <label for="f-name">Full name</label>
+      <input type="text" id="f-name" name="name" placeholder="Ada Lovelace">
+
+      <label for="f-email">Email address</label>
+      <input type="email" id="f-email" name="email" placeholder="ada@example.com">
+
+      <label for="f-topic">Topic</label>
+      <select id="f-topic" name="topic">
+        <option>Support</option>
+        <option>Sales</option>
+        <option>Feedback</option>
+      </select>
+
+      <label for="f-message">Message</label>
+      <textarea id="f-message" name="message" placeholder="How can we help?"></textarea>
+
+      <button class="button-primary" id="f-send" type="submit">Send message</button>
+      <p class="status" id="form-status" role="status"></p>
+    </form>
+  </main>
+  <footer id="footer">Lumen Notes is a synthetic site for the Kaizen engine bench.</footer>
+  <script src="app.js"></script>
+</body>
+</html>

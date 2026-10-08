@@ -1,0 +1,55 @@
+﻿<!doctype html>
+<html lang="en" ng-app="fieldstone">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Profile — Fieldstone HR</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="angular.min.js"></script>
+</head>
+<body ng-controller="ProfileCtrl">
+  <header class="topbar">
+    <span class="brand">Fieldstone HR</span>
+    <nav aria-label="Main">
+      <a href="index.html" id="nav-home">Home</a>
+      <a href="register.html" id="nav-register">Register</a>
+      <a href="profile.html" id="nav-profile">Profile</a>
+      <a href="directory.html" id="nav-directory">Directory</a>
+    </nav>
+  </header>
+  <main>
+    <h1 id="profile-title">Edit profile</h1>
+
+    <form name="profileForm" novalidate>
+      <label for="profile-display">Display name</label>
+      <input type="text" id="profile-display" ng-model="profile.display" placeholder="How the team sees you">
+
+      <label for="profile-bio">Bio</label>
+      <textarea id="profile-bio" ng-model="profile.bio" placeholder="A sentence or two"></textarea>
+
+      <label class="check-row" for="profile-newsletter">
+        <input type="checkbox" id="profile-newsletter" ng-model="profile.newsletter"> Send me the monthly digest
+      </label>
+
+      <button class="btn" id="profile-save" type="button" ng-click="save()">Save profile</button>
+
+      <p class="status err" id="profile-error" role="alert" ng-if="error">{{error}}</p>
+      <!-- v2 mutation: assertion-changed (MUST-FAIL). The success copy changed;
+           a v1 test asserting "Profile saved successfully." must fail honestly —
+           healing an assertion onto different text would be a false-pass. -->
+      <p class="status ok" id="profile-success" role="status" ng-if="saved">Changes stored.</p>
+    </form>
+  </main>
+  <footer>Fieldstone HR is a synthetic site for the Kaizen engine bench.</footer>
+  <script>
+    angular.module('fieldstone', []).controller('ProfileCtrl', function ($scope) {
+      $scope.profile = {};
+      $scope.save = function () {
+        $scope.error = null; $scope.saved = false;
+        if (!$scope.profile.display) { $scope.error = 'A display name is required.'; return; }
+        $scope.saved = true;
+      };
+    });
+  </script>
+</body>
+</html>

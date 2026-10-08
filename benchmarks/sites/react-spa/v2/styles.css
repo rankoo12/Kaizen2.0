@@ -1,0 +1,22 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, sans-serif; color: #182026; background: #fafbfc; }
+.boot { padding: 48px; color: #5c7080; }
+.topbar { background: #1f2a44; color: #fff; padding: 14px 28px; display: flex; align-items: center; gap: 28px; }
+.brand { font-weight: 700; font-size: 18px; }
+nav a { color: #cfd8ea; text-decoration: none; margin-right: 18px; font-size: 14px; }
+nav a:hover { color: #fff; text-decoration: underline; }
+main { max-width: 860px; margin: 0 auto; padding: 32px 20px 60px; }
+h1 { font-size: 28px; margin: 0 0 10px; }
+.lede { color: #5c7080; margin-bottom: 22px; }
+.btn { display: inline-block; background: #3f61d6; color: #fff; border: none; border-radius: 6px; padding: 10px 18px; font-size: 15px; cursor: pointer; text-decoration: none; }
+.btn:hover { background: #3451b2; }
+.cards { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 18px; }
+.card { background: #fff; border: 1px solid #d8e1e8; border-radius: 8px; padding: 18px; flex: 1 1 180px; }
+.card h3 { margin-top: 0; }
+.price { font-weight: 700; margin: 6px 0 12px; }
+.panel { background: #fff; border: 1px solid #d8e1e8; border-radius: 8px; padding: 22px; max-width: 420px; }
+label { display: block; font-size: 13px; font-weight: 600; margin: 4px 0 4px; }
+input { width: 100%; padding: 8px 10px; border: 1px solid #b6c3cf; border-radius: 5px; font-size: 14px; margin-bottom: 14px; }
+.status { margin-top: 16px; padding: 10px 14px; border-radius: 6px; font-size: 14px; }
+.status.ok { background: #e3f9e5; color: #207227; border: 1px solid #57ae5b; }
+footer { text-align: center; color: #8a9ba8; font-size: 12px; padding: 24px; }

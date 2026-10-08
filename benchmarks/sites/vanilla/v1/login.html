@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Login — Lumen Notes</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header>
+    <span class="brand" id="brand">Lumen Notes</span>
+    <nav aria-label="Main">
+      <a href="index.html" id="nav-home">Home</a>
+      <a href="pricing.html" id="nav-pricing">Pricing</a>
+      <a href="contact.html" id="nav-contact">Contact</a>
+      <a href="login.html" id="nav-login">Login</a>
+    </nav>
+  </header>
+  <main>
+    <h1 id="login-title">Sign in to Lumen Notes</h1>
+
+    <form id="login-form" novalidate>
+      <label for="login-username">Username</label>
+      <input type="text" id="login-username" name="username" placeholder="Username">
+
+      <label for="login-password">Password</label>
+      <input type="password" id="login-password" name="password" placeholder="Password">
+
+      <button class="btn" id="login-submit" type="submit">Sign in</button>
+      <p class="status" id="login-status" role="status"></p>
+      <p class="hint" id="login-hint">Demo account: username <strong>demo</strong>, password <strong>demo123</strong>.</p>
+    </form>
+  </main>
+  <footer id="footer">Lumen Notes is a synthetic site for the Kaizen engine bench.</footer>
+  <script src="app.js"></script>
+</body>
+</html>

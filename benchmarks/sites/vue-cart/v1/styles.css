@@ -1,0 +1,23 @@
+* { box-sizing: border-box; }
+[v-cloak] { display: none; }
+body { margin: 0; font-family: system-ui, sans-serif; color: #1e2a22; background: #f4f8f4; }
+.topbar { background: #1e4d2b; color: #fff; padding: 14px 28px; display: flex; align-items: center; gap: 28px; }
+.brand { font-weight: 700; font-size: 18px; }
+nav a { color: #cfe3d4; text-decoration: none; margin-right: 18px; font-size: 14px; }
+nav a:hover { color: #fff; text-decoration: underline; }
+.badge { background: #ffb100; color: #3a2b00; border-radius: 999px; padding: 2px 10px; font-size: 13px; font-weight: 700; }
+main { max-width: 820px; margin: 0 auto; padding: 32px 20px 60px; }
+h1 { font-size: 28px; margin: 0 0 12px; }
+.lede { color: #4f6354; }
+.btn { display: inline-block; background: #2f7d3f; color: #fff; border: none; border-radius: 6px; padding: 10px 18px; font-size: 15px; cursor: pointer; text-decoration: none; }
+.btn:hover { background: #276a35; }
+.btn.ghost { background: #e7f0e9; color: #1e4d2b; border: 1px solid #9dbfa6; }
+.cards { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 18px; }
+.card { background: #fff; border: 1px solid #cfdfd3; border-radius: 8px; padding: 18px; flex: 1 1 170px; }
+.card h3 { margin-top: 0; }
+.price { font-weight: 700; margin: 6px 0 12px; }
+.cart-list { background: #fff; border: 1px solid #cfdfd3; border-radius: 8px; padding: 16px 16px 16px 34px; max-width: 420px; }
+.cart-list li { padding: 5px 0; font-size: 14px; }
+.status { margin-top: 16px; padding: 10px 14px; border-radius: 6px; font-size: 14px; max-width: 420px; }
+.status.ok { background: #e3f9e5; color: #207227; border: 1px solid #57ae5b; }
+footer { text-align: center; color: #7f947f; font-size: 12px; padding: 24px; }

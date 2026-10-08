@@ -1,0 +1,36 @@
+PURPOSE
+Verdant Grocer is a synthetic one-page grocery shop. Two views toggled by the
+top nav — Catalog and Cart — with a live cart badge in the header.
+
+ROLES
+Anonymous shopper; no login; nothing persists past a reload.
+
+CRITICAL FLOWS
+- Catalog: four product cards — Curly Kale $2.50, Black Figs $5.00, Sourdough
+  Loaf $6.20, Oat Milk $3.10 — each with an "Add to cart" button. Adding shows
+  "<product> added to your cart." and the header badge shows the item count.
+- Cart: lists added items, shows "In your cart: <n> items", and has a
+  "Checkout" button. Checking out shows "Order placed — thank you!" and
+  empties the cart. An empty cart shows "Your cart is empty — add something
+  from the catalog."
+- The nav's Catalog / Cart links switch views from anywhere.
+
+BUSINESS RULES
+- The badge always equals the number of items added and disappears at zero.
+- Checkout only exists while the cart has items.
+
+PRIORITIES
+Adding one and several products with the confirmation and badge verified;
+the cart listing what was added with the count line; checkout producing the
+order confirmation; the empty-cart message.
+
+TEST-WRITING STANDARD
+- Name every test after its view and primary action.
+- Every test must END on a step verifying the visible outcome text quoted
+  above — never stop at the click.
+- Keep tests short: act, verify.
+
+CAUTIONS
+- The page renders client-side a moment after load.
+- There is nothing to delete or configure; checkout is fake and safe.
+- All data is synthetic; any interaction is safe.
