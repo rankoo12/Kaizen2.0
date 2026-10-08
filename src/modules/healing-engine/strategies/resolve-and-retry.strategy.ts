@@ -12,8 +12,21 @@ type PageLike = {
 };
 
 const BUDGET_KEY = (tenantId: string) => `healing:resolve_retry:${tenantId}`;
-const MAX_PER_HOUR = 2;
+const DEFAULT_MAX_PER_HOUR = 2;
 const TTL_SECONDS = 3600;
+
+/**
+ * Hourly re-resolution budget per tenant. Env-overridable (read per call so
+ * tests and long-lived workers see changes without a restart) because a suite
+ * whose target site just changed can legitimately need many re-resolutions in
+ * one run — the engine-robustness bench mutates a whole site at once, and a
+ * production tenant pushing a redesign hits the same wall.
+ * Spec: docs/specs/bench/spec-changing-sites.md
+ */
+function maxPerHour(): number {
+  const raw = Number(process.env.HEAL_RESOLVE_RETRY_PER_HOUR);
+  return Number.isInteger(raw) && raw > 0 ? raw : DEFAULT_MAX_PER_HOUR;
+}
 
 /**
  * ResolveAndRetryStrategy — Priority 4
@@ -22,7 +35,9 @@ const TTL_SECONDS = 3600;
  * Triggers a fresh LLM element resolution, updates both step_embedding and
  * element_embedding in selector_cache on success, then retries the selector in DOM.
  *
- * Rate-limited: max 2 calls per tenant per hour (Redis counter).
+ * Rate-limited: max 2 calls per tenant per hour by default (Redis counter);
+ * override with HEAL_RESOLVE_RETRY_PER_HOUR for site-redesign bursts and the
+ * changing-sites bench.
  * Handles: ELEMENT_REMOVED, ELEMENT_MUTATED
  */
 export class ResolveAndRetryStrategy implements IHealingStrategy {
@@ -61,7 +76,7 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
     const current = await this.redis.incr(budgetKey);
     if (current === 1) await this.redis.expire(budgetKey, TTL_SECONDS);
 
-    if (current > MAX_PER_HOUR) {
+    if (current > maxPerHour()) {
       this.observability.increment('healing.resolve_retry_budget_exceeded', {
         tenantId: context.tenantId,
       });

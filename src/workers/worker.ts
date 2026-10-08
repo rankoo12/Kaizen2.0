@@ -1285,6 +1285,36 @@ async function executeStep(
   }
 
   if (healingResult.succeeded) {
+    // A strategy "succeeding" means it LOCATED a live element — not that the
+    // action ran. Until 2026-10-08 the step was marked healed right here, so a
+    // wait-strategy heal of a click was a PHANTOM: the click never dispatched,
+    // the run continued green past an action that never happened (changing-
+    // sites bench, stress site: 20s-late widget "healed" with no effect; the
+    // following assertion failed honestly — but a test ending on the click
+    // would have been a false-pass). A heal of an ACTION now re-executes the
+    // step against the healed selector and only counts when that passes.
+    // Assertions keep their own stricter gate above (healCertifiesAssertion).
+    if (!step.action.startsWith('assert')) {
+      const healedSet: SelectorSet = {
+        ...selectorSet,
+        selectors: [{
+          selector: healingResult.newSelector ?? classifiedFailure.previousSelector,
+          strategy: selectorSet.selectors[0]?.strategy ?? 'css',
+          confidence: 1,
+        }],
+      };
+      const retry = await engine.executeStep(step, healedSet, page).catch((e: any) => ({
+        status: 'failed' as const, errorType: 'HealRetryThrew', errorMessage: e?.message,
+      }));
+      if (retry.status !== 'passed') {
+        obs.increment('worker.heal_retry_failed', { failureClass, strategy: healingResult.strategyUsed ?? 'unknown' });
+        runLog?.log('heal',
+          `heal located an element but the retried action still failed (${healingResult.strategyUsed}) — not a heal`,
+          { stepIndex, level: 'error', data: { strategy: healingResult.strategyUsed, newSelector: healingResult.newSelector } });
+        await runLog?.flush();
+        return { status: 'failed', healed: false, afterPng };
+      }
+    }
     obs.increment('worker.step_healed', { failureClass, strategy: healingResult.strategyUsed });
     logger.info({
       event: 'step_healed',
