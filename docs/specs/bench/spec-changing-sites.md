@@ -215,7 +215,32 @@ finding (docs/reports/2026-10-08.md has the full narrative):
 | 5 | Heals via FallbackSelector/AdaptiveWait persist nothing — healed-not-learned re-heals every run (GAP verdicts). | OPEN (engine backlog) |
 | 6 | **Assertions / actions do not wait for content that renders AFTER an async action** (no navigation). assert_text scans `body` once and Escalation cannot heal it → fail; `type`/`click` resolve onto the nearest already-existing same-named element (a 900ms-late message input lost to the "Messages" nav link). The single most common real-world pattern (optimistic UI, XHR responses). Surfaced by the `social` flagship site. | OPEN — highest-value finding |
 
-### `social` (Buzzly) — flagship complexity site, added 2026-10-08
+### `social` (Buzzly) v2 — rebuilt big/modern/weird, 2026-10-08
+
+Rebuilt as a component-based (htm + React, no build step) 7-view SPA — a tiny
+store, custom hooks, UI atoms across `lib.js`/`widgets.js`/`views.js`/
+`views2.js`/`app.js` — with a battery of adversarial patterns and per-endpoint
+tunable latency (`data.js` `BUZZLY_LATENCY_MS`). 27 active cases (7 generated +
+20 seeds incl. 8 reach probes). **Result: 15 PASS / 1 GAP / 11 FAIL / 0
+FALSE-PASS / 0 negative-control** — every red a named finding on the hardest
+site in the suite.
+
+- **Engine wins on hard patterns**: open **shadow-DOM** poll vote, **iframe**
+  widget interaction, element-swap (Join → `<a role=button>`), plus all the
+  standard flows (like, share, search, story, group join, notifications).
+- **Correct reach limits (must-fail, green)**: **canvas** text is unreadable
+  (assert→body→Escalation, no false pass); the **infinite-spinner** live tile
+  times out honestly and never invents a pass.
+- **Reachable-but-missed (red findings, finding #6 family)**: the late-rendered
+  **outcome-text** asserts after an interaction are not caught — reproduced
+  across reply, add-friend, send-message, **block** (hover menu → `<dialog>`),
+  **create-event** (stacked modals), and **play-video** (Watch); plus
+  **scroll-to-find** on the virtualized 500-row feed (post #120 not in the DOM
+  until scrolled). These are the highest-value gaps the site exposed.
+- The renamed "Post"→"Publish" (beside a decoy) and "Accept"→"Confirm" healed
+  to the right control; the decoy was never grabbed.
+
+### `social` (Buzzly) — original version, added 2026-10-08
 
 A 7-view React social app (feed, stories, composer, explore/search, profiles,
 friends, messages, groups, notifications) with every loading time in one

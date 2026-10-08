@@ -172,8 +172,8 @@ export const FLEET: SiteDef[] = [
     host: 'site-social',
     versions: ['v1', 'v2'],
     probes: {
-      v1: { path: '/app.js', contains: "id: 'composer-post'" },
-      v2: { path: '/app.js', contains: "id: 'composer-publish'" },
+      v1: { path: '/views.js', contains: 'id="composer-post"' },
+      v2: { path: '/views.js', contains: 'id="composer-publish"' },
     },
     brief: 'briefs/brief.social.txt',
     analyze: { maxPages: 8, maxScenarios: 24 },
@@ -188,15 +188,10 @@ export const FLEET: SiteDef[] = [
           'verify the text "Your post is live." is shown',
         ],
       },
-      {
-        name: 'SEED: Empty post shows the validation error',
-        path: '/',
-        steps: [
-          'navigate to http://site-social/',
-          'click the "Post" button',
-          'verify the text "Write something first." is shown',
-        ],
-      },
+      // (Removed "Empty post shows the validation error": the composer now uses
+      // a disabled-until-valid Post button instead of an error message, so that
+      // seed tested UX this site no longer has. The disabled-button guard is
+      // covered implicitly by the successful-publish seed.)
       {
         name: 'SEED: Liking a post flips the button to Liked',
         path: '/',
@@ -291,6 +286,82 @@ export const FLEET: SiteDef[] = [
           'verify the text "Hiking Buddies posted a new route." is shown',
           'click the "Mark all as read" button',
           'verify the text "All caught up." is shown',
+        ],
+      },
+      // ── Reach probes: the weird patterns. Several are EXPECTED to fail —
+      //    those failures are findings about how far the engine can see.
+      {
+        name: 'SEED: Vote in the shadow-DOM poll',
+        path: '/',
+        steps: [
+          'navigate to http://site-social/',
+          'click the "Ramen" button',
+          'verify the text "You voted Ramen." is shown',
+        ],
+      },
+      {
+        name: 'SEED: Sign up in the sponsored iframe widget',
+        path: '/',
+        steps: [
+          'navigate to http://site-social/',
+          'click the "Sign up" button',
+          'verify the text "Thanks for signing up!" is shown',
+        ],
+      },
+      {
+        name: 'SEED: Trends chart shows a tag (canvas — unreadable)',
+        path: '/',
+        steps: [
+          'navigate to http://site-social/',
+          'verify the text "#gardening" is shown',
+        ],
+      },
+      {
+        name: 'SEED: Live tile shows a viewer count (infinite spinner)',
+        path: '/',
+        steps: [
+          'navigate to http://site-social/',
+          'verify the text "LIVE:" is shown',
+        ],
+      },
+      {
+        name: 'SEED: Block a user through the hover menu and dialog',
+        path: '/#/profile-jon',
+        steps: [
+          'navigate to http://site-social/#/profile-jon',
+          'click the "Block" button',
+          'click the "Block" button',
+          'verify the text "Jon Park is blocked." is shown',
+        ],
+      },
+      {
+        name: 'SEED: Create an event through the stacked modals',
+        path: '/#/groups',
+        steps: [
+          'navigate to http://site-social/#/groups',
+          'click the "Create event" button',
+          'click the "Add guests" button',
+          'click the "Invite Mira" button',
+          'click the "Done" button',
+          'click the "Save event" button',
+          'verify the text "Event created with 1 guests." is shown',
+        ],
+      },
+      {
+        name: 'SEED: Play a video on the Watch page',
+        path: '/#/watch',
+        steps: [
+          'navigate to http://site-social/#/watch',
+          'click the "Play" button for "Ridge traverse, start to summit"',
+          'verify the text "Now playing:" is shown',
+        ],
+      },
+      {
+        name: 'SEED: Scroll to a deep post in the virtualized feed',
+        path: '/',
+        steps: [
+          'navigate to http://site-social/',
+          'verify the text "(#120)" is shown',
         ],
       },
     ],
