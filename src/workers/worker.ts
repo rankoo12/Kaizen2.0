@@ -842,7 +842,27 @@ async function executeStep(
   let selectorSet: SelectorSet;
   if (deltaScoped && !onlyRemovals && !viewSwapped) {
     const elements = delta.last!.elements;
-    const pick = pickDeltaMatch(step.targetDescription ?? '', elements, quotedName(delta.last!.afterStep));
+    let pick = pickDeltaMatch(step.targetDescription ?? '', elements, quotedName(delta.last!.afterStep));
+    // ── Delta name-fidelity for assertions (finding #2) ───────────────────────
+    // pickDeltaMatch's "about" gate accepts a role-only match — right for
+    // generic kind-descriptions ("a confirmation dialog") and a FALSE PASS for
+    // named controls: react-spa renamed "Sign in"→"Log in" and the visibility
+    // assert of the OLD name went green off the renamed button (the fidelity
+    // gates exempt delta, so nothing downstream catches it). An assertion's
+    // INTERACTIVE delta pick must share at least one salient word with the
+    // target — role included, so "a confirmation dialog" still matches a
+    // dialog; prose picks (the error message → "Target URL needs to…") stay
+    // exempt, that lookup is the delta oracle's whole point. Zero overlap
+    // demotes to no-pick and the assertion fails honestly.
+    // Spec: docs/specs/bench/spec-changing-sites.md §12 (#2)
+    if (pick && step.action.startsWith('assert') && pick.interactive
+        && nameAbsent(step.targetDescription, `${pick.name} ${pick.text} ${pick.role}`)) {
+      obs.increment('worker.delta_pick_name_refused');
+      runLog?.log('resolve',
+        `what changed has a ${pick.role} ("${(pick.text || pick.name).slice(0, 40)}") but it does not carry "${(step.targetDescription ?? '').slice(0, 40)}" — refusing the lookalike`,
+        { stepIndex, level: 'warn', data: { refused: pick.text || pick.name, role: pick.role } });
+      pick = null;
+    }
     // The whole delta rides as candidates and the pick is marked, so the run
     // page shows "what changed" with the chosen element highlighted — a person
     // can check the choice, not just read an opaque [data-kz-delta] selector.

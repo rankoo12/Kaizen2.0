@@ -9,6 +9,14 @@ Updated: 2026-10-11 — findings #7 (hover-reveal), #8 (scroll-to-find), #9
 (refuse, don't restore, an unrecovered suspect). Social: 21 PASS / 3 GAP /
 3 FAIL / 0 FALSE-PASS (remaining FAILs: composer rename-decoy heal ×2,
 navigate-profile TIMING — pre-existing, unchanged).
+Updated: 2026-10-11 (later) — full-fleet verification: 4 sites green, stress
+improved vs 10-08 baseline (reds = known #3/#4), zero regressions. Finding
+#2 (delta name-fidelity) FIXED and verified (react-spa BENCH GREEN). Social
+suite hygiene: archived the stale "Empty post" seed (UX removed from the
+site, see fleet.ts note) and the mis-generated "Comment appears" draft
+(typed its comment into the main composer; its old green was a sloppy-delta
+coincidence — real coverage lives in the "Replying to a post" seed). Fleet
+hard FAILs now: stress #3/#4 ×3 + social navigate-profile TIMING ×1.
 
 ## 1. Goal & non-goals
 
@@ -214,7 +222,7 @@ finding (docs/reports/2026-10-08.md has the full narrative):
 | # | Finding | Status |
 |---|---|---|
 | 1 | **Phantom heals**: a heal "succeeded" by locating an element; the action was never re-executed. A test ending on a healed click would have been a false-pass. | **FIXED** — worker re-executes non-assertion heals and only counts a verified action (src/workers/worker.ts) |
-| 2 | **Delta name-fidelity exemption**: assert_visible of a RENAMED control passes when resolved via the delta path (refuse-wrong-name gates exempt delta). | OPEN — bench stays red (react-spa FALSE-PASS row) until closed |
+| 2 | **Delta name-fidelity exemption**: assert_visible of a RENAMED control passes when resolved via the delta path (refuse-wrong-name gates exempt delta). | **FIXED 2026-10-11** — an assertion's INTERACTIVE delta pick sharing ZERO salient words with the target (role included, so "a confirmation dialog" still matches a dialog; prose picks exempt — that lookup is the delta oracle's point) is demoted to no-pick → honest fail. Verified live: react-spa must-fail flipped FALSE-PASS→PASS in r2 AND r3 (`refusing the lookalike` log on "Log in" vs "Sign In button"); react-spa BENCH GREEN, 0 false-passes fleet-wide. |
 | 3 | **Delta memory not fed after a heal**: a delta-scoped assertion after a healed action errors AssertionNoAction — honest failure, wrong reason. | OPEN (stress) |
 | 4 | **Volatile-DOM interactions**: chunked re-renders detach nodes mid-action; clear/type/click lose the race. | OPEN (stress — the site exists to measure this) |
 | 5 | Heals via FallbackSelector/AdaptiveWait persist nothing — healed-not-learned re-heals every run (GAP verdicts). | OPEN (engine backlog) |
