@@ -1242,31 +1242,42 @@ async function executeStep(
   // carries a delta-scoped oracle. A navigation step throws the memory away:
   // "what changed" across a deliberate page change is the whole page, which
   // would restrict nothing. Spec §1.
-  if (delta.enabled && result.status !== 'failed') {
+  // A closure because TWO success paths need it: the direct pass below, and a
+  // HEALED action further down — a heal that re-executed its action changed
+  // the page just as a clean pass does, and skipping the capture starved the
+  // following delta-scoped assertion into AssertionNoAction (finding #3: the
+  // stress site's refresh-stats flow healed the click, then failed the assert
+  // for the wrong reason). Spec: docs/specs/bench/spec-changing-sites.md §12 (#3)
+  const captureWhatChanged = async (): Promise<void> => {
+    if (!delta.enabled) return;
     if (DELTA_CLEARING_ACTIONS.has(step.action)) {
       delta.baseline = null;
       delta.last = null;
-    } else if (STATE_CHANGING_ACTIONS.has(step.action) && delta.baseline) {
-      // The click has returned; the app may still be rendering what it did.
-      await settleDom(page);
-      const after = await captureDeltaFull(page, delta.baseline);
-      const changed = after.elements;
-      delta.last = {
-        elements: changed,
-        removed: after.removed,
-        afterStep: step.rawText,
-        dialogAccepted: delta.dialogs.count > dialogsBefore,
-      };
-      // "What changed" is page text, and a login step's delta is whatever the
-      // app renders around the credential it just accepted. The same rule the
-      // rest of this function follows: a secret step writes no evidence.
-      if (!secretStep) {
-        runLog?.log('execute', `what changed: ${summariseDelta(changed)}`, {
-          stepIndex,
-          data: { changed: changed.slice(0, 10).map((el) => ({ role: el.role, name: el.name, text: el.text })) },
-        });
-      }
+      return;
     }
+    if (!STATE_CHANGING_ACTIONS.has(step.action) || !delta.baseline) return;
+    // The click has returned; the app may still be rendering what it did.
+    await settleDom(page);
+    const after = await captureDeltaFull(page, delta.baseline);
+    const changed = after.elements;
+    delta.last = {
+      elements: changed,
+      removed: after.removed,
+      afterStep: step.rawText,
+      dialogAccepted: delta.dialogs.count > dialogsBefore,
+    };
+    // "What changed" is page text, and a login step's delta is whatever the
+    // app renders around the credential it just accepted. The same rule the
+    // rest of this function follows: a secret step writes no evidence.
+    if (!secretStep) {
+      runLog?.log('execute', `what changed: ${summariseDelta(changed)}`, {
+        stepIndex,
+        data: { changed: changed.slice(0, 10).map((el) => ({ role: el.role, name: el.name, text: el.text })) },
+      });
+    }
+  };
+  if (result.status !== 'failed') {
+    await captureWhatChanged();
   }
 
   runLog?.log(isAssertion ? 'assert' : 'execute',
@@ -1459,6 +1470,10 @@ async function executeStep(
         await runLog?.flush();
         return { status: 'failed', healed: false, afterPng };
       }
+      // The healed action ran and passed — feed the delta memory exactly as a
+      // clean pass would, so a following delta-scoped assertion judges what the
+      // action produced instead of erroring AssertionNoAction (finding #3).
+      await captureWhatChanged();
     }
     obs.increment('worker.step_healed', { failureClass, strategy: healingResult.strategyUsed });
     logger.info({
