@@ -75,7 +75,7 @@ import type { RunJobPayload } from '../queue';
 import type { StepAST, ClassifiedFailure, SelectorSet, SelectorEntry, RunContext } from '../types';
 import { isSecretStep, redactStepText, REDACTED } from '../modules/test-writer/secret-steps';
 import { settleAfterNavigation, settleDom } from '../modules/execution-engine/settle';
-import { quotedName, nameOverlaps, countDriftMatch } from './name-fidelity';
+import { quotedName, nameOverlaps, countDriftMatch, nameAbsent } from './name-fidelity';
 
 // ─── Module Setup ─────────────────────────────────────────────────────────────
 
@@ -1047,6 +1047,56 @@ async function executeStep(
       obs.log('warn', 'worker.resolution_failed', { runId, action: step.action, error: e.message });
     }
     await refuseWrongName();
+  }
+
+  // ── Wrong element under async latency: settle and re-resolve ────────────────
+  // A step resolved against a still-rendering page returns a confident WRONG
+  // element — the persistent Notifications bell for "Add friend"/"Play"/"Block"
+  // (the name-blind element cache rubber-stamps whatever chrome control is
+  // present on the skeleton), or the "Messages" nav LINK for a message input
+  // that loads 900ms late. The quoted-name gate above misses these because the
+  // compiler drops the quotes. Detect the two unambiguous wrong-pick signals —
+  // the resolved name shares ZERO salient words with the target, or a fill
+  // action landed on a link — then let the DOM settle (patiently, so late
+  // content paints) and re-resolve through the normal cache-first chain. Adopt
+  // only a NON-suspect result; otherwise restore the original pick, so a correct
+  // but oddly-named resolution is never made worse. Spec: spec-changing-sites §12 (#6).
+  const FILL_ACTIONS = new Set(['type', 'select', 'check', 'uncheck', 'clear']);
+  const isSuspectPick = async (set: SelectorSet): Promise<boolean> => {
+    if (!step.targetDescription || set.selectors.length === 0) return false;
+    const sel = set.selectors[0].selector;
+    if (FILL_ACTIONS.has(step.action) && /^role=link\b/.test(sel)) return true; // can't type into a link
+    const descriptor = await describeResolved(page, sel).catch(() => null);
+    return descriptor !== null && nameAbsent(step.targetDescription, descriptor);
+  };
+  if (gateApplies && RETRYABLE_INTERACTIONS.has(step.action) && await isSuspectPick(selectorSet)) {
+    const original = selectorSet;
+    obs.increment('worker.suspect_pick_retry', { action: step.action, source: selectorSet.resolutionSource ?? 'unknown' });
+    runLog?.log('resolve', `suspect pick (${selectorSet.selectors[0].selector.slice(0, 50)}) for "${(step.targetDescription ?? '').slice(0, 40)}" — settling and re-resolving`, { stepIndex, level: 'warn' });
+    let recovered = false;
+    let current = selectorSet;
+    for (let attempt = 0; attempt < 3 && !recovered; attempt++) {
+      // Evict the suspect entry from every cache layer FIRST — the verify run
+      // proved that without this the re-resolve is served the SAME poisoned
+      // selector all three times ("the Mira Chen conversation" kept getting the
+      // cached "Messages" nav link) and the retry loop recovers nothing. The
+      // in-memory `original` survives eviction, so restore-below still works.
+      if (current.fromCache && current.selectors.length > 0) {
+        await evictWrongSelector(tenantId, step.targetHash, current.selectors[0].selector).catch(() => {});
+      }
+      await settleDom(page, 600, 3000); // patient: outlast the pre-render quiet gap
+      let next: SelectorSet;
+      try { next = await resolver.resolve(step, resolutionContext); }
+      catch { continue; }
+      current = next;
+      if (next.selectors.length > 0 && !(await isSuspectPick(next))) {
+        selectorSet = next;
+        recovered = true;
+        obs.increment('worker.suspect_pick_recovered', { action: step.action });
+        runLog?.log('resolve', `recovered: "${(step.targetDescription ?? '').slice(0, 40)}" → ${next.selectors[0].selector.slice(0, 50)} (${next.resolutionSource})`, { stepIndex, data: { source: next.resolutionSource } });
+      }
+    }
+    if (!recovered) selectorSet = original; // never worse than where we started
   }
 
   // Assertions must never be persisted to the selector cache — re-verify every run.
