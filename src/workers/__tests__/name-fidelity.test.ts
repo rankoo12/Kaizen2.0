@@ -1,4 +1,12 @@
-import { quotedName, nameOverlaps, countDriftMatch, nameAbsent } from '../name-fidelity';
+import { quotedName, nameOverlaps, countDriftMatch, nameAbsent, salientWords } from '../name-fidelity';
+
+describe('salientWords — the shared tokenizer behind the name gates', () => {
+  it('drops stopwords and single letters, keeps digits', () => {
+    expect(salientWords('the "Block user" menu item')).toEqual(['block', 'user', 'menu', 'item']);
+    expect(salientWords('the Demo 0 suite')).toEqual(['demo', '0', 'suite']);
+    expect(salientWords('the button')).toEqual([]); // stopwords only → nothing to gate on
+  });
+});
 
 describe('nameAbsent — the suspect-wrong-pick-under-latency trigger (finding #6)', () => {
   it('flags the real latency mis-picks the bench caught (zero shared word)', () => {

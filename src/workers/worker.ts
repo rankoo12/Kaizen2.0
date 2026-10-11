@@ -76,6 +76,7 @@ import type { StepAST, ClassifiedFailure, SelectorSet, SelectorEntry, RunContext
 import { isSecretStep, redactStepText, REDACTED } from '../modules/test-writer/secret-steps';
 import { settleAfterNavigation, settleDom } from '../modules/execution-engine/settle';
 import { quotedName, nameOverlaps, countDriftMatch, nameAbsent } from './name-fidelity';
+import { revealHiddenTarget } from './reveal';
 
 // ─── Module Setup ─────────────────────────────────────────────────────────────
 
@@ -1096,7 +1097,50 @@ async function executeStep(
         runLog?.log('resolve', `recovered: "${(step.targetDescription ?? '').slice(0, 40)}" → ${next.selectors[0].selector.slice(0, 50)} (${next.resolutionSource})`, { stepIndex, data: { source: next.resolutionSource } });
       }
     }
-    if (!recovered) selectorSet = original; // never worse than where we started
+    if (!recovered) {
+      // Unrecovered and still suspect: refuse, don't restore. The pick was
+      // confirmed wrong three times (a real descriptor sharing ZERO salient
+      // words with the target), and acting on it is the one move that cannot
+      // be undone — the Notifications bell "passed" a click meant for the
+      // "Accept" button (requests.rename, v2) and the run died downstream on
+      // an honest assert, while the heal chain, never consulted, could have
+      // re-resolved the renamed button. Failing into healing instead costs at
+      // worst one heal (which re-validates by outcome); a correct-but-oddly-
+      // named element is not here — its descriptor is null or shares a word,
+      // neither of which is suspect. (No quotedName gate: the step compiler
+      // DROPS the quotes from targetDescription, so "the Accept button for
+      // Sam Idowu" arrives unquoted — gating on quotes made this unreachable.)
+      obs.increment('worker.suspect_pick_refused', { action: step.action });
+      runLog?.log('resolve',
+        `suspect pick not recovered — refusing ${original.selectors[0].selector.slice(0, 50)} for "${(step.targetDescription ?? '').slice(0, 40)}" and failing into healing`,
+        { stepIndex, level: 'warn', data: { selector: original.selectors[0].selector } });
+      selectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+    }
+  }
+
+  // ── Hover-to-reveal: the named element exists but is hidden ─────────────────
+  // Last resort after every recovery above: a control inside a :hover-revealed
+  // menu (Buzzly's profile "Block" inside the "⋯" menu) is hidden at resolution
+  // time, so the pruner never offers it — resolution ends empty or still
+  // suspect on a page where a human would simply hover the trigger first.
+  // revealHiddenTarget scans for a HIDDEN element carrying the step's named
+  // target, hovers its nearest visible ancestor, verifies it became visible,
+  // and the step proceeds against it (resolutionSource 'reveal'). Strict name
+  // containment means a lookalike is never revealed. Spec: spec-hover-reveal-scroll-find.md §1
+  if (
+    RETRYABLE_INTERACTIONS.has(step.action) && step.targetDescription &&
+    (selectorSet.selectors.length === 0 || (gateApplies && await isSuspectPick(selectorSet)))
+  ) {
+    const revealed = await revealHiddenTarget(page, step.targetDescription).catch(() => null);
+    if (revealed) {
+      obs.increment('worker.reveal_recovered', { action: step.action });
+      runLog?.log('resolve', `revealed hidden "${(step.targetDescription ?? '').slice(0, 40)}" → ${revealed}`, { stepIndex, data: { selector: revealed } });
+      selectorSet = {
+        selectors: [{ selector: revealed, strategy: 'css', confidence: 1 }],
+        fromCache: false, cacheSource: null, resolutionSource: 'reveal', similarityScore: null,
+        tokensUsed: selectorSet.tokensUsed, // the failed resolution's spend stays on the books
+      };
+    }
   }
 
   // Assertions must never be persisted to the selector cache — re-verify every run.
@@ -1133,6 +1177,35 @@ async function executeStep(
   } catch (e: any) {
     result = { status: 'failed', selectorUsed: null, durationMs: 0, errorType: null, errorMessage: e.message ?? null, screenshotKey: null, domSnapshotKey: null };
     stepError = e;
+  }
+
+  // ── Reveal-retry: the action failed on an element that is hover-hidden ─────
+  // The resolution-time reveal gate above only fires when resolution came back
+  // EMPTY or suspect. But once the cache has learned the right selector for a
+  // menu item (Buzzly's profile "Block" inside the "⋯" menu), resolution
+  // SUCCEEDS — and the click then dies on a hidden element, handing the healing
+  // chain a chance to re-resolve onto a name-mismatched neighbour ("More
+  // options"). Before healing gets it, do what a human does: hover the trigger,
+  // verify the named target became visible, retry the action on it. Adopted
+  // only when the retried action passes; otherwise the failure path proceeds
+  // exactly as before. Spec: docs/specs/workers/spec-hover-reveal-scroll-find.md §1
+  if (result.status === 'failed' && RETRYABLE_INTERACTIONS.has(step.action) && step.targetDescription) {
+    const revealed = await revealHiddenTarget(page, step.targetDescription).catch(() => null);
+    if (revealed) {
+      const revealSet: SelectorSet = {
+        selectors: [{ selector: revealed, strategy: 'css', confidence: 1 }],
+        fromCache: false, cacheSource: null, resolutionSource: 'reveal', similarityScore: null,
+        tokensUsed: selectorSet.tokensUsed, // the original resolution's spend stays on the books
+      };
+      const retry = await engine.executeStep(step, revealSet, page).catch(() => null);
+      if (retry && retry.status === 'passed') {
+        obs.increment('worker.reveal_recovered', { action: step.action });
+        runLog?.log('resolve', `action failed on hidden "${(step.targetDescription ?? '').slice(0, 40)}" — hover-revealed → ${revealed}`, { stepIndex, data: { selector: revealed } });
+        selectorSet = revealSet;
+        result = retry;
+        stepError = null;
+      }
+    }
   }
 
   // If this step navigated (login, category nav, an <a> click), let the destination SETTLE
@@ -1227,8 +1300,10 @@ async function executeStep(
     }
     // Never cache assertion selectors (they verify per-run state and can embed
     // run-specific data like the current email); also skip caching for the
-    // direct click_random pick whose selector is a transient data-kz-rand marker.
-    const cacheable = !isAssertion && step.action !== 'click_random';
+    // direct click_random pick whose selector is a transient data-kz-rand marker,
+    // and for a hover-reveal pass whose data-kz-reveal stamp dies with the page —
+    // persisting it would poison the next run's resolution with a dead selector.
+    const cacheable = !isAssertion && step.action !== 'click_random' && selectorSet.resolutionSource !== 'reveal';
     if (result.selectorUsed && cacheable) {
       await resolver.recordSuccess(step.targetHash, domain, result.selectorUsed, tenantId).catch((e: any) =>
         obs.log('warn', 'worker.record_success_failed', { error: e.message }),

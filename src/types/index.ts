@@ -166,7 +166,14 @@ export type ResolutionSource =
    * can say so instead of "this step did not need to find an element".
    * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §1
    */
-  | 'delta';
+  | 'delta'
+  /**
+   * Hover-to-reveal recovery: the named element existed in the DOM but was
+   * hidden inside a hover-gated container (a "⋯" menu); the worker hovered its
+   * nearest visible ancestor to reveal it and targeted it directly. No model
+   * call. Spec: docs/specs/workers/spec-hover-reveal-scroll-find.md
+   */
+  | 'reveal';
 
 /**
  * Compact snapshot of one DOM candidate as presented to the LLM.

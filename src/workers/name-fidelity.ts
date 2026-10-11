@@ -42,11 +42,16 @@ export function nameOverlaps(quoted: string, descriptor: string): boolean {
  */
 export function nameAbsent(target: string | null | undefined, descriptor: string | null | undefined): boolean {
   if (!target || !descriptor) return false;
-  const STOP = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'button', 'link', 'field']);
-  const words = target.toLowerCase().split(/[^a-z0-9]+/).filter((w) => (w.length > 1 || /[0-9]/.test(w)) && !STOP.has(w));
+  const words = salientWords(target);
   if (words.length === 0) return false;
   const hay = descriptor.toLowerCase();
   return words.every((w) => !hay.includes(w));
+}
+
+/** The target's meaningful lowercase words — the shared tokenizer behind the name gates. */
+export function salientWords(target: string): string[] {
+  const STOP = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'button', 'link', 'field']);
+  return target.toLowerCase().split(/[^a-z0-9]+/).filter((w) => (w.length > 1 || /[0-9]/.test(w)) && !STOP.has(w));
 }
 
 /**

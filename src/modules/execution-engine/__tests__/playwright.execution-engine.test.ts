@@ -413,6 +413,40 @@ describe('PlaywrightExecutionEngine', () => {
       ).rejects.toThrow(/not found anywhere on the page/);
     });
 
+    it('scroll-to-find: sweeps scrollable containers after the poll misses', async () => {
+      // A virtualized list: the text is NOT in the DOM until the container is
+      // scrolled. The normal poll (20 scans) misses; the sweep advances a
+      // scrollable once and the next scan finds the now-rendered row.
+      // Spec: docs/specs/workers/spec-hover-reveal-scroll-find.md §2
+      let scans = 0;
+      mockPage.$eval.mockImplementation(async () => (++scans > 20 ? { selector: 'li#row-120', text: '(#120)' } : null));
+      mockPage.evaluate = jest.fn()
+        .mockResolvedValueOnce(true)   // first 'advance' moved a container
+        .mockResolvedValue(false);     // anything after: at bottom / reset
+
+      const result = await engine.executeStep(makeStep('(#120)'), selectorSet, mockPage);
+
+      expect(result.status).toBe('passed');
+      expect(result.selectorUsed).toBe('li#row-120');
+      expect(mockObservability.increment).toHaveBeenCalledWith('engine.assert_text_scroll_found');
+    });
+
+    it('scroll-to-find: restores scroll positions when the text truly is absent', async () => {
+      mockPage.$eval.mockResolvedValue(null);
+      const evalMock = jest.fn()
+        .mockResolvedValueOnce(true)   // advance — moved
+        .mockResolvedValueOnce(true)   // advance — moved again
+        .mockResolvedValue(false);     // nothing left to advance → break, then reset
+      mockPage.evaluate = evalMock;
+
+      await expect(
+        engine.executeStep(makeStep('never-there'), selectorSet, mockPage),
+      ).rejects.toThrow(/not found anywhere on the page/);
+
+      // The sweep must undo its scrolling on a miss.
+      expect(evalMock).toHaveBeenCalledWith(expect.any(Function), 'reset');
+    });
+
     it('throws when value is null', async () => {
       await expect(
         engine.executeStep(makeStep(null), selectorSet, mockPage),

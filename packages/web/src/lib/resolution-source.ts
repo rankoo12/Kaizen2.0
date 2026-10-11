@@ -24,6 +24,9 @@ const TIERS: Record<string, ResolutionTier> = {
   // Not a cache tier: the element was chosen from what the previous action
   // changed on the page. No model call, no memory — a different kind of answer.
   delta:            { code: 'Δ',  label: 'What changed',       cached: true },
+  // Not a cache tier either: the named element was hidden inside a hover-
+  // revealed menu; the worker hovered the trigger and targeted it directly.
+  reveal:           { code: '◉',  label: 'Hover-revealed',     cached: true },
 };
 
 export function resolutionTier(source: string | null | undefined): ResolutionTier | null {
