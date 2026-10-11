@@ -229,6 +229,16 @@ export type SelectorSet = {
    * top document. Undefined for ordinary main-document elements.
    */
   frameUrl?: string;
+  /**
+   * True when this EXACT-HASH cache entry (redis/db_exact) was persisted by a
+   * validated heal (ResolveAndRetry: action re-executed and passed). Its
+   * selector was adopted precisely because the original name-anchored one died
+   * — a RENAMED control — so the worker's name gates treat the name mismatch
+   * as the known rename, not a wrong pick, and serve it instead of evicting it
+   * into a re-heal loop every run (bench finding #5, healed-not-learned).
+   * Interactions only; assertions stay strict. Never set on vector-tier hits.
+   */
+  healProvenance?: boolean;
 };
 
 export type ResolutionContext = {
@@ -323,6 +333,15 @@ export type HealingContext = {
   runId: string;
   /** Typed as unknown here; consuming modules import Page from playwright directly. */
   page: unknown;
+  /**
+   * The run's cache domain (the same normalization recordSuccess keys on).
+   * ResolveAndRetry needs it to UPSERT its healed selector: the stale row is
+   * often already EVICTED by the resolution-recovery gates when the heal runs,
+   * and an UPDATE into a deleted row silently learns nothing (bench finding #5
+   * — every renamed control re-healed forever). Optional so existing
+   * constructors compile; without it the persist falls back to UPDATE-only.
+   */
+  domain?: string;
 };
 
 export type HealingAttempt = {

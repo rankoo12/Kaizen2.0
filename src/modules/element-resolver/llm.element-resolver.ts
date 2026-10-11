@@ -25,7 +25,7 @@ import { canonicalFrameUrl, findFrameByUrl, framesOf } from '../../utils/frame-u
  * urlPath should be the normalized pathname only (no query string, no hash) so that
  * query-param variation on the same logical page doesn't fragment the cache.
  */
-export function serializeCandidateForEmbedding(candidate: CandidateNode, urlPath?: string): string {
+export function serializeCandidateForEmbedding(candidate: Pick<CandidateNode, 'role' | 'name' | 'textContent'>, urlPath?: string): string {
   const name = candidate.name?.trim() || candidate.textContent?.trim() || '';
   const base = name ? `${candidate.role}: ${name}` : candidate.role;
   return urlPath ? `${base} @ ${urlPath}` : base;

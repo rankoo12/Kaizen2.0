@@ -29,15 +29,20 @@ const REDIS_TTL_SECONDS = 3_600; // 1 hour
 const MISS: SelectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
 
 /** Shape of the value we now write into Redis — selectors, the stored vectors so the
- * semantic guard can evaluate on L1 hits without a Postgres roundtrip, and the frame the
- * selectors resolve inside (null for the main document, which is almost every entry). */
-type RedisPayloadV3 = {
-  v: 3;
+ * semantic guard can evaluate on L1 hits without a Postgres roundtrip, the frame the
+ * selectors resolve inside (null for the main document, which is almost every entry),
+ * and whether a validated heal persisted this entry (the name gates trust that). */
+type RedisPayloadV4 = {
+  v: 4;
   selectors: SelectorEntry[];
   stepEmbedding: number[] | null;
   elementEmbedding: number[] | null;
   frameUrl: string | null;
+  healAttributed: boolean;
 };
+
+/** v3 — before heal provenance rode the payload. */
+type RedisPayloadV3 = Omit<RedisPayloadV4, 'v' | 'healAttributed'> & { v: 3 };
 
 /** v2 — selectors + vectors, written before iframe elements were cacheable. */
 type RedisPayloadV2 = Omit<RedisPayloadV3, 'v' | 'frameUrl'> & { v: 2 };
@@ -45,7 +50,7 @@ type RedisPayloadV2 = Omit<RedisPayloadV3, 'v' | 'frameUrl'> & { v: 2 };
 /** Legacy Redis shape written before the semantic guard — `selectors` only. */
 type RedisPayloadV1 = SelectorEntry[];
 
-function isVersioned(payload: unknown, version: 2 | 3): boolean {
+function isVersioned(payload: unknown, version: 2 | 3 | 4): boolean {
   return typeof payload === 'object' && payload !== null && (payload as { v?: number }).v === version;
 }
 
@@ -55,6 +60,8 @@ type CacheRow = {
   stepEmbedding: number[] | null;
   elementEmbedding: number[] | null;
   frameUrl: string | null;
+  /** True when a validated heal (ResolveAndRetry) persisted this entry — see SelectorSet.healProvenance. */
+  healAttributed: boolean;
 };
 
 export class CachedElementResolver implements IElementResolver {
@@ -85,7 +92,7 @@ export class CachedElementResolver implements IElementResolver {
           );
           if (passed && await this.frameGuardPasses(parsed, context, 'redis')) {
             this.observability.increment('resolver.cache_hit', { source: 'redis' });
-            return { selectors: parsed.selectors, fromCache: true, cacheSource: 'tenant', resolutionSource: 'redis', similarityScore: null, frameUrl: parsed.frameUrl ?? undefined };
+            return { selectors: parsed.selectors, fromCache: true, cacheSource: 'tenant', resolutionSource: 'redis', similarityScore: null, frameUrl: parsed.frameUrl ?? undefined, healProvenance: parsed.healAttributed || undefined };
           }
           // The frame guard failing is not a semantic disagreement — the entry is fine,
           // the iframe just is not on this page right now. Fall through without deleting.
@@ -112,7 +119,7 @@ export class CachedElementResolver implements IElementResolver {
         if (passed && await this.frameGuardPasses(directHit, context, 'db_exact')) {
           this.observability.increment('resolver.cache_hit', { source: 'db_target' });
           await this.writeRedis(redisKey, directHit);
-          return { selectors: directHit.selectors, fromCache: true, cacheSource: 'tenant', resolutionSource: 'db_exact', similarityScore: null, frameUrl: directHit.frameUrl ?? undefined };
+          return { selectors: directHit.selectors, fromCache: true, cacheSource: 'tenant', resolutionSource: 'db_exact', similarityScore: null, frameUrl: directHit.frameUrl ?? undefined, healProvenance: directHit.healAttributed || undefined };
         }
         if (passed) return MISS;
         this.observability.increment('resolver.cache_semantic_reject', { source: 'db_exact' });
@@ -258,20 +265,21 @@ export class CachedElementResolver implements IElementResolver {
   /** Tolerates the legacy v1 (array) and v2 (no frame) payloads alongside current v3. */
   private parseRedisPayload(raw: string): CacheRow | null {
     try {
-      const value: RedisPayloadV1 | RedisPayloadV2 | RedisPayloadV3 = JSON.parse(raw);
+      const value: RedisPayloadV1 | RedisPayloadV2 | RedisPayloadV3 | RedisPayloadV4 = JSON.parse(raw);
       if (Array.isArray(value)) {
         // Legacy v1 — no vectors stored; guard will be a no-op (cannot evaluate).
-        return { selectors: value, stepEmbedding: null, elementEmbedding: null, frameUrl: null };
+        return { selectors: value, stepEmbedding: null, elementEmbedding: null, frameUrl: null, healAttributed: false };
       }
-      if (isVersioned(value, 2) || isVersioned(value, 3)) {
-        const v = value as RedisPayloadV3;
-        // v2 has no frameUrl — undefined normalises to null, i.e. "main document",
-        // which is what every entry written before this change was.
+      if (isVersioned(value, 2) || isVersioned(value, 3) || isVersioned(value, 4)) {
+        const v = value as RedisPayloadV4;
+        // v2 has no frameUrl, v2/v3 no healAttributed — undefined normalises to
+        // null/false, which is what every entry written before each change was.
         return {
           selectors: v.selectors,
           stepEmbedding: v.stepEmbedding,
           elementEmbedding: v.elementEmbedding,
           frameUrl: v.frameUrl ?? null,
+          healAttributed: v.healAttributed ?? false,
         };
       }
       return null;
@@ -281,12 +289,13 @@ export class CachedElementResolver implements IElementResolver {
   }
 
   private async writeRedis(key: string, row: CacheRow): Promise<void> {
-    const payload: RedisPayloadV3 = {
-      v: 3,
+    const payload: RedisPayloadV4 = {
+      v: 4,
       selectors: row.selectors,
       stepEmbedding: row.stepEmbedding,
       elementEmbedding: row.elementEmbedding,
       frameUrl: row.frameUrl,
+      healAttributed: row.healAttributed,
     };
     try {
       await this.redis.setex(key, REDIS_TTL_SECONDS, JSON.stringify(payload));
@@ -322,9 +331,11 @@ export class CachedElementResolver implements IElementResolver {
         step_embedding: number[] | string | null;
         element_embedding: number[] | string | null;
         frame_url: string | null;
+        heal_attributed: boolean | null;
       }>(
         tenantId,
-        `SELECT selectors, step_embedding, element_embedding, frame_url
+        `SELECT selectors, step_embedding, element_embedding, frame_url,
+                (attribution ? 'healed') AS heal_attributed
          FROM selector_cache
          WHERE content_hash = $1 AND domain = $2 AND tenant_id = $3
            AND (pinned_at IS NOT NULL OR confidence_score > 0.4)
@@ -338,6 +349,7 @@ export class CachedElementResolver implements IElementResolver {
         stepEmbedding: parsePgVector(rows[0].step_embedding),
         elementEmbedding: parsePgVector(rows[0].element_embedding),
         frameUrl: rows[0].frame_url ?? null,
+        healAttributed: rows[0].heal_attributed === true,
       };
     } catch (e: any) {
       this.observability.log('warn', 'cache_resolver.fetch_by_hash_failed', { error: e.message });
@@ -397,6 +409,9 @@ export class CachedElementResolver implements IElementResolver {
         elementEmbedding: parsePgVector(rows[0].element_embedding),
         contentHash: rows[0].content_hash,
         frameUrl: rows[0].frame_url ?? null,
+        // Vector tiers match by SIMILARITY, not by the exact step hash a heal
+        // verified against — provenance trust never rides a fuzzy match.
+        healAttributed: false,
       };
     } catch (e: any) {
       this.observability.log('warn', 'cache_resolver.vector_search_failed', { error: e.message });

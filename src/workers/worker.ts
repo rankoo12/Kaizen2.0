@@ -1029,6 +1029,16 @@ async function executeStep(
     && step.action !== 'assert_text' && step.action !== 'assert_not_text' && step.action !== 'assert_count';
   const refuseWrongName = async (): Promise<void> => {
     if (selectorSet.selectors.length === 0 || !gateApplies) return;
+    // Heal-provenance trust (finding #5): this exact-hash entry was persisted by
+    // a VALIDATED heal — the original name-anchored selector died and a verified
+    // re-resolution adopted this one. The name mismatch about to be found IS the
+    // rename that heal fixed; refusing (and evicting) it here is what kept every
+    // renamed control in a re-heal loop (judged healed-not-learned, GAP).
+    // Interactions only — an assertion must still carry the name it asserts.
+    if (selectorSet.healProvenance && !step.action.startsWith('assert')) {
+      obs.increment('worker.heal_provenance_trusted', { action: step.action });
+      return;
+    }
     const quoted = quotedName(step.targetDescription);
     if (!quoted) return;
     const sel = selectorSet.selectors[0].selector;
@@ -1090,7 +1100,9 @@ async function executeStep(
     const descriptor = await describeResolved(page, sel).catch(() => null);
     return descriptor !== null && nameAbsent(step.targetDescription, descriptor);
   };
-  if (gateApplies && RETRYABLE_INTERACTIONS.has(step.action) && await isSuspectPick(selectorSet)) {
+  // healProvenance skips the suspect gate the same way (see refuseWrongName):
+  // RETRYABLE_INTERACTIONS already excludes assertions on this path.
+  if (gateApplies && !selectorSet.healProvenance && RETRYABLE_INTERACTIONS.has(step.action) && await isSuspectPick(selectorSet)) {
     const original = selectorSet;
     obs.increment('worker.suspect_pick_retry', { action: step.action, source: selectorSet.resolutionSource ?? 'unknown' });
     runLog?.log('resolve', `suspect pick (${selectorSet.selectors[0].selector.slice(0, 50)}) for "${(step.targetDescription ?? '').slice(0, 40)}" — settling and re-resolving`, { stepIndex, level: 'warn' });
@@ -1149,7 +1161,7 @@ async function executeStep(
   // containment means a lookalike is never revealed. Spec: spec-hover-reveal-scroll-find.md §1
   if (
     RETRYABLE_INTERACTIONS.has(step.action) && step.targetDescription &&
-    (selectorSet.selectors.length === 0 || (gateApplies && await isSuspectPick(selectorSet)))
+    (selectorSet.selectors.length === 0 || (gateApplies && !selectorSet.healProvenance && await isSuspectPick(selectorSet)))
   ) {
     const revealed = await revealHiddenTarget(page, step.targetDescription).catch(() => null);
     if (revealed) {
@@ -1416,7 +1428,7 @@ async function executeStep(
 
   runLog?.log('heal', `step ${String(stepIndex + 1).padStart(2, '0')} failed (${failureClass}) — attempting heal`, { stepIndex, level: 'warn', data: { failureClass } });
 
-  const healingResult = await healingEngine.heal(classifiedFailure, { tenantId, runId, page });
+  const healingResult = await healingEngine.heal(classifiedFailure, { tenantId, runId, page, domain });
 
   // An assertion that healed by RE-RESOLVING its target verified an element the
   // test never named — the resolver picked it only after the named one was not

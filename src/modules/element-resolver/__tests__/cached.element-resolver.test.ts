@@ -294,9 +294,9 @@ describe('CachedElementResolver', () => {
     expect(mockObservability.log).toHaveBeenCalledWith('warn', expect.any(String), expect.any(Object));
   });
 
-  // ─── Redis v3 write-back ───────────────────────────────────────────────────
+  // ─── Redis v4 write-back ───────────────────────────────────────────────────
 
-  it('writes v3 payload to Redis (vectors + frame) on L2 hit', async () => {
+  it('writes v4 payload to Redis (vectors + frame + heal provenance) on L2 hit', async () => {
     const selectors = [{ selector: '#btn', strategy: 'css', confidence: 0.9 }];
     mockQuery.mockResolvedValueOnce({
       rows: [{ selectors, step_embedding: aligned(1), element_embedding: aligned(1) }],
@@ -307,11 +307,47 @@ describe('CachedElementResolver', () => {
     expect(mockRedis.setex).toHaveBeenCalledTimes(1);
     const [, , payload] = mockRedis.setex.mock.calls[0];
     const parsed = JSON.parse(payload);
-    expect(parsed.v).toBe(3);
+    expect(parsed.v).toBe(4);
     expect(parsed.selectors).toEqual(selectors);
     expect(parsed.stepEmbedding).toEqual(aligned(1));
     expect(parsed.elementEmbedding).toEqual(aligned(1));
     // Null, not absent: a main-document element states that it is one.
     expect(parsed.frameUrl).toBeNull();
+    // Not heal-attributed: an ordinary L2 row carries no provenance trust.
+    expect(parsed.healAttributed).toBe(false);
+  });
+
+  // ─── Heal provenance (finding #5) ────────────────────────────────────────────
+
+  it('surfaces healProvenance on a db_exact hit whose row a validated heal stamped', async () => {
+    const selectors = [{ selector: 'role=button[name="Confirm"]', strategy: 'aria', confidence: 0.97 }];
+    mockQuery.mockResolvedValueOnce({
+      rows: [{ selectors, step_embedding: aligned(1), element_embedding: aligned(1), heal_attributed: true }],
+    });
+
+    const result = await resolver.resolve(makeStep(), makeContext({ stepEmbedding: aligned(1) }));
+
+    expect(result.resolutionSource).toBe('db_exact');
+    expect(result.healProvenance).toBe(true);
+    // The flag must survive the Redis promotion so an L1 hit keeps the trust.
+    const written = JSON.parse(mockRedis.setex.mock.calls[0][2]);
+    expect(written.healAttributed).toBe(true);
+  });
+
+  it('serves a v4 Redis hit with its heal provenance, and an older v3 one without', async () => {
+    const selectors = [{ selector: '#btn', strategy: 'css', confidence: 0.9 }];
+    mockRedis.get.mockResolvedValueOnce(JSON.stringify({
+      v: 4, selectors, stepEmbedding: aligned(1), elementEmbedding: aligned(1), frameUrl: null, healAttributed: true,
+    }));
+    const v4Hit = await resolver.resolve(makeStep(), makeContext({ stepEmbedding: aligned(1) }));
+    expect(v4Hit.resolutionSource).toBe('redis');
+    expect(v4Hit.healProvenance).toBe(true);
+
+    mockRedis.get.mockResolvedValueOnce(JSON.stringify({
+      v: 3, selectors, stepEmbedding: aligned(1), elementEmbedding: aligned(1), frameUrl: null,
+    }));
+    const v3Hit = await resolver.resolve(makeStep(), makeContext({ stepEmbedding: aligned(1) }));
+    expect(v3Hit.resolutionSource).toBe('redis');
+    expect(v3Hit.healProvenance).toBeUndefined();
   });
 });
