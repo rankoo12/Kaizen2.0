@@ -28,7 +28,7 @@ import { type Page } from 'playwright';
 import { BrowserPool } from './browser-pool';
 import { cancelKey } from './cancel-keys';
 import { canonicalFrameUrl } from '../utils/frame-url';
-import { runStepLoop } from './step-loop';
+import { runStepLoop, STEP_WATCHDOG_MS } from './step-loop';
 import { handleTabAction } from './tab-manager';
 import pino from 'pino';
 import { PinoObservability } from '../modules/observability/pino.observability';
@@ -388,6 +388,24 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
           stepsSkipped: compiledSteps.length - (stepIndex + 1),
         });
       },
+      // A watchdog kill aborts the step MID-FLIGHT: its own bookkeeping never
+      // ran, so without this stamp the run shows an unexplained empty failure
+      // (`failed: #1 ?` on the bench — no failure class, no heal events, and
+      // "Target page closed" noise from the abandoned call). Finding #10a.
+      onStepWatchdog: async (stepIndex, step, watchdogMs) => {
+        obs.increment('worker.step_watchdog_killed', { action: step.action });
+        await insertStepResult(
+          tenantId, runId, step, stepIndex, 'failed',
+          null, null, watchdogMs,
+          null, null, null, null, 0, null,
+          'StepWatchdogTimeout',
+          stepIds[stepIndex] ?? null,
+        );
+        runLog?.log('execute',
+          `step ${String(stepIndex + 1).padStart(2, '0')} exceeded the ${Math.round(watchdogMs / 1000)}s watchdog — killed mid-flight (resolution + recovery + healing spent the whole budget)`,
+          { stepIndex, level: 'error', data: { watchdogMs } });
+        await runLog?.flush();
+      },
       onCancelled: (stepsCompleted) => {
         logger.info({ event: 'run_cancelled', runId, stepsCompleted });
       },
@@ -678,6 +696,15 @@ async function executeStep(
   });
   const resolutionContext = { tenantId, domain, page, pageUrl: page.url(), behindAuth };
   const stepStart = Date.now();
+  // ── Recovery time budget (finding #10b) ─────────────────────────────────────
+  // Every recovery layer below is individually bounded, but on a slow-rendering
+  // page their SUM used to out-spend the step watchdog — which then killed the
+  // step mid-flight, throwing away all evidence (finding #10a stamps that kill;
+  // this budget makes it rare). Layers check `recoveryBudgetLeft()` before
+  // spending more; past the soft deadline (80% of the watchdog) they skip to an
+  // honest failure instead of starting work the watchdog would destroy.
+  const softDeadlineAt = stepStart + Math.floor(STEP_WATCHDOG_MS * 0.8);
+  const recoveryBudgetLeft = (): number => softDeadlineAt - Date.now();
   // Accessible name of the element chosen by a click_random step — captured into
   // the run context for later {{variable}} reference (Gap C wires the store).
   let randomPickName: string | null = null;
@@ -1068,7 +1095,7 @@ async function executeStep(
   // DOM go quiet, resolve once more (the retry pick faces the same gate), and
   // only then fail into healing.
   const RETRYABLE_INTERACTIONS = new Set(['click', 'double_click', 'right_click', 'type', 'select', 'check', 'uncheck', 'hover', 'clear']);
-  if (selectorSet.selectors.length === 0 && RETRYABLE_INTERACTIONS.has(step.action)) {
+  if (selectorSet.selectors.length === 0 && RETRYABLE_INTERACTIONS.has(step.action) && recoveryBudgetLeft() > 5_000) {
     obs.increment('worker.resolution_retry_after_settle', { action: step.action });
     runLog?.log('resolve', 'nothing resolved — letting the page settle and resolving once more', { stepIndex, level: 'warn' });
     await settleDom(page);
@@ -1108,7 +1135,9 @@ async function executeStep(
     runLog?.log('resolve', `suspect pick (${selectorSet.selectors[0].selector.slice(0, 50)}) for "${(step.targetDescription ?? '').slice(0, 40)}" — settling and re-resolving`, { stepIndex, level: 'warn' });
     let recovered = false;
     let current = selectorSet;
-    for (let attempt = 0; attempt < 3 && !recovered; attempt++) {
+    // Each iteration costs a settle (≤3s) + a resolve (possibly an LLM call);
+    // never start one the watchdog would kill (finding #10b).
+    for (let attempt = 0; attempt < 3 && !recovered && recoveryBudgetLeft() > 8_000; attempt++) {
       // Evict the suspect entry from every cache layer FIRST — the verify run
       // proved that without this the re-resolve is served the SAME poisoned
       // selector all three times ("the Mira Chen conversation" kept getting the
@@ -1160,7 +1189,7 @@ async function executeStep(
   // and the step proceeds against it (resolutionSource 'reveal'). Strict name
   // containment means a lookalike is never revealed. Spec: spec-hover-reveal-scroll-find.md §1
   if (
-    RETRYABLE_INTERACTIONS.has(step.action) && step.targetDescription &&
+    RETRYABLE_INTERACTIONS.has(step.action) && step.targetDescription && recoveryBudgetLeft() > 6_000 &&
     (selectorSet.selectors.length === 0 || (gateApplies && !selectorSet.healProvenance && await isSuspectPick(selectorSet)))
   ) {
     const revealed = await revealHiddenTarget(page, step.targetDescription).catch(() => null);
@@ -1221,7 +1250,7 @@ async function executeStep(
   // verify the named target became visible, retry the action on it. Adopted
   // only when the retried action passes; otherwise the failure path proceeds
   // exactly as before. Spec: docs/specs/workers/spec-hover-reveal-scroll-find.md §1
-  if (result.status === 'failed' && RETRYABLE_INTERACTIONS.has(step.action) && step.targetDescription) {
+  if (result.status === 'failed' && RETRYABLE_INTERACTIONS.has(step.action) && step.targetDescription && recoveryBudgetLeft() > 6_000) {
     const revealed = await revealHiddenTarget(page, step.targetDescription).catch(() => null);
     if (revealed) {
       const revealSet: SelectorSet = {
@@ -1426,9 +1455,27 @@ async function executeStep(
     previousSelector: selectorSet.selectors[0]?.selector ?? '',
   };
 
+  // The heal chain's waits (AdaptiveWait alone can sit 20s) must not START when
+  // the watchdog is about to kill them mid-flight — a half-finished heal records
+  // confusing partial evidence and wastes an LLM call, while an honest classified
+  // failure right now keeps the evidence whole (finding #10b).
+  if (recoveryBudgetLeft() < 10_000) {
+    obs.increment('worker.heal_skipped_no_budget', { failureClass });
+    runLog?.log('heal',
+      `step ${String(stepIndex + 1).padStart(2, '0')} failed (${failureClass}) — no time budget left for healing (${Math.round((Date.now() - stepStart) / 1000)}s spent of the ${Math.round(STEP_WATCHDOG_MS / 1000)}s watchdog); failing honestly`,
+      { stepIndex, level: 'error', data: { failureClass, spentMs: Date.now() - stepStart } });
+    await runLog?.flush();
+    return { status: 'failed', healed: false, afterPng };
+  }
+
   runLog?.log('heal', `step ${String(stepIndex + 1).padStart(2, '0')} failed (${failureClass}) — attempting heal`, { stepIndex, level: 'warn', data: { failureClass } });
 
-  const healingResult = await healingEngine.heal(classifiedFailure, { tenantId, runId, page, domain });
+  const healingResult = await healingEngine.heal(classifiedFailure, {
+    tenantId, runId, page, domain,
+    // Hard watchdog cutoff minus margin — lets AdaptiveWait be exactly as
+    // patient as the step can afford, instead of a fixed 10s (finding #10b).
+    deadlineAt: stepStart + STEP_WATCHDOG_MS - 5_000,
+  });
 
   // An assertion that healed by RE-RESOLVING its target verified an element the
   // test never named — the resolver picked it only after the named one was not

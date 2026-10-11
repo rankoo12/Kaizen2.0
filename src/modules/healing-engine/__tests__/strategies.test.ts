@@ -87,6 +87,42 @@ describe('AdaptiveWaitStrategy', () => {
     const result = await strategy.heal(makeFailure('TIMING'), makeContext(page));
     expect(result.succeeded).toBe(false);
   }, 15000);
+
+  it('deadline-aware: waits past the classic 10s when the watchdog budget allows (finding #10b)', async () => {
+    // Fixed cap waits 500+1000+2000+4000+2500 = 10s across 5 polls. With a
+    // 40s budget (deadline − reserve) the doubling keeps going — a 20s-late
+    // element (7th poll at 31.5s+) is only reachable deadline-aware.
+    const waits: number[] = [];
+    const page = {
+      $: jest.fn()
+        .mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({}), // appears on the 7th poll — past the fixed cap
+      waitForTimeout: jest.fn().mockImplementation(async (ms: number) => { waits.push(ms); }),
+    };
+    const context = { ...makeContext(page), deadlineAt: Date.now() + 55_000 }; // 55s left − 15s reserve = 40s budget
+
+    const result = await strategy.heal(makeFailure('TIMING'), context);
+
+    expect(result.succeeded).toBe(true);
+    expect(waits.length).toBe(7);
+    expect(waits.reduce((a, b) => a + b, 0)).toBeGreaterThan(10_000); // genuinely waited past the old cap
+  });
+
+  it('deadline-aware: a short remaining budget still gets the classic 10s floor', async () => {
+    const waits: number[] = [];
+    const page = {
+      $: jest.fn().mockResolvedValue(null),
+      waitForTimeout: jest.fn().mockImplementation(async (ms: number) => { waits.push(ms); }),
+    };
+    // Deadline nearly spent: floor keeps the classic budget, never less.
+    const context = { ...makeContext(page), deadlineAt: Date.now() + 12_000 };
+
+    const result = await strategy.heal(makeFailure('TIMING'), context);
+
+    expect(result.succeeded).toBe(false);
+    expect(waits.reduce((a, b) => a + b, 0)).toBe(10_000);
+  });
 });
 
 // ─── EscalationStrategy ───────────────────────────────────────────────────────

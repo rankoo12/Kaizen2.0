@@ -342,6 +342,15 @@ export type HealingContext = {
    * constructors compile; without it the persist falls back to UPDATE-only.
    */
   domain?: string;
+  /**
+   * Epoch-ms hard deadline for this step (the watchdog cutoff minus a safety
+   * margin). AdaptiveWait scales its patience to this instead of a fixed 10s:
+   * on a page whose content genuinely arrives 20s+ late, the fixed cap gave up
+   * before the element existed — the old "pass" relied on earlier recovery
+   * layers ACCIDENTALLY wasting enough time first (bench finding #10b).
+   * Optional; strategies fall back to their fixed budgets without it.
+   */
+  deadlineAt?: number;
 };
 
 export type HealingAttempt = {

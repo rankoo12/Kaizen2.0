@@ -28,6 +28,14 @@ export type StepLoopDeps = {
   ) => Promise<void>;
   onStepFailed?: (stepIndex: number, step: StepAST) => void;
   onCancelled?: (stepsCompleted: number) => void;
+  /**
+   * Fired when the watchdog kills the step — BEFORE onStepFailed. The killed
+   * step never reached its own bookkeeping, so without this hook it leaves no
+   * step_result, no failure class, no heal events: the run page and the bench
+   * judge see only an unexplained dead run (finding #10a, changing-sites §12).
+   * The worker stamps a failed step_result (StepWatchdogTimeout) here.
+   */
+  onStepWatchdog?: (stepIndex: number, step: StepAST, watchdogMs: number) => Promise<void> | void;
   /** Per-step ceiling in ms; a step that outlives it fails the run. */
   stepWatchdogMs?: number;
 };
@@ -36,9 +44,12 @@ export type StepLoopDeps = {
  * A Playwright call with no timeout of its own (run 30: post-Save navigation
  * wait) can wedge a worker slot forever. The watchdog fails the step — and so
  * the run — instead; the orphaned call is abandoned to the browser context's
- * eventual teardown.
+ * eventual teardown. Exported so the worker's recovery layers can budget
+ * against it (finding #10b) — individually bounded settles, re-resolves and
+ * heal waits summed past this ceiling on slow-rendering pages, and the kill
+ * then threw away every piece of evidence the layers had gathered.
  */
-const STEP_WATCHDOG_MS = 60_000;
+export const STEP_WATCHDOG_MS = 60_000;
 
 export type StepLoopResult = {
   runPassed: boolean;
@@ -86,6 +97,9 @@ export async function runStepLoop(
       execution.catch(() => {});
       runPassed = false;
       stepsExecuted = i;
+      // Record the kill itself — the step's own bookkeeping never ran, and an
+      // unstamped watchdog death reads as an unexplained empty failure.
+      try { await deps.onStepWatchdog?.(i, step, deps.stepWatchdogMs ?? STEP_WATCHDOG_MS); } catch { /* never block the teardown */ }
       deps.onStepFailed?.(i, step);
       await deps.recordSkippedSteps(compiledSteps, i + 1, 'prior_step_failed');
       break;
