@@ -33,6 +33,7 @@
     "bench": "tsx benchmarks/run.ts",
     "bench:baseline": "tsx benchmarks/run.ts --write-baseline",
     "bench:sites": "tsx benchmarks/changing-sites/run.ts",
+    "bench:portfolio": "tsx benchmarks/site-portfolio/run.ts",
     "inbox": "tsx scripts/llm-inbox.ts",
     "answerer": "tsx scripts/llm-answerer.ts",
     "audit:contrast": "node scripts/audit-contrast.mjs",

@@ -1,0 +1,24 @@
+{
+  "campaign": "site-portfolio",
+  "spec": "docs/specs/bench/spec-site-portfolio.md",
+  "startedAt": "2026-11-01",
+  "engineCommit": "d5902d0",
+  "branch": "feat/bench/site-portfolio (stacked on feat/bench/changing-sites, unpushed)",
+  "llmHarness": {
+    "endpoint": "local inbox :4141 (OPENAI_BASE_URL), zero OpenAI spend",
+    "floorModel": "haiku",
+    "controlModel": "sonnet (3 sites: one fleet, juice, nightmare)"
+  },
+  "tenants": {
+    "T1": "primary — cold-learns every site first",
+    "T2": "helping leg — cold-runs public sites AFTER T1; tokens must drop",
+    "T3": "helping leg 2 — after T1+T2; and parity replicas",
+    "AUDIT": "synthetic rows appended by isolation-check.ts"
+  },
+  "sites": {
+    "mutation": ["vanilla", "react-spa", "angular-forms", "vue-cart", "jquery-classic", "stress", "social", "nightmare"],
+    "learning": ["internet", "juice", "wp-front", "wp-admin"]
+  },
+  "gateVerdicts": "spec §7 (all ADMIT; juice carries the container-recreate-per-leg rule)",
+  "records": "campaign.jsonl — one §9a record per loop phase; the dashboard derives from these only"
+}

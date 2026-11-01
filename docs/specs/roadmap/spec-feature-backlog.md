@@ -2,6 +2,8 @@
 
 Created: 2026-07-30
 Updated: 2026-08-07 — B11 designed; own spec at ../integration/spec-ci-integration.md
+Updated: 2026-11-01 — B20 Tasks, B21 Actors (screenplay-derived), B22 Playwright
+harvest added with their own specs
 
 ## 1. Where this list comes from
 
@@ -472,6 +474,23 @@ version: derive from runs completed since `last_login_at`.
 `screen-mobile.jsx` was never ported and the redesign spec deferred it. Decide first
 whether mobile is a viewer (read runs, approve heals) or an author — they're different
 products.
+
+### B20. Tasks — reusable composite steps
+Tenant-level library of named, parameterized NL macros expanded by the compiler before
+compilation, so the engine sees ordinary steps and every test invoking a task shares its
+learned selectors. Screenplay-derived (the one concept of it worth keeping alongside
+B21). Own spec: [spec-tasks-and-actors.md](./spec-tasks-and-actors.md) §2.
+
+### B21. Actors — run-as personas
+Named credential sets; a suite runs as [Admin, Viewer] and the run list diffs the
+verdicts per actor. BehindAuth learning scope unchanged. Own spec:
+[spec-tasks-and-actors.md](./spec-tasks-and-actors.md) §3. Sequence after B20.
+
+### B22. Playwright harvest — evidence we already pay for
+Tier 1: tracing (B10 evidence bundle nearly free), console/pageerror capture (classifier
+signal D), network-on-failure summaries. Audit + tiers in
+[spec-playwright-harvest.md](./spec-playwright-harvest.md); implementation sequenced
+after the site-portfolio campaign so real failures rank the items.
 
 ---
 

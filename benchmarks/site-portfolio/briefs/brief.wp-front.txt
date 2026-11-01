@@ -1,0 +1,14 @@
+This is a fresh WordPress site ("Kaizen Bench WP") with the default theme,
+the default "Hello world!" post and the default "Sample Page".
+
+Write focused tests for these flows, one flow per test:
+- Home: verify the site title "Kaizen Bench WP" renders.
+- Post: open "Hello world!" from the home page, verify the post body text
+  "Welcome to WordPress" is shown.
+- Comments: on the "Hello world!" post, verify the "Leave a Reply" comment
+  form is present.
+- Search: use the search form with the word "world", verify the result list
+  contains "Hello world!".
+
+Keep tests 3-6 steps. Public pages only — never navigate to /wp-admin or
+/wp-login.php in these tests.

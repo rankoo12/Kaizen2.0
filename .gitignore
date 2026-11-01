@@ -70,6 +70,10 @@ benchmarks/testwriter/results/
 # (v1/v2/... are the committed sources); results are generated artifacts
 benchmarks/sites/*/live/
 benchmarks/changing-sites/results/
+# Site-portfolio campaign — generated evidence; the manifest is kept (it is
+# the campaign's identity card and the dashboard's root pointer)
+benchmarks/site-portfolio/results/*
+!benchmarks/site-portfolio/results/campaign-manifest.json
 
 # QA-agent baseline artifacts — specs are committed, generated outputs are not
 benchmarks/claude-qa/**/.auth-state.json

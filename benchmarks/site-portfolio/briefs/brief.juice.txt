@@ -1,0 +1,17 @@
+This is OWASP Juice Shop — an Angular single-page web shop. On first load a
+welcome banner and a cookie notice cover the page; every test must dismiss
+them first (the "Dismiss" button and the "Me want it!" cookie button) before
+doing anything else.
+
+Write focused tests for these flows, one flow per test:
+- Search: open the search (magnifier icon), type "juice", press Enter, verify
+  a product with "Juice" in its name is listed.
+- Product detail: click a product card, verify its description text shows in
+  the dialog, close the dialog.
+- Login failure: go to /#/login, submit a wrong email/password, verify the
+  "Invalid email or password." error.
+- Navigation: open the side menu (burger icon), verify "Customer Feedback" is
+  a visible menu entry.
+
+Keep tests 4-8 steps. The app renders slowly after navigation — assert on
+text the page genuinely shows. Do not attempt registration or payment flows.

@@ -63,7 +63,16 @@ export async function getAuth(): Promise<Auth> {
   return { token: pair.accessToken, tenantId, headers: { 'content-type': 'application/json', authorization: `Bearer ${pair.accessToken}` } };
 }
 
-export type AuthRef = { auth: Auth };
+export type AuthRef = {
+  auth: Auth;
+  /**
+   * Re-auth override for multi-tenant callers (site-portfolio): without it a
+   * 401 mid-leg would re-auth as THIS bench's single user and silently swap
+   * tenants under a T2/T3 leg — the one bug a tenant-isolation bench cannot
+   * afford to have in its own harness.
+   */
+  reauth?: () => Promise<Auth>;
+};
 
 /**
  * Fetch with one 401-reauth retry. Access tokens live 15 minutes and every
@@ -75,7 +84,7 @@ async function authedFetch(authRef: AuthRef, path: string, init?: { method?: str
   const go = () => fetchRetry(`${API}${path}`, { ...init, headers: authRef.auth.headers });
   let res = await go();
   if (res.status === 401) {
-    authRef.auth = await getAuth();
+    authRef.auth = await (authRef.reauth ? authRef.reauth() : getAuth());
     res = await go();
   }
   return res;
@@ -88,13 +97,20 @@ export async function createSuite(authRef: AuthRef, name: string): Promise<strin
   return suite.id;
 }
 
-export async function startAnalyze(authRef: AuthRef, suiteId: string, targetUrl: string, brief: string, opts?: { maxPages?: number; maxScenarios?: number }): Promise<string> {
+export async function startAnalyze(authRef: AuthRef, suiteId: string, targetUrl: string, brief: string, opts?: { maxPages?: number; maxScenarios?: number; scope?: 'public' | 'authenticated'; loginCaseId?: string }): Promise<string> {
   const started = await json<{ jobId?: string; job?: { id: string } }>(await authedFetch(authRef, `/suites/${suiteId}/analyze`, {
     method: 'POST',
     body: JSON.stringify({
       targetUrl,
       initBrief: brief,
       allowSyntheticData: true,
+      // Authenticated scope (site-portfolio wp-admin leg): a fixed-credentials
+      // sign-in case + explicit consent, per the analyze route's contract. The
+      // bench user registered the tenant, so it holds the owner role the
+      // route demands.
+      ...(opts?.scope === 'authenticated'
+        ? { scope: 'authenticated', loginCaseId: opts.loginCaseId, authConsent: true }
+        : {}),
       options: { maxPages: opts?.maxPages ?? 6, maxScenarios: opts?.maxScenarios ?? 8, planApproval: 'auto' },
     }),
   }));
