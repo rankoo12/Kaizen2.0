@@ -18,6 +18,12 @@ on:
     branches: [main]
   pull_request:
 
+# Least privilege (S1 security sprint, spec-research-adoption-2026-11): these
+# jobs only read the tree; nothing here needs write scopes, and the npm-worm
+# wave of 2026 made CI token scope a real attack surface.
+permissions:
+  contents: read
+
 # A new push to the same branch makes the previous run irrelevant — cancel it rather
 # than paying for both.
 concurrency:
@@ -35,7 +41,9 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          # 24, not 20: Node 20 is EOL and the Nov 2026 HIGH-severity security
+          # release lands on 22/24/26 only (S1, spec-research-adoption-2026-11).
+          node-version: 24
           cache: npm
           # Two lockfiles, because this is not an npm workspace: the root package.json
           # has no `workspaces` field and packages/web carries its own package-lock.json.

@@ -3,7 +3,7 @@
 
 services:
   postgres:
-    image: pgvector/pgvector:pg16
+    image: pgvector/pgvector:0.8.7-pg16 # PG 16.15: CVE-2026-14666 floor; pinned per S1
     environment:
       POSTGRES_USER: kaizen
       POSTGRES_PASSWORD: kaizen
@@ -19,7 +19,7 @@ services:
       retries: 10
 
   redis:
-    image: redis:7-alpine
+    image: redis:7.4-alpine # 7.4.12: May-2026 CVE fixes; pinned per S1
     command: redis-server --appendonly yes
     ports:
       - "6379:6379"
@@ -69,7 +69,7 @@ services:
       - OPENAI_API_KEY=${OPENAI_API_KEY:-}
       - CHOKIDAR_USEPOLLING=true
       # The compose stack runs the dedicated screenshot/persistence services
-      # below — the worker stays a pure event-bus producer.
+      # below â€” the worker stays a pure event-bus producer.
       - DISABLE_INPROCESS_CONSUMERS=1
     env_file:
       - .env
@@ -85,9 +85,9 @@ services:
       redis:
         condition: service_healthy
 
-  # ── Side-effect consumer services (worker decomposition Phase 2) ──────────
+  # â”€â”€ Side-effect consumer services (worker decomposition Phase 2) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   # Same consumer logic the worker co-locates in Phase 1, as their own deploy
-  # units. Spec: docs/specs/workers/spec-service-decomposition.md §8
+  # units. Spec: docs/specs/workers/spec-service-decomposition.md Â§8
 
   screenshot:
     build:
@@ -130,9 +130,9 @@ services:
       redis:
         condition: service_healthy
 
-  # ── Test Writer service (QA-engineer pipeline: RECON crawler) ─────────────
-  # Owns its own BrowserPool — crawl jobs must not starve run throughput.
-  # Spec: docs/specs/test-writer/spec-test-writer-service.md §3
+  # â”€â”€ Test Writer service (QA-engineer pipeline: RECON crawler) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
+  # Owns its own BrowserPool â€” crawl jobs must not starve run throughput.
+  # Spec: docs/specs/test-writer/spec-test-writer-service.md Â§3
   testwriter:
     build:
       context: .
@@ -155,16 +155,16 @@ services:
       redis:
         condition: service_healthy
 
-  # ── Changing-sites bench fleet (engine robustness) ────────────────────────
+  # â”€â”€ Changing-sites bench fleet (engine robustness) â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€â”€
   # One nginx serving every synthetic site; each hostname alias maps to its own
   # docroot via nginx.conf. The harness mutates a site by swapping the contents
-  # of benchmarks/sites/<id>/live/ — SAME hostname, new content, which is what
+  # of benchmarks/sites/<id>/live/ â€” SAME hostname, new content, which is what
   # keeps the selector cache (domain-keyed) pointing at the stale selectors the
   # healing chain must recover from. Port 8089 exists for host-side probes only
   # (curl -H "Host: site-vanilla" http://127.0.0.1:8089/__version.txt).
   # Spec: docs/specs/bench/spec-changing-sites.md
   sites:
-    image: nginx:alpine
+    image: nginx:1.30-alpine # 1.30.6: rewrite heap-overflow fix; pinned per S1
     volumes:
       - ./benchmarks/sites/nginx.conf:/etc/nginx/conf.d/default.conf:ro
       - ./benchmarks/sites:/usr/share/nginx/sites:ro
