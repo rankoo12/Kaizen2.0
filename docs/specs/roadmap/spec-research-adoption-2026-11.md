@@ -36,6 +36,11 @@ refusal) recorded as the remaining S4 governance items. See §S4.
 Updated: 2026-11-08 (S4d) — the worker's wrong-pick eviction moved from the
 blocking Redis KEYS to cursor SCAN; the shared-pool-delete question is the one
 S4 governance item still open.
+Updated: 2026-11-08 (S4e) — the shared-pool-delete question is DECIDED, not patched:
+it is a policy that spans the worker AND the API's human-verdict routes, and the
+right replacement (quarantine-not-delete with per-tenant suppression and a
+distinct-tenant quorum) is built whole, together with N-distinct-tenant promotion.
+Analysis, decision and trigger recorded in §S4; no code changed.
 Status: ACTIVE — this is the decision record for docs/research/2026-11-08.md
 and docs/research/2026-backfill.md. Items not listed under §2 or §3 were read
 and deliberately not adopted.
@@ -322,12 +327,40 @@ Backfill §3.4, with two repo corrections:
   `deleteKeysByPattern` (`redis-cache.utils.ts`: SCAN, deleting per batch).
   Proven against the real Redis: 250 matching keys deleted over 20 SCAN rounds
   in 10ms, `keys +0` in the server's own command stats, and decoy keys for a
-  different step and a different cache untouched. (b) **STILL OPEN — S4
-  governance, needs its own design:** the same function deletes SHARED-pool
-  `selector_cache` rows on any single tenant's refusal of a pick
-  (`tenant_id = $2 OR is_shared = true`): conservative against a poisoned shared
-  entry, but it lets one tenant evict what others rely on — a write-path trust
-  question, since a deletion is a write.
+  different step and a different cache untouched. (b) **DECIDED 2026-11-08 (S4e) — folded into the
+  shared-pool governance work (quarantine-not-delete), deliberately NOT patched
+  on its own.** The same function deletes SHARED-pool `selector_cache` rows on
+  any single tenant's refusal of a pick (`tenant_id = $2 OR is_shared = true`):
+  conservative against a poisoned shared entry, but it lets one tenant evict what
+  others rely on — a write-path trust question, since a deletion is a write.
+  What the review of the code established: (1) **it is a policy, not a worker
+  quirk** — the API's human-verdict routes (`runs.ts`: the "failed" verdict and
+  the re-resolve path) purge `is_shared = true` rows by target hash AND by
+  selector too ("otherwise other tenants on L4 keep getting the wrong selector"),
+  so a worker-only change would leave the same lever one HTTP call away; (2) **it
+  contradicts the resolver's own rule** — at L4 the cached resolver says shared
+  rows "are not owned by this tenant — don't delete; just skip"; (3) **it is
+  hygiene, not the safety mechanism** — the worker's name gate refuses a
+  wrong-name pick for every tenant independently, so a shared row that survives
+  costs a refusal plus a re-resolve, never a wrong action; (4) **removing it
+  alone would trade one weakness for another** — a genuinely poisoned shared row
+  would then never be cleaned, and the in-run recovery loop (finding #6's
+  suspect-pick eviction) relies on the delete so the re-resolve is not served the
+  same entry again; (5) an observation, unverified for effect: `evictWrongSelector`
+  does not clear the tenant's own L1 Redis key (`sel:{tenant}:{hash}:{domain}`),
+  only database rows and the LLM dedup keys. **Decision:** the replacement is the
+  plan's already-adopted *quarantine-not-delete* — a refusal creates a
+  per-tenant suppression (the refusing tenant stops being served that shared row;
+  nobody else is affected), refusals are counted by DISTINCT tenant, and the row
+  is demoted to quarantine only at N distinct tenants. It must be consulted at
+  every tier that can serve a shared row (L4 vector lookup, and the tenant's L1
+  copy of an L4 hit) and the human-verdict routes move onto the same mechanism, so
+  it is one coherent change, built together with the N-distinct-tenant promotion
+  work below — not a worker patch. **Trigger:** before any tenant beyond the
+  operator's contributes to or reads the shared pool in production (the dev
+  database holds 113 shared rows across 14 tenants; production state is the
+  operator's to check). Until then the policy stays as it is: refusals purge
+  shared rows, which is conservative against poisoned entries.
 - New pieces adopted: scope filter INSIDE the pgvector query (+
   `hnsw.iterative_scan`), N-distinct-tenant promotion with provenance
   columns, expected-state predicate (URL pattern + landmark signature) on
