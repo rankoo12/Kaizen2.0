@@ -97,11 +97,20 @@ real exposure was the runtime gateway's two HARDCODED `'gpt-4o-mini'` calls.
     overstated. `none` stays (lowest latency, determinism, and function-calling
     requires it) but it is NOT a large cost saving. Small sample, easy prompts.
   - **Still to do before the flip:** the full-bench A/B (nightmare + social + the
-    fleet at `--skip-analyze` against the real API with
-    `KAIZEN_LLM_MODEL_MINI=gpt-6-luna`; the containers must be pointed off the local
-    inbox for it, e.g. via a temporary compose override — do not leave `.env`
-    edited), then flip the defaults in a small evidence-bearing PR. Deadline
-    2027-01-14; no rush, but do not let it drift into January.
+    fleet at `--skip-analyze` with `KAIZEN_LLM_MODEL_MINI=gpt-6-luna`), then flip
+    the defaults in a small evidence-bearing PR. Deadline 2027-01-14; no rush, but
+    do not let it drift into January. **Design trap to avoid:** services read
+    `OPENAI_BASE_URL` from `.env` (the local inbox) and each gateway uses ONE client
+    for chat AND embeddings — repointing the containers at api.openai.com would also
+    move embeddings from the bench's instant hash vectors to real semantic
+    embeddings, a confound that changes cache/semantic-guard behavior and breaks
+    comparability with the haiku-floor baseline. Do it instead by giving
+    `scripts/llm-inbox.ts` a chat-passthrough mode (chat completions forwarded to
+    the real API with the tenant key, embeddings still answered locally) and setting
+    only `KAIZEN_LLM_MODEL_MINI` on api/worker/testwriter through a temporary compose
+    override (the model env IS the product config under test; never leave `.env`
+    edited). Note the compose `CHOKIDAR_USEPOLLING` does not make the API's `tsx
+    watch` reload — restart containers after any change.
 - **S2.3** openai SDK v4.104 → v7 (its `ReasoningEffort` type predates `none`; the
   single cast in `reasoningParamsFor` goes away). **S2.4** cache layout /
   `prompt_cache_key` / cached-token billing. **S2.5** Flex tier for background calls.
