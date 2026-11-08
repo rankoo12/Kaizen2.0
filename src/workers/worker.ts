@@ -30,7 +30,7 @@ import { Worker } from 'bullmq';
 import { type Page, type Video } from 'playwright';
 import { BrowserPool } from './browser-pool';
 import { cancelKey } from './cancel-keys';
-import { canonicalFrameUrl } from '../utils/frame-url';
+import { canonicalFrameUrl, frameAfterHeal } from '../utils/frame-url';
 import { runStepLoop, STEP_WATCHDOG_MS } from './step-loop';
 import { handleTabAction } from './tab-manager';
 import pino from 'pino';
@@ -1674,6 +1674,11 @@ async function executeStep(
           strategy: selectorSet.selectors[0]?.strategy ?? 'css',
           confidence: 1,
         }],
+        // A selector means nothing outside its frame: when the strategy located the
+        // element, it also says where (string = child frame, null = main document);
+        // a strategy that re-tried the step's own selector says nothing, and the
+        // frame the step already targeted stays.
+        frameUrl: frameAfterHeal(selectorSet.frameUrl, healingResult.frameUrl),
       };
 
       // S4 — a heal that could not earn the cache on name evidence. Measure,

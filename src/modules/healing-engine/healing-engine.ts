@@ -57,6 +57,7 @@ export class HealingEngine implements IHealingEngine {
           attempts,
           durationMs: Date.now() - overallStart,
           ...(attempt.deferredPersist ? { deferredPersist: attempt.deferredPersist } : {}),
+          ...(attempt.frameUrl !== undefined ? { frameUrl: attempt.frameUrl } : {}),
         };
       }
     }

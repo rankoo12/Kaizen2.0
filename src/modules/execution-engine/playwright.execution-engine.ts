@@ -1,7 +1,7 @@
 import type { IExecutionEngine } from './interfaces';
 import type { StepAST, SelectorSet, StepExecutionResult } from '../../types';
 import type { IObservability } from '../observability/interfaces';
-import { findFrameByUrl, framesOf } from '../../utils/frame-url';
+import { findFrameForSelector, framesOf, type CountableFrame } from '../../utils/frame-url';
 
 /**
  * Minimal surface of the Playwright Page API used by this module.
@@ -178,7 +178,11 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
       // reason the classifier and the user can both act on.
       let execCtx: PlaywrightPageLike = pw;
       if (selectorSet.frameUrl) {
-        const frame = findFrameByUrl(framesOf<{ url?: () => string }>(pw), selectorSet.frameUrl);
+        const frame = await findFrameForSelector(
+          framesOf<CountableFrame>(pw),
+          selectorSet.frameUrl,
+          selectorSet.selectors[0]?.selector,
+        );
         if (!frame) {
           this.observability.increment('engine.step_failed', { action: step.action, reason: 'frame_absent' });
           return this.failResult(

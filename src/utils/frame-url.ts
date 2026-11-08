@@ -64,14 +64,48 @@ function urlOf(frame: FrameLike): string {
  * main page resolves to nothing and fails a step on a site where nothing is broken.
  */
 export function findFrameByUrl<T extends FrameLike>(frames: T[], frameUrl: string): T | null {
-  for (const f of frames) {
-    if (urlOf(f) === frameUrl) return f;
-  }
+  return framesMatchingUrl(frames, frameUrl)[0] ?? null;
+}
+
+/**
+ * Every frame a `frameUrl` refers to: exact live-URL matches first, canonical
+ * matches only when there are none. More than one only when several frames share a
+ * URL — nested `about:srcdoc` widgets are the real case, where a URL says nothing
+ * about WHICH frame.
+ */
+export function framesMatchingUrl<T extends FrameLike>(frames: T[], frameUrl: string): T[] {
+  const exact = frames.filter((f) => urlOf(f) === frameUrl);
+  if (exact.length > 0) return exact;
   const wanted = canonicalFrameUrl(frameUrl) ?? frameUrl;
-  for (const f of frames) {
-    if (canonicalFrameUrl(urlOf(f)) === wanted) return f;
+  return frames.filter((f) => canonicalFrameUrl(urlOf(f)) === wanted);
+}
+
+/** A frame that can also count what a selector matches inside it. */
+export type CountableFrame = FrameLike & { locator?: (selector: string) => { count(): Promise<number> } };
+
+/**
+ * `findFrameByUrl`, told apart by content when the URL cannot. Frames sharing one URL
+ * (a subscribe form three `about:srcdoc` hops deep) used to resolve to whichever came
+ * first — the outermost — so the step acted in a frame that did not contain its
+ * element. Among several same-URL frames this returns the first the selector actually
+ * matches in, falling back to the first frame so nothing that worked before changes.
+ * A single match is returned without probing, byte-identical to `findFrameByUrl`.
+ */
+export async function findFrameForSelector<T extends CountableFrame>(
+  frames: T[],
+  frameUrl: string,
+  selector: string | null | undefined,
+): Promise<T | null> {
+  const matches = framesMatchingUrl(frames, frameUrl);
+  if (matches.length <= 1 || !selector) return matches[0] ?? null;
+  for (const frame of matches) {
+    try {
+      if (typeof frame.locator === 'function' && (await frame.locator(selector).count()) > 0) return frame;
+    } catch {
+      // detached frame or a selector this frame cannot parse — not this one
+    }
   }
-  return null;
+  return matches[0];
 }
 
 /** `page.frames()` with the guards every caller would otherwise repeat. */
@@ -82,4 +116,17 @@ export function framesOf<T>(page: unknown): T[] {
   } catch {
     return [];
   }
+}
+
+/**
+ * The frame a healed action must run in. `healed` is what the heal strategy
+ * reported: absent means it re-tried the step's OWN selector (keep `current`),
+ * null means the main document, a string is the child frame the element was found in.
+ */
+export function frameAfterHeal(
+  current: string | undefined,
+  healed: string | null | undefined,
+): string | undefined {
+  if (healed === undefined) return current;
+  return healed ?? undefined;
 }

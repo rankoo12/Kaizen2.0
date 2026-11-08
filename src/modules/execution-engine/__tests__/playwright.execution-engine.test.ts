@@ -271,6 +271,20 @@ describe('PlaywrightExecutionEngine', () => {
         expect(frame.click).toHaveBeenCalled();
       });
 
+      it('acts in the frame the selector lives in when several frames share one url (nested srcdoc)', async () => {
+        // The outermost srcdoc frame comes first and used to win; the form is in the
+        // innermost one. The step must act THERE, and never in the decoy outer frame.
+        const outer = { url: () => 'about:srcdoc', click: jest.fn().mockResolvedValue(undefined), locator: () => ({ count: async () => 0 }) };
+        const inner = { url: () => 'about:srcdoc', click: jest.fn().mockResolvedValue(undefined), locator: () => ({ count: async () => 1 }) };
+        mockPage.frames = () => [outer, inner];
+
+        const result = await engine.executeStep(clickStep, inFrame('about:srcdoc'), mockPage);
+
+        expect(result.status).toBe('passed');
+        expect(inner.click).toHaveBeenCalledTimes(1);
+        expect(outer.click).not.toHaveBeenCalled();
+      });
+
       it('fails with FrameNotFoundError rather than silently running against the page', async () => {
         // The regression this guards: a frame-scoped selector run on the top document
         // matches nothing and fails a step on a site where nothing is broken. The
