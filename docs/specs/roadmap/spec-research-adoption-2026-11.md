@@ -17,6 +17,8 @@ spec-deployment §4); S2.3–S2.5 deferred. See §S2 status.
 Updated: 2026-11-08 (S2b) — Playwright retargeted 1.65 → 1.64.1 (1.65 is
 inside the 7-day release-age window and brings an accessible-name change);
 aria-contract check added. See §S2b.
+Updated: 2026-11-08 (S4a) — run-outcome-deferred heal persistence shipped
+(social 21/3/1/0 → 24/0/1/0, no poison rows). See §S4.
 Status: ACTIVE — this is the decision record for docs/research/2026-11-08.md
 and docs/research/2026-backfill.md. Items not listed under §2 or §3 were read
 and deliberately not adopted.
@@ -226,14 +228,29 @@ Backfill §3.4, with two repo corrections:
   columns, expected-state predicate (URL pattern + landmark signature) on
   cache rows — the predicate would also have caught finding #6's family
   earlier — and quarantine-not-delete demotion.
-- **Run-outcome-deferred heal persistence** (from the #16 fix, 2026-11-08):
-  the heal-trust branch gates persistence+provenance on MAJORITY name
-  agreement, which closes the poison vector but makes sub-majority legit
-  renames (cookie "Accept the inevitable" → "Fine. Proceed.") re-heal every
-  run instead of learning. The corroboration that distinguishes a right
-  zero-overlap rename from a wrong pick is the RUN'S OUTCOME: hold the
-  pending persist in the worker and commit it only when the healed step's
-  downstream steps pass. Lands here, where write-path trust rules live.
+- **Run-outcome-deferred heal persistence — SHIPPED 2026-11-08 (S4a,
+  fix/engine/deferred-heal-persistence).** The heal-trust branch gates
+  persistence+provenance on MAJORITY name agreement, which closes the poison
+  vector but made sub-majority legit renames (Post → Publish, Accept → Confirm)
+  re-heal every run instead of learning. Implemented as: `ResolveAndRetry` hands
+  a sub-majority heal back as a `deferredPersist` closure (the engine passes it
+  through); the worker records it with one fact measured BEFORE the healed click
+  — whether the text of the assertion right after it was already on the page —
+  and at run end commits it only if (1) the run passed, (2) an `assert_text`
+  directly follows the healed action (a plain `wait` is transparent; any other
+  interaction ends the search), and (3) that text was demonstrably ABSENT
+  before the click (all frames; "could not tell" is never "absent"). Everything
+  else is discarded and the cache is untouched; the decision is written to the
+  run log in plain words. Provenance is stamped `corroboration: 'outcome'`
+  (name-agreeing heals are `'name'`) so the two are never mistakable. Proving
+  runs never defer. Rules live in `src/workers/deferred-heals.ts`. Verified:
+  social 21/3/1/0 → 24/0/1/0, nightmare 6/0/3/0 with nothing cached for the
+  vault probe, captcha or the inert-decoy heal. **Known limits, deliberately
+  conservative:** only `assert_text` corroborates (a visibility-only assertion
+  never does); an assertion whose text was already on the page cannot show which
+  element was clicked, so such renames stay re-healing GAPs; text rendered only
+  inside an unreadable cross-origin frame yields "unknown", i.e. no learning.
+  **Still open in S4:** the rest of the shared-pool governance work below.
 
 ## 3. Deferred, with reasons
 

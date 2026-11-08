@@ -50,6 +50,7 @@ import { findRepeatedTargets } from '../modules/element-resolver/random-target';
 import { resolveCountSelector } from '../modules/element-resolver/countable';
 import { interpolateStep } from './run-context';
 import { shouldResolveFresh, healCertifiesAssertion } from './assertion-cache-policy';
+import { DeferredHeals, pageShowsText, type PendingHeal, type SettleDecision } from './deferred-heals';
 import { RunLogger } from './run-logger';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
 import { PageChallengeDetector } from '../modules/execution-engine/challenge-detector';
@@ -383,12 +384,16 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
     dialogs,
   };
 
+  // Heals that could not earn the cache on name evidence, held until the run's
+  // outcome corroborates them (S4). Per attempt: a BullMQ retry starts clean.
+  const deferredHeals = new DeferredHeals(compiledSteps);
+
   let loopResult;
   try {
     loopResult = await runStepLoop(runId, compiledSteps, {
       isCancelled,
       executeStep: (step, stepIndex, previousAfterPng, runContext) =>
-        executeStep(step, tabs.current, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext, runLog, attempt, (p) => { tabs.current = p; }, payload.behindAuth === true, payload.triggeredBy === 'testwriter', delta),
+        executeStep(step, tabs.current, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext, runLog, attempt, (p) => { tabs.current = p; }, payload.behindAuth === true, payload.triggeredBy === 'testwriter', delta, deferredHeals),
       recordSkippedSteps: (steps, startIndex, reason) =>
         recordSkippedSteps(tenantId, runId, steps, startIndex, reason, stepIds, attempt),
       onStepFailed: (stepIndex, step) => {
@@ -465,6 +470,31 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
 
   const { runPassed, anyHealed, cancelled } = loopResult;
   const finalStatus = cancelled ? 'cancelled' : runPassed ? (anyHealed ? 'healed' : 'passed') : 'failed';
+
+  // S4 — settle the heals held back for lack of name evidence. The decisions are
+  // synchronous so they land in the run log (an operator can see WHY a rename was
+  // or was not learned); the writes (embeddings + upsert) run in the background,
+  // exactly like the immediate persists do. Rules: ./deferred-heals.ts.
+  if (deferredHeals.size > 0) {
+    const plan = deferredHeals.plan({ runPassed, cancelled });
+    for (const { pending, decision } of plan) {
+      if (decision === 'commit') {
+        obs.increment('worker.heal_deferred_committed');
+        runLog.log('heal',
+          `step ${String(pending.stepIndex + 1).padStart(2, '0')}: heal learned — the run passed and "${pending.outcomeText}" was absent before the healed action and present after it`,
+          { stepIndex: pending.stepIndex, data: { decision, outcomeText: pending.outcomeText } });
+      } else {
+        obs.increment('worker.heal_deferred_discarded', { reason: decision });
+        runLog.log('heal',
+          `step ${String(pending.stepIndex + 1).padStart(2, '0')}: heal NOT learned — ${DEFERRED_HEAL_DISCARD_REASON[decision]}`,
+          { stepIndex: pending.stepIndex, data: { decision, outcomeText: pending.outcomeText } });
+      }
+    }
+    void deferredHeals.commit(plan).then(({ failed }) => {
+      if (failed > 0) obs.log('warn', 'worker.heal_deferred_persist_failed', { runId, failed });
+    });
+  }
+
   await markRunComplete(tenantId, runId, finalStatus);
 
   runLog.log('run', `Run ${finalStatus}`, { level: finalStatus === 'failed' ? 'error' : 'info', data: { status: finalStatus } });
@@ -474,6 +504,13 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
   logger.info({ event: 'run_completed', runId, status: finalStatus });
   span.end();
 }
+
+const DEFERRED_HEAL_DISCARD_REASON: Record<Exclude<SettleDecision, 'commit'>, string> = {
+  run_not_passed: 'the run did not pass, so nothing corroborates the pick',
+  no_outcome_assertion: 'no assert_text directly follows the healed action to corroborate it',
+  outcome_unknown: 'could not tell whether the outcome text was already on the page',
+  outcome_already_present: 'the outcome text was already on the page before the healed action, so it cannot show which element was clicked',
+};
 
 /**
  * Persist the run's recorded video: read the finalized webm (the context must
@@ -729,6 +766,12 @@ async function executeStep(
    * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §1
    */
   delta: DeltaMemory = { enabled: false, baseline: null, last: null, dialogs: { count: 0 } },
+  /**
+   * Collects heals that failed the name gate so the run's outcome can decide
+   * whether they earn the cache. Null where deferral does not apply.
+   * Spec: spec-research-adoption-2026-11 §S4; rules in ./deferred-heals.ts.
+   */
+  deferredHeals: DeferredHeals | null = null,
 ): Promise<{ status: 'passed' | 'failed'; healed: boolean; afterPng: Buffer | null }> {
   // Resolve {{variable}} tokens captured by earlier steps before doing anything
   // else, so resolution, execution, and persistence all see the concrete values.
@@ -1572,6 +1615,23 @@ async function executeStep(
           confidence: 1,
         }],
       };
+
+      // S4 — a heal that could not earn the cache on name evidence. Measure,
+      // BEFORE the healed action runs, whether the text the next assertion
+      // expects is already on the page: if it is, that assertion can never tell
+      // us which element was clicked, and the heal stays uncached. A proving run
+      // never defers — it must not teach the cache anything about its oracle.
+      let pendingHeal: PendingHeal | null = null;
+      if (healingResult.deferredPersist && deferredHeals && !isProvingRun) {
+        const outcomeText = deferredHeals.outcomeTextAfter(stepIndex);
+        pendingHeal = {
+          stepIndex,
+          persist: healingResult.deferredPersist,
+          outcomeText,
+          outcomePresentBefore: outcomeText ? await pageShowsText(page, outcomeText) : null,
+        };
+      }
+
       const retry = await engine.executeStep(step, healedSet, page).catch((e: any) => ({
         status: 'failed' as const, errorType: 'HealRetryThrew', errorMessage: e?.message,
       }));
@@ -1587,6 +1647,7 @@ async function executeStep(
       // clean pass would, so a following delta-scoped assertion judges what the
       // action produced instead of erroring AssertionNoAction (finding #3).
       await captureWhatChanged();
+      if (pendingHeal) deferredHeals!.record(pendingHeal);
     }
     obs.increment('worker.step_healed', { failureClass, strategy: healingResult.strategyUsed });
     logger.info({

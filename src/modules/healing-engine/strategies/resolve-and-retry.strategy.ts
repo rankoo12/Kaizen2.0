@@ -14,6 +14,11 @@ type PageLike = {
   url?(): string;
 };
 
+type PersistCandidates = Array<{
+  role: string; name: string; cssSelector: string; xpath: string;
+  attributes: Record<string, string>; textContent: string;
+}>;
+
 const BUDGET_KEY = (tenantId: string) => `healing:resolve_retry:${tenantId}`;
 const DEFAULT_MAX_PER_HOUR = 2;
 const TTL_SECONDS = 3600;
@@ -110,13 +115,19 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
 
       // Picks that fail the persistence gate are kept as fallbacks (finding
       // #16): they may still heal the RUN on the final attempt — the
-      // downstream assert is the safety net — but they must never be cached,
-      // and a later attempt that finds a majority-agreeing element always
-      // beats them. Two tiers: a PARTIAL-overlap pick (some target words on
-      // the element, not most — the reactor decoy "Activate" for "Activate
-      // reactor") outranks a ZERO-overlap one (the vault probe healing onto
-      // "Summon modal").
-      let lastResort: { selector: string; partial: boolean } | null = null;
+      // downstream assert is the safety net — but they are never cached on
+      // name evidence, and a later attempt that finds a majority-agreeing
+      // element always beats them. Two tiers: a PARTIAL-overlap pick (some
+      // target words on the element, not most — the reactor decoy "Activate"
+      // for "Activate reactor") outranks a ZERO-overlap one (the vault probe
+      // healing onto "Summon modal"). The pick keeps what a deferred persist
+      // needs (S4): the selector entry and the candidate list it came from.
+      let lastResort: {
+        selector: string;
+        partial: boolean;
+        sel: { selector: string; strategy: string; confidence?: number };
+        candidates: PersistCandidates;
+      } | null = null;
 
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         const candidates = await this.domPruner.prune(context.page, step.targetDescription ?? '');
@@ -158,7 +169,7 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
                   { tenantId: context.tenantId },
                 );
                 if (!lastResort || (partial && !lastResort.partial)) {
-                  lastResort = { selector: sel.selector, partial };
+                  lastResort = { selector: sel.selector, partial, sel, candidates };
                 }
                 continue; // a majority-agreeing pick may exist later in the list, or on retry
               }
@@ -167,7 +178,7 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
               // the NEXT run serves the healed selector, not the stale one that just
               // failed. Keyed on targetHash (selector_cache.content_hash stores the
               // TARGET hash). Only name-agreeing picks ever reach this line.
-              void this.persistHealedSelector(step, context, sel, candidates);
+              void this.persistHealedSelector(step, context, sel, candidates, 'name');
 
               this.observability.increment('healing.resolve_retry_success', {
                 tenantId: context.tenantId,
@@ -189,15 +200,27 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
       if (lastResort) {
         // Final attempt exhausted and only a sub-majority pick exists: heal
         // the RUN with it (an outcome assert downstream catches a wrong
-        // element honestly), but NOTHING is persisted and no provenance is
-        // earned — the self-shielding poison path of finding #16 is closed.
-        // A legit rename below majority overlap re-heals on every run
-        // instead of learning: an honest, budget-bounded GAP until S4's
-        // run-outcome-deferred persistence can prove the pick before caching.
+        // element honestly) but persist NOTHING now and earn no provenance —
+        // the self-shielding poison path of finding #16 stays closed.
+        //
+        // S4: a legitimate rename below majority word overlap (Post → Publish,
+        // Accept → Confirm) used to re-heal on every run, forever. The evidence
+        // that tells it from a wrong pick is the RUN'S OUTCOME, which does not
+        // exist yet, so the write is handed back as a closure. The worker
+        // commits it only if the run passes AND the assertion right after the
+        // healed action asserts text that was absent before the click; for
+        // everything else (the vault probe, the decoys) it is discarded and
+        // the cache is exactly as before.
         this.observability.increment('healing.resolve_retry_last_resort', {
           tenantId: context.tenantId,
         });
-        return { succeeded: true, newSelector: lastResort.selector, durationMs: Date.now() - start };
+        const pick = lastResort;
+        return {
+          succeeded: true,
+          newSelector: pick.selector,
+          durationMs: Date.now() - start,
+          deferredPersist: () => this.persistHealedSelector(step, context, pick.sel, pick.candidates, 'outcome'),
+        };
       }
     } catch (e: any) {
       this.observability.log('warn', 'healing.resolve_retry_error', { error: e.message });
@@ -210,7 +233,14 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
     step: { targetHash: string; action: string; targetDescription: string | null },
     context: HealingContext,
     healed: { selector: string; strategy: string; confidence?: number },
-    candidates: Array<{ role: string; name: string; cssSelector: string; xpath: string; attributes: Record<string, string>; textContent: string }>,
+    candidates: PersistCandidates,
+    /**
+     * HOW this heal earned the cache, stamped into the provenance so a later
+     * audit can tell the two apart: 'name' — the pick's own words agree with
+     * the step's target; 'outcome' — they did not, but the run's outcome
+     * corroborated the pick (S4). Never trust one as the other.
+     */
+    corroboration: 'name' | 'outcome',
   ): Promise<void> {
     const targetHash = step.targetHash;
     try {
@@ -252,7 +282,7 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
              (tenant_id, content_hash, domain, selectors, step_embedding, element_embedding,
               confidence_score, outcome_window, last_verified_at, attribution)
            VALUES ($5, $4, $6, $1::jsonb, $2::vector, $3::vector, 0.9, '[true]'::jsonb, now(),
-                   jsonb_build_object('healed', jsonb_build_object('strategy', 'resolve_and_retry', 'at', now())))
+                   jsonb_build_object('healed', jsonb_build_object('strategy', 'resolve_and_retry', 'at', now(), 'corroboration', $7::text)))
            ON CONFLICT (tenant_id, content_hash, domain) DO UPDATE
            SET selectors         = EXCLUDED.selectors,
                step_embedding    = EXCLUDED.step_embedding,
@@ -262,8 +292,8 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
                last_verified_at  = now(),
                updated_at        = now(),
                attribution       = COALESCE(selector_cache.attribution, '{}'::jsonb)
-                                   || jsonb_build_object('healed', jsonb_build_object('strategy', 'resolve_and_retry', 'at', now()))`,
-          [selectorsJson, toVectorSQL(stepEmbedding), toVectorSQL(elementEmbedding), targetHash, context.tenantId, context.domain],
+                                   || jsonb_build_object('healed', jsonb_build_object('strategy', 'resolve_and_retry', 'at', now(), 'corroboration', $7::text))`,
+          [selectorsJson, toVectorSQL(stepEmbedding), toVectorSQL(elementEmbedding), targetHash, context.tenantId, context.domain, corroboration],
         );
       } else {
         // No domain in context (an older caller): the row can only be updated in
@@ -279,9 +309,9 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
                last_verified_at  = now(),
                updated_at        = now(),
                attribution       = COALESCE(attribution, '{}'::jsonb)
-                                   || jsonb_build_object('healed', jsonb_build_object('strategy', 'resolve_and_retry', 'at', now()))
+                                   || jsonb_build_object('healed', jsonb_build_object('strategy', 'resolve_and_retry', 'at', now(), 'corroboration', $6::text))
            WHERE content_hash = $4 AND tenant_id = $5`,
-          [selectorsJson, toVectorSQL(stepEmbedding), toVectorSQL(elementEmbedding), targetHash, context.tenantId],
+          [selectorsJson, toVectorSQL(stepEmbedding), toVectorSQL(elementEmbedding), targetHash, context.tenantId, corroboration],
         );
       }
     } catch (e: any) {
