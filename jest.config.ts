@@ -8,6 +8,15 @@ const config: Config = {
       tsconfig: 'tsconfig.test.json',
     },
   },
+  // Fastify 5's inject() depends on light-my-request → cookie@2, which is
+  // ESM-ONLY ("type": "module", a bare `exports` to an ESM file). Jest runs
+  // CJS, so that one package must be transpiled: whitelist it out of
+  // transformIgnorePatterns and let ts-jest compile its .js (S1 sprint,
+  // spec-research-adoption-2026-11 — the Fastify-5 upgrade's only breakage).
+  transform: {
+    '^.+\\.[tj]s$': ['ts-jest', { tsconfig: 'tsconfig.test.json', allowJs: true }],
+  },
+  transformIgnorePatterns: ['node_modules/(?!cookie/)'],
   // benchmarks/changing-sites ships a judge whose honesty guarantees are unit
   // tested like product code — the bench is only trustworthy if the judge is.
   roots: ['<rootDir>/src', '<rootDir>/benchmarks/changing-sites'],
