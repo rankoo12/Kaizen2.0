@@ -7,7 +7,9 @@ import type {
   JudgeInput, JudgeVerdict, PageClassification, PageClassifyInput, PlanBatchInput, PlanInput,
   PlannedScenario, StepIntent, TenantBrief, TranscribeInput, TranscribeResult, WriteInput,
 } from '../../types/test-writer';
-import { modelFor, untrusted, UNTRUSTED_PREAMBLE, type ModelTier } from './model-tier';
+import {
+  modelFor, reasoningParamsFor, warnOnRetiringModels, untrusted, UNTRUSTED_PREAMBLE, type ModelTier,
+} from './model-tier';
 
 /**
  * Parse a model's JSON answer, tolerating the two ways a model wraps or trims
@@ -49,6 +51,7 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
     apiKey?: string,
   ) {
     this.openai = new OpenAI({ apiKey: apiKey ?? process.env.OPENAI_API_KEY ?? 'sk-mock-key' });
+    warnOnRetiringModels(this.observability, [modelFor('mini'), modelFor('frontier')]);
   }
 
   /** Shared completion path: JSON mode, billing emit, observability, span. */
@@ -66,6 +69,7 @@ export class OpenAITestWriterGateway implements ITestWriterGateway {
     try {
       const response = await this.openai.chat.completions.create({
         model,
+        ...reasoningParamsFor(model, opts.tier),
         response_format: { type: 'json_object' },
         messages: [
           { role: 'system', content: opts.system },
