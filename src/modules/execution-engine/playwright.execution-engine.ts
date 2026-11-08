@@ -45,6 +45,16 @@ interface PlaywrightPageLike {
 
 const ACTION_TIMEOUT_MS = 10_000;
 const NAVIGATE_TIMEOUT_MS = 30_000;
+
+// assert_text scroll-to-find (spec-hover-reveal-scroll-find.md §2; finding #12).
+/** Hard wall-clock cap on one sweep — an endless feed must not hold the step. */
+const SWEEP_BUDGET_MS = 25_000;
+const MAX_SWEEP_STEPS = 120;
+/** Waits for lazy content to arrive at the end of what is rendered: POLLS × POLL_MS ≈ 3s. */
+const GROWTH_POLLS = 12;
+const GROWTH_POLL_MS = 250;
+/** Distinct end-of-content waits per sweep (a few batches deep, not unbounded). */
+const MAX_GROWTH_WAITS = 8;
 /** URL / title assertions poll up to the action timeout, in these slices. */
 const PAGE_ASSERT_POLL_MS = 250;
 const PAGE_ASSERT_POLLS = ACTION_TIMEOUT_MS / PAGE_ASSERT_POLL_MS;
@@ -897,10 +907,62 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
       return advanced;
     };
 
+    // Runs in-browser: how much page there is right now. A lazy feed (infinite
+    // scroll) grows AFTER a scroll-triggered fetch, so reaching the end of what is
+    // rendered is not reaching the end of the content. Container height covers
+    // virtualized lists (padding grows with the loaded count); the node count
+    // covers plain appended lists.
+    const pageSize = (_what: string): { h: number; n: number } => {
+      const all = Array.from(document.querySelectorAll<HTMLElement>('*'));
+      const root = document.scrollingElement as HTMLElement | null;
+      let h = root ? root.scrollHeight : 0;
+      for (const el of all) {
+        if (el.scrollHeight - el.clientHeight <= 100) continue;
+        const oy = getComputedStyle(el).overflowY;
+        if (oy === 'auto' || oy === 'scroll') h += el.scrollHeight;
+      }
+      return { h, n: all.length };
+    };
+    const readSize = async (): Promise<{ h: number; n: number } | null> => {
+      const s = await page.evaluate(pageSize, 'size').catch(() => null) as { h: number; n: number } | null;
+      return s && typeof s === 'object' ? s : null;
+    };
+    // Bounded wait for the page to GROW. Count-based (not wall-clock) so it is
+    // deterministic and instant under mocked timers: POLLS × POLL_MS ≈ 3s, which
+    // covers a batch that arrives 300–1500ms after the scroll that triggered it.
+    const grewWithin = async (): Promise<boolean> => {
+      const before = await readSize();
+      if (!before) return false;
+      for (let p = 0; p < GROWTH_POLLS; p++) {
+        await page.waitForTimeout(GROWTH_POLL_MS);
+        const now = await readSize();
+        if (now && (now.h > before.h || now.n > before.n)) return true;
+      }
+      return false;
+    };
+
     try {
-      for (let i = 0; i < 60; i++) {
+      const deadline = Date.now() + SWEEP_BUDGET_MS;
+      let steps = 0;
+      let growthWaits = 0;
+      for (let i = 0; i < MAX_SWEEP_STEPS && Date.now() < deadline; i++) {
         const advanced = await page.evaluate(scrollStep, 'advance');
-        if (!advanced) break;
+        if (!advanced) {
+          // The end of what is rendered. If we never scrolled anything there is no
+          // feed here at all, so the text is simply absent — conclude at once, as
+          // before. Otherwise a lazy feed may be one fetch away from the row we
+          // want (finding #12: the nightmare ledger's row 333 sits in the fourth
+          // batch, and each batch arrives AFTER a scroll-triggered delay the old
+          // sweep never waited for): give it a bounded chance to grow.
+          if (steps === 0 || growthWaits >= MAX_GROWTH_WAITS) break;
+          growthWaits++;
+          if (!(await grewWithin())) break;
+          this.observability.increment('engine.assert_text_scroll_grew');
+          const found = await page.$eval('body', scanBody, needle).catch(() => null);
+          if (found) return found;
+          continue; // new content below — keep advancing
+        }
+        steps++;
         await page.waitForTimeout(150); // let the window re-render the new rows
         const found = await page.$eval('body', scanBody, needle).catch(() => null);
         if (found) return found; // keep the scroll — the content is rendered here
