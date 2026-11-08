@@ -117,16 +117,29 @@ export class OpenAIGateway implements ILLMGateway {
     warnOnRetiringModels(this.observability, [modelFor('mini')]);
   }
 
-  private buildDedupKey(contentHash: string, rawText: string, domain: string, candidates: CandidateNode[]): string {
+  private buildDedupKey(
+    tenantId: string, contentHash: string, rawText: string, domain: string, candidates: CandidateNode[],
+  ): string {
     const fingerprint = candidates
       .map((c) => `${c.role}:${c.name}:${c.cssSelector}`)
       .sort()
       .join('|');
     // Version 1.1.0: rawText added to key so two steps that compile to the same
     // targetDescription but differ in wording produce distinct dedup entries.
-    // Key format: llm:dedup:{targetHash}:{sha256} — the targetHash prefix makes it
-    // pattern-matchable so verdict=failed can evict all dedup entries for a step.
-    const raw = `resolveElement:1.1.0:${contentHash}:${rawText}:${domain}:${fingerprint}`;
+    // Version 1.2.0: TENANT added. The key was content-addressed only, so two
+    // tenants presenting the same step over the same candidate set (say, both
+    // testing one vendor's signed-in UI) shared an entry — and a hit returns the
+    // cached resolution wholesale, selector list and prompted-candidate names
+    // included. A confidentiality risk narrow enough to look harmless is exactly
+    // the kind the behindAuth boundary exists for, and the cache costs little to
+    // scope: it is a one-hour LLM-call dedupe, while cross-tenant LEARNING lives
+    // in the governed shared pool, not here. The version bump also means no
+    // tenant-less entry written by 1.1.0 can ever be read again.
+    // Key format: llm:dedup:{targetHash}:{sha256} — the targetHash prefix is kept
+    // so the pattern-matchable evictions (verdict=failed, worker recovery) still
+    // find every entry for a step; they evict across tenants, which only costs an
+    // extra miss.
+    const raw = `resolveElement:1.2.0:${tenantId}:${contentHash}:${rawText}:${domain}:${fingerprint}`;
     return `llm:dedup:${contentHash}:` + createHash('sha256').update(raw).digest('hex');
   }
 
@@ -246,7 +259,7 @@ Return only valid JSON.`,
     try {
       const roleFiltered = filterByActionRole(candidates, step.action);
       const filtered = scoreAndRankCandidates(roleFiltered, step.targetDescription ?? '').slice(0, 7);
-      const dedupKey = this.buildDedupKey(step.targetHash, step.rawText ?? '', '', filtered);
+      const dedupKey = this.buildDedupKey(tenantId, step.targetHash, step.rawText ?? '', '', filtered);
 
       if (this.redis) {
         const cached = await this.redis.get(dedupKey);

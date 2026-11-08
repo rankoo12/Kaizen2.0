@@ -116,6 +116,82 @@ describe('OpenAIGateway', () => {
     expect(mockObservability.increment).toHaveBeenCalledWith('llm.prompt_cache_hit');
   });
 
+  // The dedup cache is a one-hour LLM-call dedupe, NOT a place tenants learn from
+  // each other (that is the governed shared pool). It used to be content-addressed
+  // only: two tenants presenting the same step over the same candidate set — say,
+  // both testing one vendor's signed-in UI — shared an entry, and a hit returns the
+  // cached resolution wholesale (selector list and prompted-candidate names
+  // included). Spec: spec-research-adoption-2026-11 §S4 (prompt-cache scoping).
+  describe('dedup cache is scoped by tenant', () => {
+    const step = { action: 'click' as const, targetDescription: 'login', value: null, url: null, rawText: 'click login', contentHash: '123', targetHash: 'target-xyz' };
+    const candidate = (selector: string) => ({
+      kaizenId: 'kz-1', role: 'button', name: 'Login', cssSelector: 'role=button[name="Login"]', xpath: '', attributes: {},
+      textContent: 'Login', isVisible: true, similarityScore: 1,
+      selectorCandidates: [{ selector, strategy: 'data-testid' as const, confidence: 0.99 }],
+    });
+    /** A working in-memory Redis, so the test sees REAL hit/miss behaviour, not scripted answers. */
+    const memoryRedis = () => {
+      const store = new Map<string, string>();
+      return {
+        store,
+        get: jest.fn(async (k: string) => store.get(k) ?? null),
+        setex: jest.fn(async (k: string, _ttl: number, v: string) => { store.set(k, v); return 'OK'; }),
+      };
+    };
+    const llmPicksKz1 = () => mockCreateCompletion.mockResolvedValue({
+      choices: [{ message: { content: JSON.stringify({ kaizenId: 'kz-1' }) } }],
+      usage: { total_tokens: 20, prompt_tokens: 10, completion_tokens: 10 },
+    });
+
+    it('a second tenant on the SAME step and candidates does not get the first tenant\'s cached resolution', async () => {
+      const redis = memoryRedis();
+      llmPicksKz1();
+      const gw = new OpenAIGateway(mockBillingMeter, mockObservability, 'k', redis as any);
+
+      // Tenant A resolves; its private selector lands in the cache.
+      const a = await gw.resolveElement(step, [candidate('[data-testid="acme-private-login"]')], 'tenant-A');
+      expect(a.selectors[0].selector).toBe('[data-testid="acme-private-login"]');
+      expect(mockCreateCompletion).toHaveBeenCalledTimes(1);
+
+      // Tenant B presents an identical step + candidate fingerprint but its OWN selector.
+      const b = await gw.resolveElement(step, [candidate('[data-testid="globex-login"]')], 'tenant-B');
+
+      expect(b.fromCache).toBe(false);                                   // not served A's entry
+      expect(b.selectors[0].selector).toBe('[data-testid="globex-login"]'); // and never sees A's selector
+      expect(mockCreateCompletion).toHaveBeenCalledTimes(2);             // it paid for its own call
+      expect(redis.store.size).toBe(2);                                  // two separate entries
+    });
+
+    it('the SAME tenant still dedupes — scoping must not cost the cache its purpose', async () => {
+      const redis = memoryRedis();
+      llmPicksKz1();
+      const gw = new OpenAIGateway(mockBillingMeter, mockObservability, 'k', redis as any);
+
+      await gw.resolveElement(step, [candidate('#login')], 'tenant-A');
+      const again = await gw.resolveElement(step, [candidate('#login')], 'tenant-A');
+
+      expect(again.fromCache).toBe(true);
+      expect(mockCreateCompletion).toHaveBeenCalledTimes(1);
+      expect(mockObservability.increment).toHaveBeenCalledWith('llm.prompt_cache_hit');
+    });
+
+    it('keeps the llm:dedup:{targetHash}: prefix the pattern evictions rely on, for every tenant', async () => {
+      // verdict=failed (runs.ts) and the worker's recovery evict with
+      // `llm:dedup:{targetHash}:*` — a tenant in the key must not break that.
+      const redis = memoryRedis();
+      llmPicksKz1();
+      const gw = new OpenAIGateway(mockBillingMeter, mockObservability, 'k', redis as any);
+
+      await gw.resolveElement(step, [candidate('#login')], 'tenant-A');
+      await gw.resolveElement(step, [candidate('#login')], 'tenant-B');
+
+      const keys = [...redis.store.keys()];
+      expect(keys).toHaveLength(2);
+      for (const k of keys) expect(k).toMatch(/^llm:dedup:target-xyz:[0-9a-f]{64}$/);
+      expect(new Set(keys).size).toBe(2); // distinct per tenant, same prefix
+    });
+  });
+
   it('generateEmbedding returns the 1536-float array from OpenAI', async () => {
     const fakeEmbedding = Array(1536).fill(0.1);
     mockCreateEmbedding.mockResolvedValueOnce({ data: [{ embedding: fakeEmbedding }] });
