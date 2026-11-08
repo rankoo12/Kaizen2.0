@@ -104,6 +104,23 @@ Seeded RNG so mutation runs are reproducible.
   compare pass rates + token spend + heal rates. The delta is the "engine
   memory compensates for a weak model" number.
 
+Nightmare × haiku result (2026-11-01, after seed fixes + the M1 id
+amendment): **6 PASS / 0 GAP / 3 FAIL / 0 FALSE-PASS** — every must-fail
+honest at the correct locus (captcha at its assert, vault at the unreachable
+closed root), about/ledger/pin/portal expectations all judged PASS. The 3
+FAILs are the floor itself: reactor's heal re-resolved onto a wrong (non-
+decoy) element and the OUTCOME ASSERT caught it — honesty held under a weak
+model; cookie-rating and subscribe died on finding #13 (watchdog × haiku
+latency). Sonnet control reruns this site for the delta.
+
+Floor observations so far (2026-11-01): on the-internet the Haiku writer
+produced 2 accepted cases in a 43-minute analyze (thin but viable — and the
+engine's memory then ran the suite at 0 tokens warm/hot); on nightmare it
+produced ZERO (plan phase emitted nothing writable). Haiku resolution calls
+on nightmare's heavy DOM run 30–100s, which interacts with the 60s step
+watchdog — logged as engine finding #13 in spec-changing-sites §12. The
+engine stays frozen; the Sonnet control prices all of this.
+
 ## 9. Deliverables
 
 - §7 verdicts, per-site judged scoreboards, tenant-matrix findings (parity /

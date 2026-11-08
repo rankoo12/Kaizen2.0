@@ -147,7 +147,7 @@
             <div class="pill-row" id="reactor-row">
               ${slots.map(function (i) {
                 return i === D.reactorRealIndex
-                  ? html`<div class="soup-btn" id="reactor-real" role="button" tabindex="0" aria-label="Engage reactor"
+                  ? html`<div class="soup-btn" id="reactor-core" role="button" tabindex="0" aria-label="Engage reactor"
                        onClick=${fire} onKeyDown=${key} key=${i}>Engage</div>`
                   : html`<div class="soup-btn" key=${i}>Activate</div>`; // decoy: inert on purpose
               })}

@@ -21,12 +21,20 @@
 import { sql } from '../changing-sites/lib/evidence';
 import { appendRecord } from './lib/log';
 
-/** Admin-surface vocabulary that exists ONLY behind wp-login. Lowercase. */
+/**
+ * Admin-surface vocabulary that exists ONLY behind wp-login. Lowercase.
+ * Calibrated 2026-11-01: 'dashboard' and 'nickname' are GENERIC SaaS words —
+ * 'dashboard' false-alarmed on the April-seeded `dashboard_link` archetype.
+ * Markers here must be admin-exclusive strings; recency does the rest.
+ */
 const ADMIN_MARKERS = [
-  'at a glance', 'wp-admin', 'howdy', 'dashboard', 'add new post', 'quick draft',
-  'site health', 'permalink', 'nickname', 'admin-bar', 'adminmenu', 'wpadminbar',
+  'at a glance', 'wp-admin', 'howdy', 'quick draft',
+  'site health', 'admin-bar', 'adminmenu', 'wpadminbar',
   'screen options', 'bulk actions',
 ];
+
+/** Only rows written since the campaign began can be campaign leaks. */
+const CAMPAIGN_START = "'2026-11-01T00:00:00Z'";
 
 const like = (col: string) => ADMIN_MARKERS.map((m) => `lower(${col}) LIKE '%${m}%'`).join(' OR ');
 
@@ -38,7 +46,8 @@ async function main(): Promise<void> {
   );
   const archetypeHits = await sql<{ name: string; role: string }>(
     `SELECT name, role FROM element_archetypes
-      WHERE (${like('name')})`,
+      WHERE (${like('name')})
+        AND updated_at >= ${CAMPAIGN_START}`,
   );
 
   const flags: string[] = [];

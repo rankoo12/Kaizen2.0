@@ -16,7 +16,9 @@ export type PortfolioSite = {
   url: string;
   brief: string; // relative to this dir
   analyze: { maxPages: number; maxScenarios: number };
-  seedCases: SeedCase[];
+  /** Static list, or a lazy builder for sites whose seeds embed TEMP-held
+   * credentials (wp-admin) — called only when THIS site's leg runs. */
+  seedCases: SeedCase[] | (() => SeedCase[]);
   /** Printed before cold runs as the operator checklist (container resets etc.). */
   preflightNote?: string;
   /**
@@ -95,12 +97,15 @@ export const PORTFOLIO: PortfolioSite[] = [
     preflightNote: 'recreate the site-juice container before a tenant leg (challenge state accumulates server-side)',
     seedCases: [
       {
+        // Round-1 lesson: this version of Juice Shop has NO cookie-consent
+        // banner ("Me want it!" is older-release memory; i18n has no such
+        // string) — only the welcome dialog's Dismiss is real. Probe the live
+        // page before authoring seeds.
         name: 'SEED: Dismiss the welcome banner and search for apple',
         path: '/#/',
         steps: [
           'navigate to http://site-juice:3000/#/',
           'click the "Dismiss" button',
-          'click the "Me want it!" button',
           'click the search icon',
           'type "apple" in the search field',
           'press Enter',
@@ -217,32 +222,30 @@ PORTFOLIO.push({
   analyze: { maxPages: 4, maxScenarios: 6 },
   preflightNote: 'behindAuth leg — learning must stay tenant-scoped; the isolation checker audits shared rows for admin-surface selectors after this leg',
   auth: { loginSeed: wpAdminLoginSeed },
-  seedCases: [
-    {
-      name: 'SEED: Admin dashboard shows At a Glance',
-      path: '/wp-admin/',
-      steps: [
-        'navigate to http://site-wp/wp-admin/',
-        'verify the text "At a Glance" is shown',
-      ],
-    },
-    {
-      name: 'SEED: Posts list shows Hello world',
-      path: '/wp-admin/',
-      steps: [
-        'navigate to http://site-wp/wp-admin/edit.php',
-        'verify the text "Hello world!" is shown',
-      ],
-    },
-    {
-      name: 'PROBE-MUSTFAIL: asserts an admin page that does not exist',
-      path: '/wp-admin/',
-      steps: [
-        'navigate to http://site-wp/wp-admin/',
-        'verify the text "Kaizen phantom settings panel 5a1b" is shown',
-      ],
-    },
-  ],
+  // Lazy: each seed runs in a FRESH context, so every one must sign in itself
+  // (round-1 lesson: bare /wp-admin/ navigations hit the login wall and the
+  // seeds failed in all phases for a reason that had nothing to do with the
+  // engine). The login prefix reuses the same TEMP-held credentials.
+  seedCases: () => {
+    const login = wpAdminLoginSeed().steps; // navigate + user + pass + Log In + Dashboard assert
+    return [
+      {
+        name: 'SEED: Admin dashboard shows At a Glance',
+        path: '/wp-login.php',
+        steps: [...login, 'verify the text "At a Glance" is shown'],
+      },
+      {
+        name: 'SEED: Posts list shows Hello world',
+        path: '/wp-login.php',
+        steps: [...login, 'navigate to http://site-wp/wp-admin/edit.php', 'verify the text "Hello world!" is shown'],
+      },
+      {
+        name: 'PROBE-MUSTFAIL: asserts an admin page that does not exist',
+        path: '/wp-login.php',
+        steps: [...login, 'verify the text "Kaizen phantom settings panel 5a1b" is shown'],
+      },
+    ];
+  },
 });
 
 export const portfolioSiteById = (id: string): PortfolioSite => {

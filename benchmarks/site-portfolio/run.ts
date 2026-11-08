@@ -111,7 +111,10 @@ async function main(): Promise<void> {
           ...(site.auth ? { scope: 'authenticated' as const, loginCaseId } : {}),
         });
         log(`cold: analyze job ${jobId} on suite ${suiteId}`);
-        const job = await pollJob(authRef, jobId, { onPhase: (p) => log(`cold: analyze ${p}`) });
+        // 90 min: a haiku answerer's scenario calls run 70–90s each, and the
+        // juice leg proved a heavy SPA legitimately needs >45 (job completed
+        // at 51 min, six minutes after the default poll gave up).
+        const job = await pollJob(authRef, jobId, { timeoutMin: 90, onPhase: (p) => log(`cold: analyze ${p}`) });
         if (job.status !== 'completed') throw new Error(`analyze ended ${job.status}: ${job.error}`);
         state[stateKey] = { suiteId, tenantId: authRef.auth.tenantId };
         saveState();
@@ -120,7 +123,8 @@ async function main(): Promise<void> {
       }
       const { accepted, leftBehind } = await acceptValidated(authRef, suiteId);
       const existing = new Set((await listCases(authRef, suiteId)).map((c) => c.name));
-      for (const seed of site.seedCases) {
+      const seeds = typeof site.seedCases === 'function' ? site.seedCases() : site.seedCases;
+      for (const seed of seeds) {
         if (existing.has(seed.name)) continue;
         await seedCase(authRef, suiteId, seed.name, `${site.url}${seed.path}`, seed.steps);
         log(`cold: seeded ${seed.name}`);

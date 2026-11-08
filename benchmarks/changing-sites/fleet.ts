@@ -401,10 +401,14 @@ export const FLEET: SiteDef[] = [
         ],
       },
       {
+        // Every below-fold seed accepts the cookie wall first — round 1 proved
+        // the overlay intercepts their clicks otherwise (and surfaced finding
+        // #11: the engine has no overlay-dismissal recovery of its own).
         name: 'SEED: Subscribe inside the nested iframe',
         path: '/',
         steps: [
           'navigate to http://site-nightmare/',
+          'click the "Accept the inevitable" button',
           'type "bench@kaizen.local" in the email field of the subscribe form',
           'click the "Subscribe" button',
           'verify the text "Subscribed to the void." is shown',
@@ -415,6 +419,7 @@ export const FLEET: SiteDef[] = [
         path: '/',
         steps: [
           'navigate to http://site-nightmare/',
+          'click the "Accept the inevitable" button',
           'click the first "Pin this" button',
           'verify the text "Pinned:" is shown',
         ],
@@ -424,6 +429,7 @@ export const FLEET: SiteDef[] = [
         path: '/',
         steps: [
           'navigate to http://site-nightmare/',
+          'click the "Accept the inevitable" button',
           'click the "Summon modal" button',
           'type "kaizen was here" in the modal text field',
           'click the "Seal it" button',
@@ -451,6 +457,7 @@ export const FLEET: SiteDef[] = [
         path: '/',
         steps: [
           'navigate to http://site-nightmare/',
+          'click the "Accept the inevitable" button',
           'check the "I am not a robot" checkbox',
           'verify the text "Verification passed" is shown',
         ],
