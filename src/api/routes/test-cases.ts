@@ -913,9 +913,9 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
   async function loadCaseForRun(tenantId: string, caseId: string) {
     return withTenantTransaction(tenantId, async (client) => {
       const { rows: caseRows } = await client.query<{
-        id: string; suite_id: string; base_url: string; status: string;
+        id: string; suite_id: string; base_url: string; status: string; authenticated: boolean;
       }>(
-        `SELECT id, suite_id, base_url, status FROM test_cases WHERE id = $1 AND tenant_id = $2`,
+        `SELECT id, suite_id, base_url, status, authenticated FROM test_cases WHERE id = $1 AND tenant_id = $2`,
         [caseId, tenantId],
       );
       if (caseRows.length === 0) return null;
@@ -992,6 +992,11 @@ export async function testCasesRoutes(app: FastifyInstance): Promise<void> {
       // context so steps register unique data each run.
       // Spec: docs/specs/tests-ux/spec-duplicate-case-and-generated-data.md §2
       seedVariables: generateFormData(),
+      // behindAuth travels WITH the case (finding #14): before this, only the
+      // Test Writer's proving runs carried the flag, so an ordinary run of an
+      // authenticated-scope case could teach global archetypes a customer's
+      // private UI vocabulary on a cache miss.
+      behindAuth: caseData.authenticated === true || undefined,
     });
 
     return runId;

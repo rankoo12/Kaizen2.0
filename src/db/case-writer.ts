@@ -69,12 +69,17 @@ export async function createCase(
     }>(
       // created_by is nullable on purpose: a case created through an API key or
       // by the Test Writer has a tenant but no user behind it.
+      // `authenticated` is derived from the generation job's scope IN the
+      // insert (finding #14): the behindAuth protection is a property of the
+      // case, and deriving it here means no caller can forget to pass it. A
+      // user-authored case (no job) is public until flagged otherwise.
       `INSERT INTO test_cases (
          tenant_id, suite_id, name, base_url, created_by,
          status, origin, generation_job_id, archetype_key,
-         validation_state, expected_outcome
+         validation_state, expected_outcome, authenticated
        )
-       VALUES ($1, $2, $3, $4, $5, COALESCE($6, 'active'), COALESCE($7, 'user'), $8, $9, $10, $11)
+       VALUES ($1, $2, $3, $4, $5, COALESCE($6, 'active'), COALESCE($7, 'user'), $8, $9, $10, $11,
+               COALESCE((SELECT gj.scope = 'authenticated' FROM generation_jobs gj WHERE gj.id = $8), false))
        RETURNING id, name, base_url, created_at, updated_at`,
       [
         tenantId, input.suiteId, input.name, input.baseUrl, input.createdBy ?? null,

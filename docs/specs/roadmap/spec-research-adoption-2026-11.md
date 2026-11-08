@@ -3,6 +3,9 @@
 Created: 2026-11-08
 Updated: 2026-11-08 — S1 shipped (PR #105); S4 gains run-outcome-deferred
 heal persistence (residual of the #16 fix on fix/engine/heal-trust).
+Updated: 2026-11-08 (later) — heal-trust merged (PR #106); finding #14
+(behindAuth on the case) shipped early via migration 045 instead of waiting
+for S4 — S4 keeps the prompt-cache scoping review.
 Status: ACTIVE — this is the decision record for docs/research/2026-11-08.md
 and docs/research/2026-backfill.md. Items not listed under §2 or §3 were read
 and deliberately not adopted.
@@ -86,12 +89,15 @@ Backfill §3.4, with two repo corrections:
   (`attribution.healed` → `SelectorSet.healProvenance`), outcome windows.
   Several AdaptiTest stages are already built; do not rebuild them under new
   vocabulary.
-- **Campaign finding #14 folds in here**: behindAuth must travel with the
-  CASE (persist authenticated scope at case creation; worker derives
-  behindAuth from the case, payload flag as override). Same boundary, same
-  sprint. Also review prompt-cache tenant scoping (the campaign observed
-  cross-tenant prompt-cache replays — fine for public pages, needs a decision
-  for private ones).
+- **Campaign finding #14 — SHIPPED early, separately (2026-11-08,
+  migration 045)**: behindAuth now travels with the CASE (`test_cases.
+  authenticated`, derived from the generation job's scope at creation and
+  sent by the single case-run enqueue site). It was a tiny, high-value
+  security fix that did not need to wait for the sprint. What REMAINS for S4
+  on this boundary: review prompt-cache tenant scoping (the campaign
+  observed cross-tenant prompt-cache replays — fine for public pages, needs
+  a decision for private ones), and consider letting the worker re-derive
+  behindAuth from the case as defense in depth for any future enqueue site.
 - New pieces adopted: scope filter INSIDE the pgvector query (+
   `hnsw.iterative_scan`), N-distinct-tenant promotion with provenance
   columns, expected-state predicate (URL pattern + landmark signature) on
