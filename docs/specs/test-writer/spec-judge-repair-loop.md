@@ -125,8 +125,9 @@ In `runGenerationPhases`, after the first judge call:
    with stage `judge` and both reasons on the report (`reason: "after one rewrite: …"`).
 3a. **Assertion-weakening guard (added 2026-11-08, `write/oracle-strength.ts`).** Before a
    rewrite reaches the re-judge, its assertions are compared with the original's. A rewrite with
-   FEWER assertions, or a lower total strength (strong = text/count/attribute value, moderate =
-   URL/title/absence, weak = boolean-only visible/enabled/checked), is **blocked**: a REVISE
+   FEWER assertions, or a lower total strength (strong = text/count/attribute value, or a state
+   assertion on a target an earlier step acted on; moderate = URL/title/absence or a control's
+   state/disappearance — checked/enabled/not-visible; weak = plain visible), is **blocked**: a REVISE
    falls back to its original and a REJECT stays rejected with the blocked attempt's steps on
    the report (`reason: "rewrite blocked — …"`; metric `testwriter.judge_repair_weakened`).
    Why: repair agents "converge" partly by deleting or weakening assertions (arXiv 2605.01471),

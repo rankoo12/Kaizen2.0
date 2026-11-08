@@ -65,24 +65,27 @@ export function lintScenario(steps: StepIntent[], kind: 'positive' | 'negative')
   }
 
   // ── oracle-strength: a happy-path scenario that ACTS and then asserts only
-  //    boolean-only things (visible / enabled / checked) passes while the app is
-  //    wrong in every way that matters — it proves an element exists, not that
-  //    the action produced the right value (arXiv 2606.18168: 80% of
-  //    agent-written tests). Advisory, like the rest: the finding rides into the
-  //    judge's prompt, and a REVISE verdict sends it through the repair round
-  //    with this as the instruction.
-  //    Scoped on purpose, because two shapes are SANCTIONED elsewhere in this
-  //    file and condemning them would re-open a fixed problem: a navigation-only
-  //    test ("arrive at the 404 page, its heading is visible" — an existence
-  //    check is the right oracle) and a negative ("the error is visible" — the
-  //    negative-shape rule below asks for exactly that).
+  //    that an element is VISIBLE passes while the app is wrong in every way that
+  //    matters — it proves something exists, not that the action produced the
+  //    right outcome (arXiv 2606.18168: 80% of agent-written tests). Advisory,
+  //    like the rest: the finding rides into the judge's prompt, and a REVISE
+  //    verdict sends it through the repair round with this as the instruction.
+  //    Scoped on purpose, because shapes sanctioned elsewhere must not be
+  //    condemned: a navigation-only test ("arrive at the 404 page, its heading is
+  //    visible" — an existence check is the right oracle); a negative ("the error
+  //    is visible" — the negative-shape rule below asks for exactly that); and a
+  //    STATE assertion (checked / enabled / gone), which is the outcome in a
+  //    toggle-or-close test and counts as a real oracle — a first cut that called
+  //    those weak flagged exactly such tests on real generated data.
   //    Spec: spec-research-adoption-2026-11 §S3.
   if (kind === 'positive' && steps.some((s) => ACTING.has(s.action))) {
     const profile = oracleProfile(steps);
     if (profile.assertions > 0 && profile.best === 'weak') {
       findings.push(
-        'every assertion is boolean-only (visible / enabled / checked) after an action — the test ' +
-        'can pass while the app shows the wrong value; prefer asserting a text, count or attribute value',
+        'every assertion only checks that an element is visible after an action — the test can pass ' +
+        'while the app did the wrong thing; assert an outcome the page demonstrably shows (its text, ' +
+        'a count, an attribute, or a state change such as checked / enabled / gone) — but only one the ' +
+        'observed page supports: do not invent text',
       );
     }
   }

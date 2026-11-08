@@ -38,12 +38,16 @@ describe('lintScenario — delta assertion (the pre-state test)', () => {
   });
 });
 
-// S3 — a happy path that ACTS and then asserts only boolean-only things proves an
-// element exists, not that the action produced the right value (arXiv 2606.18168).
-// Scoped so it does not condemn the two shapes the rules above sanction: a
-// navigation-only test and a negative that asserts the rejection is visible.
+// S3 — a happy path that ACTS and then asserts only that something is VISIBLE
+// proves an element exists, not that the action produced the right outcome
+// (arXiv 2606.18168). Scoped so it does not condemn the shapes sanctioned
+// elsewhere: a navigation-only test, a negative that asserts the rejection is
+// visible, and a STATE assertion (checked / enabled / gone) — the outcome of a
+// toggle-or-close test, which a first cut wrongly called weak on real data.
 describe('lintScenario — oracle strength', () => {
-  const FLAG = 'boolean-only';
+  const FLAG = 'only checks that an element is visible';
+  const OTHER = '22222222-2222-4222-8222-222222222222';
+  const other = { kind: 'element' as const, elementId: OTHER };
 
   it('flags a positive scenario that acts and asserts only visibility', () => {
     const steps: StepIntent[] = [
@@ -54,13 +58,29 @@ describe('lintScenario — oracle strength', () => {
     expect(lintScenario(steps, 'positive').join(' ')).toContain(FLAG);
   });
 
-  it('flags it when several assertions are ALL boolean-only', () => {
+  it('flags it when several assertions are ALL bare visibility checks', () => {
     const steps: StepIntent[] = [
       { action: 'click', target: el },
       { action: 'assert_visible', target: el },
-      { action: 'assert_enabled', target: el },
+      { action: 'assert_visible', target: other },
     ];
     expect(lintScenario(steps, 'positive').join(' ')).toContain(FLAG);
+  });
+
+  it('does NOT flag a state assertion — the checkbox the test toggled is checked; the notification it closed is gone', () => {
+    const toggle: StepIntent[] = [{ action: 'check', target: el }, { action: 'assert_checked', target: el }];
+    expect(lintScenario(toggle, 'positive').join(' ')).not.toContain(FLAG);
+
+    const close: StepIntent[] = [{ action: 'click', target: el }, { action: 'assert_not_visible', target: el }];
+    expect(lintScenario(close, 'positive').join(' ')).not.toContain(FLAG);
+
+    const enable: StepIntent[] = [{ action: 'click', target: el }, { action: 'assert_enabled', target: other }];
+    expect(lintScenario(enable, 'positive').join(' ')).not.toContain(FLAG);
+  });
+
+  it('the finding tells the writer not to invent text — an ungrounded stronger assertion just fails validation', () => {
+    const steps: StepIntent[] = [{ action: 'click', target: el }, { action: 'assert_visible', target: el }];
+    expect(lintScenario(steps, 'positive').join(' ')).toContain('do not invent text');
   });
 
   it('does not flag a test with ONE value-bearing assertion, however many weak ones surround it', () => {
