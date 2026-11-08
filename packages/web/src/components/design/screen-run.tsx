@@ -218,6 +218,25 @@ function Evidence({ sr }: { sr: StepResult }) {
   );
 }
 
+/* "Watch video" popup — plays the run's recorded browser video (webm), streamed
+   through the proxy with Range support so seeking works.
+   Spec: docs/specs/tests-ux/spec-run-video.md §6 */
+function VideoModal({ videoKey, onClose }: { videoKey: string; onClose: () => void }) {
+  uEr(() => {
+    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    document.addEventListener('keydown', k);
+    return () => document.removeEventListener('keydown', k);
+  }, [onClose]);
+  if (typeof document === 'undefined') return null;
+  return createPortal((
+    <div className="zoom-scrim" onClick={onClose}>
+      <video controls autoPlay src={`/api/proxy/media?key=${encodeURIComponent(videoKey)}`}
+        onClick={(e) => e.stopPropagation()}
+        style={{ maxWidth: '92%', maxHeight: '92%', borderRadius: 10, boxShadow: 'var(--shadow-win)', background: '#000' }} />
+    </div>
+  ), document.body);
+}
+
 function Inspector({ sr, text, runId, onVerdict, showToast }: any) {
   const [busy, setBusy] = uSr<string | null>(null);
   const tier = resolutionTier(sr.resolutionSource);
@@ -516,6 +535,7 @@ export function RunScreen({ caseId, runId: initialRunId, initialStepId, caseName
   const [menu, setMenu] = uSr(false);
   const [rerunning, setRerunning] = uSr(false);
   const [confirmCancel, setConfirmCancel] = uSr(false);
+  const [showVideo, setShowVideo] = uSr(false);
   const [payoff, setPayoff] = uSr<RunPayoff | null>(null);
   /* The HUD is a reward for watching a run finish, so it only fires when this screen
      saw the transition from running to terminal. Opening a historical run must not
@@ -664,6 +684,11 @@ export function RunScreen({ caseId, runId: initialRunId, initialStepId, caseName
           { value: 'steps', label: 'Steps' }, { value: 'line', label: 'Line' },
           { value: 'activity', label: 'Activity' }, { value: 'history', label: 'History' },
         ]} />
+        {/* Only once the run is terminal — the webm is finalized when the browser
+            context closes, so a live run never has one to show. */}
+        {run?.videoKey && done && (
+          <button className="btn" onClick={() => setShowVideo(true)}><I.frame size={12} />Watch video</button>
+        )}
         <button className="btn" onClick={rerun} disabled={rerunning}>
           {rerunning ? <span className="spinner" style={{ width: 11, height: 11 }} /> : <I.play size={12} />}Re-run
         </button>
@@ -804,6 +829,10 @@ export function RunScreen({ caseId, runId: initialRunId, initialStepId, caseName
       </div>
 
       {payoff && <RunCompleteHUD payoff={payoff} onClose={() => setPayoff(null)} />}
+
+      {showVideo && run?.videoKey && (
+        <VideoModal videoKey={run.videoKey} onClose={() => setShowVideo(false)} />
+      )}
 
       {confirmCancel && (
         <ConfirmSheet title="Cancel this run?"

@@ -49,6 +49,7 @@ export function useRunDetail(runId: string | null | undefined) {
           totalTokens: raw.total_tokens || null,
           environmentUrl: raw.environment_url ?? null,
           totalSteps: raw.total_steps ?? null,
+          videoKey: raw.video_key ?? null,
           // The detail response carries the step rows themselves, so the finished count
           // is exactly how many arrived — no separate query needed.
           completedSteps: (raw.stepResults || []).length,

@@ -319,6 +319,10 @@ export type StepResult = {
 
 export type RunDetail = RunSummary & {
   stepResults: StepResult[];
+  /** Stored key of the run's recorded browser video; null = no video (older
+   *  runs, testwriter proving runs, or capture disabled/failed).
+   *  Spec: docs/specs/tests-ux/spec-run-video.md */
+  videoKey?: string | null;
 };
 
 export const TERMINAL_RUN_STATUSES: RunStatus[] = [

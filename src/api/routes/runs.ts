@@ -206,7 +206,7 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
     const pool = tenantPool(request.tenantId);
     const { rows } = await pool.query(
       `SELECT id, tenant_id, status, triggered_by, started_at, completed_at, environment_url,
-              total_steps, created_at
+              total_steps, video_key, created_at
        FROM runs
        WHERE id = $1 AND tenant_id = $2`,
       [request.params.id, request.tenantId],
@@ -743,17 +743,22 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
   /**
    * GET /media?key=...
    *
-   * Streams a run screenshot back to the caller. Screenshots are immutable once
-   * written (the key encodes tenant/run/step/timing), so responses are marked
-   * cacheable for a year — the browser then serves repeat views from its own
-   * cache without re-hitting this endpoint or GCS. A process-local LRU in
+   * Streams a run artifact back to the caller: a step screenshot (PNG) or a
+   * run video (WebM — spec-run-video.md §4). Artifacts are immutable once
+   * written (the key encodes tenant/run/…), so responses are marked cacheable
+   * for a year — the browser then serves repeat views from its own cache
+   * without re-hitting this endpoint or GCS. A process-local LRU in
    * ScreenshotService absorbs cold-cache / cache-busted requests so they don't
    * fan out to GCS either.
    *
-   * Authorization: the `key` must match a `step_results.screenshot_key` owned by
-   * the caller's tenant. This both scopes access per-tenant and prevents the
-   * previous arbitrary-file-read (`?key=/etc/passwd`) — an unauthorized key is
-   * simply not found in the tenant's step results.
+   * Authorization: the `key` must match a `step_results.screenshot_key` (PNG)
+   * or a `runs.video_key` (WebM) owned by the caller's tenant. This both scopes
+   * access per-tenant and prevents the previous arbitrary-file-read
+   * (`?key=/etc/passwd`) — an unauthorized key is simply not found.
+   *
+   * Videos additionally honor single byte-range requests (206) — the <video>
+   * element seeks by re-requesting `Range: bytes=start-`; without slices every
+   * seek would rewind playback to 0:00.
    */
   app.get<{ Querystring: { key: string } }>('/media', { preHandler: [requireTenant] }, async (request, reply) => {
     const key = request.query.key;
@@ -762,9 +767,12 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
     if (key.includes('..')) return reply.status(400).send({ error: 'Invalid key' });
 
     // Authorize: only keys produced by this tenant's runs are downloadable.
+    const isVideo = key.endsWith('.webm');
     const { rows } = await tenantQuery(
       request.tenantId,
-      `SELECT 1 FROM step_results WHERE screenshot_key = $1 AND tenant_id = $2 LIMIT 1`,
+      isVideo
+        ? `SELECT 1 FROM runs WHERE video_key = $1 AND tenant_id = $2 LIMIT 1`
+        : `SELECT 1 FROM step_results WHERE screenshot_key = $1 AND tenant_id = $2 LIMIT 1`,
       [key, request.tenantId],
     );
     if (rows.length === 0) return reply.status(404).send({ error: 'Not found' });
@@ -781,9 +789,28 @@ export async function runsRoutes(app: FastifyInstance): Promise<void> {
     if (!buffer) return reply.status(404).send({ error: 'Not found' });
 
     reply
-      .header('Content-Type', 'image/png')
+      .header('Content-Type', isVideo ? 'video/webm' : 'image/png')
       .header('Cache-Control', cacheControl)
       .header('ETag', etag);
+
+    if (isVideo) {
+      reply.header('Accept-Ranges', 'bytes');
+      const range = request.headers.range;
+      if (range) {
+        // Single-range form only (bytes=start-end, bytes=start-, bytes=-suffix);
+        // that is all browsers send for media playback.
+        const m = /^bytes=(\d*)-(\d*)$/.exec(range);
+        const start = m && m[1] !== '' ? Number(m[1]) : m && m[2] !== '' ? Math.max(0, buffer.length - Number(m[2])) : NaN;
+        const end = m && m[1] !== '' && m[2] !== '' ? Math.min(Number(m[2]), buffer.length - 1) : buffer.length - 1;
+        if (!m || Number.isNaN(start) || start >= buffer.length || start > end) {
+          return reply.status(416).header('Content-Range', `bytes */${buffer.length}`).send();
+        }
+        return reply
+          .status(206)
+          .header('Content-Range', `bytes ${start}-${end}/${buffer.length}`)
+          .send(buffer.subarray(start, end + 1));
+      }
+    }
     return reply.send(buffer);
   });
 }

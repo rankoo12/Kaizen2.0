@@ -23,8 +23,11 @@ import { materializeGcsKeyFromEnv } from '../bootstrap/gcs-key-from-env';
 materializeGcsKeyFromEnv();
 
 import { randomUUID } from 'node:crypto';
+import fs from 'node:fs';
+import os from 'node:os';
+import nodePath from 'node:path';
 import { Worker } from 'bullmq';
-import { type Page } from 'playwright';
+import { type Page, type Video } from 'playwright';
 import { BrowserPool } from './browser-pool';
 import { cancelKey } from './cancel-keys';
 import { canonicalFrameUrl } from '../utils/frame-url';
@@ -289,9 +292,17 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
     if (raw) { try { sessionSeed = JSON.parse(raw); } catch { sessionSeed = null; } }
     if (!sessionSeed) obs.log('warn', 'worker.session_seed_missing', { runId, key: payload.sessionSeedKey });
   }
+  // Run video — the run detail view's "Watch video" popup plays this back.
+  // Gated off for Test Writer proving runs (hundreds per generation job, no
+  // player in the drafts UI) and by RUN_VIDEO=off. Best-effort throughout: no
+  // video failure may affect the run's outcome.
+  // Spec: docs/specs/tests-ux/spec-run-video.md §1
+  const videoEnabled = process.env.RUN_VIDEO !== 'off' && payload.triggeredBy !== 'testwriter';
+  const videoDir = nodePath.join(os.tmpdir(), 'kaizen-run-video', runId);
   const context = await browser.newContext({
     baseURL: baseUrl,
     ...(sessionSeed ? { storageState: sessionSeed as never } : {}),
+    ...(videoEnabled ? { recordVideo: { dir: videoDir } } : {}),
   });
 
   // __name shim: tsx/esbuild (keepNames) wraps named inner declarations inside
@@ -342,6 +353,10 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
   });
 
   const page = await context.newPage();
+  // Video is per PAGE; the main tab's clip is the run's video (v1 limitation:
+  // a second tab records separately and is not stitched). Grab the handle now —
+  // the file itself is only finalized when the context closes.
+  const mainVideo: Video | null = videoEnabled ? page.video() : null;
   attachDialogHandler(page);
   page.on('console', (msg: { type(): string }) => {
     if (msg.type() === 'error') sideChannel.consoleErrors++;
@@ -437,6 +452,13 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
     // runs; release() lets the pool recycle it once idle and past budget.
     await context.close();
     await browserPool.release();
+    // The webm exists only now that the context is closed. Persisting before
+    // markRunComplete means a terminal run row either has its video_key or
+    // NULL — the UI never re-polls a finished run for a late video.
+    if (videoEnabled) {
+      await persistRunVideo(mainVideo, videoDir, tenantId, runId).catch((e: any) =>
+        obs.log('warn', 'worker.video_persist_failed', { runId, error: e?.message }));
+    }
     // Always clean up the cancellation key so it doesn't linger in Redis.
     await cacheRedis.del(cancelKey(runId)).catch(() => {});
   }
@@ -451,6 +473,38 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
   obs.increment('worker.run_completed', { status: finalStatus });
   logger.info({ event: 'run_completed', runId, status: finalStatus });
   span.end();
+}
+
+/**
+ * Persist the run's recorded video: read the finalized webm (the context must
+ * already be closed), upload it via the media service, stamp runs.video_key,
+ * and remove the temp dir. Entirely best-effort — any failure logs, leaves
+ * video_key NULL, and the run's already-decided outcome is untouched.
+ * Spec: docs/specs/tests-ux/spec-run-video.md §1
+ */
+async function persistRunVideo(
+  video: Video | null,
+  videoDir: string,
+  tenantId: string,
+  runId: string,
+): Promise<void> {
+  try {
+    const videoPath = video ? await video.path().catch(() => null) : null;
+    const webm = videoPath ? fs.readFileSync(videoPath) : null;
+    if (!webm || webm.length === 0) {
+      obs.log('warn', 'worker.video_missing', { runId });
+      return;
+    }
+    const key = await screenshots.uploadVideo(webm, tenantId, runId);
+    if (!key) {
+      obs.log('warn', 'worker.video_upload_failed', { runId, bytes: webm.length });
+      return;
+    }
+    await tenantQuery(tenantId, `UPDATE runs SET video_key = $1 WHERE id = $2 AND tenant_id = $3`, [key, runId, tenantId]);
+    obs.log('info', 'worker.video_saved', { runId, key, bytes: webm.length });
+  } finally {
+    fs.rmSync(videoDir, { recursive: true, force: true });
+  }
 }
 
 /**
