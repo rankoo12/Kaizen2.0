@@ -357,6 +357,15 @@ export type HealingAttempt = {
   succeeded: boolean;
   newSelector: string | null;
   durationMs: number;
+  /**
+   * Set when a heal succeeded but could NOT earn the cache on name evidence alone
+   * (the picked element shares too few words with the step's target — a rename
+   * like Post → Publish). The strategy holds the write back; the worker commits it
+   * only if the run's own OUTCOME corroborates the pick, and drops it otherwise.
+   * Absent when the strategy persisted already (name-agreeing pick) or persists
+   * nothing. Spec: spec-research-adoption-2026-11 §S4.
+   */
+  deferredPersist?: () => Promise<void>;
 };
 
 export type HealingResult = {
@@ -365,6 +374,8 @@ export type HealingResult = {
   newSelector: string | null;
   attempts: number;
   durationMs: number;
+  /** Passed through unchanged from the winning HealingAttempt. */
+  deferredPersist?: () => Promise<void>;
 };
 
 // ─── LLM Gateway ─────────────────────────────────────────────────────────────

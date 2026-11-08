@@ -266,6 +266,11 @@ describe('ResolveAndRetryStrategy', () => {
     });
     // persistHealedSelector is fire-and-forget (void) — flush it before asserting.
     const flush = () => new Promise((r) => setImmediate(r));
+    // The params of the nth selector_cache write; the LAST one is HOW the heal
+    // earned the cache ('name' agreement, or run 'outcome' — S4), and the first is
+    // the selectors JSON that was written.
+    const writeParams = (n = 0): unknown[] => (tenantQuery as jest.Mock).mock.calls[n][2] as unknown[];
+    const corroborationOf = (n = 0) => { const p = writeParams(n); return p[p.length - 1]; };
 
     afterEach(() => jest.clearAllMocks());
 
@@ -284,9 +289,11 @@ describe('ResolveAndRetryStrategy', () => {
       expect(pruner.prune).toHaveBeenCalledTimes(1); // first attempt wins — no retries
       expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_success', { tenantId: 't1' });
       expect(tenantQuery).toHaveBeenCalledTimes(1); // the heal IS learned
+      expect(result.deferredPersist).toBeUndefined(); // nothing held back
+      expect(corroborationOf()).toBe('name'); // earned on name evidence
     });
 
-    it('zero-overlap pick heals the run as last resort but NEVER persists', async () => {
+    it('zero-overlap pick heals the run, is NOT cached at heal time, and hands back a deferred write (S4)', async () => {
       const wrong = candidate('Summon modal', '#modal-btn');
       const pruner = { prune: jest.fn(async () => [wrong]) };
       const llm = { resolveElement: jest.fn(async () => ({ selectors: [{ selector: '#modal-btn', strategy: 'css', confidence: 0.9 }] })), generateEmbedding: embed };
@@ -301,7 +308,16 @@ describe('ResolveAndRetryStrategy', () => {
       expect(pruner.prune).toHaveBeenCalledTimes(3); // all retries spent looking for better
       expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_name_absent', { tenantId: 't1' });
       expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_last_resort', { tenantId: 't1' });
-      expect(tenantQuery).not.toHaveBeenCalled(); // nothing cached, no provenance earned
+      expect(tenantQuery).not.toHaveBeenCalled(); // nothing cached, no provenance earned — yet
+
+      // The write is handed back, not dropped: invoking it (the worker does, only
+      // once the run's outcome corroborates the pick) persists with provenance
+      // that says it was earned on OUTCOME, never mistakable for name agreement.
+      expect(typeof result.deferredPersist).toBe('function');
+      await result.deferredPersist!();
+      expect(tenantQuery).toHaveBeenCalledTimes(1);
+      expect(corroborationOf()).toBe('outcome');
+      expect(String(writeParams()[0])).toContain('#modal-btn');
     });
 
     it('gates on the QUOTED name — context words must not dilute an exact-name pick', async () => {
@@ -323,9 +339,11 @@ describe('ResolveAndRetryStrategy', () => {
       expect(result.newSelector).toBe('#accept-sam');
       expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_success', { tenantId: 't1' });
       expect(tenantQuery).toHaveBeenCalledTimes(1); // the exact-name pick IS learned
+      expect(result.deferredPersist).toBeUndefined();
+      expect(corroborationOf()).toBe('name');
     });
 
-    it('a PARTIAL-overlap pick (the decoy gray zone) heals the run but never persists', async () => {
+    it('a PARTIAL-overlap pick (the decoy gray zone) heals the run but is not cached at heal time (S4)', async () => {
       // Live poison #2: four inert decoys labeled "Activate" beside the real
       // "Engage reactor" control. "Activate" shares one of the target's two
       // words — enough to beat the old none-agree gate, persisted with
@@ -343,7 +361,8 @@ describe('ResolveAndRetryStrategy', () => {
       expect(result.newSelector).toBe('#decoy-1');
       expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_partial_name', { tenantId: 't1' });
       expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_last_resort', { tenantId: 't1' });
-      expect(tenantQuery).not.toHaveBeenCalled(); // sub-majority never earns provenance
+      expect(tenantQuery).not.toHaveBeenCalled(); // sub-majority never earns provenance on its own
+      expect(typeof result.deferredPersist).toBe('function'); // only the run's outcome can promote it
     });
 
     it('a partial-overlap fallback outranks a zero-overlap one', async () => {
@@ -368,6 +387,10 @@ describe('ResolveAndRetryStrategy', () => {
       expect(result.succeeded).toBe(true);
       expect(result.newSelector).toBe('#decoy-1'); // the partial pick, despite arriving second
       expect(tenantQuery).not.toHaveBeenCalled();
+      // …and the deferred write carries the pick that outranked, not the first-offered one.
+      await result.deferredPersist!();
+      expect(String(writeParams()[0])).toContain('#decoy-1');
+      expect(String(writeParams()[0])).not.toContain('#modal-btn');
     });
 
     it('a later name-agreeing pick beats the last resort (#15 retry finds the late target)', async () => {
@@ -392,6 +415,8 @@ describe('ResolveAndRetryStrategy', () => {
       expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_success', { tenantId: 't1' });
       expect(obs.increment).not.toHaveBeenCalledWith('healing.resolve_retry_last_resort', { tenantId: 't1' });
       expect(tenantQuery).toHaveBeenCalledTimes(1); // only the good pick persisted
+      expect(result.deferredPersist).toBeUndefined(); // the earlier decoy fallback is not offered
+      expect(corroborationOf()).toBe('name');
     });
 
     it('stops retrying when the watchdog deadline leaves no room', async () => {

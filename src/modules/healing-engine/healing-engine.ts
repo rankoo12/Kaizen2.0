@@ -56,6 +56,7 @@ export class HealingEngine implements IHealingEngine {
           newSelector: attempt.newSelector,
           attempts,
           durationMs: Date.now() - overallStart,
+          ...(attempt.deferredPersist ? { deferredPersist: attempt.deferredPersist } : {}),
         };
       }
     }

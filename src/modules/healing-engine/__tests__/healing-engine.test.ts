@@ -44,6 +44,25 @@ describe('HealingEngine', () => {
     expect(s2.heal).not.toHaveBeenCalled();
   });
 
+  it('passes a strategy\'s deferred write through to the worker untouched (S4) — and does not invent one', async () => {
+    // A held-back heal that the engine silently dropped would make the whole
+    // run-outcome-deferred persistence feature a no-op with every unit test green.
+    const deferredPersist = jest.fn(async () => undefined);
+    const withDeferred = new HealingEngine(
+      [makeStrategy('S1', true, { succeeded: true, newSelector: '#new', durationMs: 1, deferredPersist })],
+      mockObs as any,
+    );
+    const result = await withDeferred.heal(makeFailure(), makeContext());
+    expect(result.deferredPersist).toBe(deferredPersist);
+    expect(deferredPersist).not.toHaveBeenCalled(); // the engine never commits it itself
+
+    const without = new HealingEngine(
+      [makeStrategy('S1', true, { succeeded: true, newSelector: '#new', durationMs: 1 })],
+      mockObs as any,
+    );
+    expect(Object.prototype.hasOwnProperty.call(await without.heal(makeFailure(), makeContext()), 'deferredPersist')).toBe(false);
+  });
+
   it('skips strategies where canHandle returns false', async () => {
     const s1 = makeStrategy('S1', false, { succeeded: true, newSelector: '#x', durationMs: 1 });
     const s2 = makeStrategy('S2', true, { succeeded: true, newSelector: '#y', durationMs: 1 });
