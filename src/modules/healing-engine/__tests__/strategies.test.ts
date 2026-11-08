@@ -149,6 +149,11 @@ describe('EscalationStrategy', () => {
 describe('ResolveAndRetryStrategy', () => {
   const strategy = new ResolveAndRetryStrategy({} as any, {} as any, {} as any, mockObs as any);
 
+  // The #15 retry loop sleeps between attempts; tests run it at zero wait so
+  // the budget cases (which exercise several heal() calls) stay fast.
+  beforeAll(() => { process.env.HEAL_RESOLVE_RETRY_WAIT_MS = '0'; });
+  afterAll(() => { delete process.env.HEAL_RESOLVE_RETRY_WAIT_MS; });
+
   it('re-resolves for element-gone AND stale-selector timeouts', () => {
     // Regression: a STALE cached selector times out and classifies as TIMING (the
     // classifier can't prove SelectorGone for role/CSS-id selectors). TIMING used
@@ -190,15 +195,18 @@ describe('ResolveAndRetryStrategy', () => {
       jest.clearAllMocks();
     });
 
+    // NOTE: one within-budget heal() now consults the pruner up to 3 times —
+    // the #15 retry loop re-prunes on each attempt when nothing matched
+    // (empty candidates here), so prune-call counts are heals × 3.
     it('defaults to 2 per hour — third call is rejected before any LLM work', async () => {
       const s = new ResolveAndRetryStrategy(pruner as any, {} as any, makeRedis() as any, obs as any);
       await s.heal(makeFailure('ELEMENT_MUTATED'), makeContext({}));
       await s.heal(makeFailure('ELEMENT_MUTATED'), makeContext({}));
-      expect(pruner.prune).toHaveBeenCalledTimes(2);
+      expect(pruner.prune).toHaveBeenCalledTimes(6); // 2 heals × 3 retry attempts
 
       const third = await s.heal(makeFailure('ELEMENT_MUTATED'), makeContext({}));
       expect(third.succeeded).toBe(false);
-      expect(pruner.prune).toHaveBeenCalledTimes(2); // not consulted
+      expect(pruner.prune).toHaveBeenCalledTimes(6); // not consulted
       expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_budget_exceeded', { tenantId: 't1' });
     });
 
@@ -206,12 +214,12 @@ describe('ResolveAndRetryStrategy', () => {
       const s = new ResolveAndRetryStrategy(pruner as any, {} as any, makeRedis() as any, obs as any);
       process.env.HEAL_RESOLVE_RETRY_PER_HOUR = '5';
       for (let i = 0; i < 5; i++) await s.heal(makeFailure('ELEMENT_MUTATED'), makeContext({}));
-      expect(pruner.prune).toHaveBeenCalledTimes(5);
+      expect(pruner.prune).toHaveBeenCalledTimes(15); // 5 heals × 3 retry attempts
       expect(obs.increment).not.toHaveBeenCalledWith('healing.resolve_retry_budget_exceeded', { tenantId: 't1' });
 
       const sixth = await s.heal(makeFailure('ELEMENT_MUTATED'), makeContext({}));
       expect(sixth.succeeded).toBe(false);
-      expect(pruner.prune).toHaveBeenCalledTimes(5);
+      expect(pruner.prune).toHaveBeenCalledTimes(15);
     });
 
     it('rejects nonsense overrides and keeps the default', async () => {
