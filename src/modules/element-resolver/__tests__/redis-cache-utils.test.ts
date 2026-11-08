@@ -1,4 +1,4 @@
-import { invalidateRedisCache, isTransient } from '../redis-cache.utils';
+import { invalidateRedisCache, deleteKeysByPattern, isTransient } from '../redis-cache.utils';
 
 const makeMockRedis = () => ({
   scan: jest.fn(),
@@ -50,6 +50,66 @@ describe('invalidateRedisCache', () => {
 
     await expect(invalidateRedisCache(redis as any, 'hash1', 'example.com'))
       .rejects.toThrow('Connection refused');
+  });
+});
+
+// The worker's wrong-pick eviction used `KEYS llm:dedup:{targetHash}:*` — O(N) over
+// the WHOLE keyspace, blocking the single-threaded server, on a hot path (every
+// refused pick). deleteKeysByPattern walks the keyspace with cursor SCAN instead.
+describe('deleteKeysByPattern', () => {
+  let redis: ReturnType<typeof makeMockRedis>;
+
+  beforeEach(() => {
+    redis = makeMockRedis();
+  });
+
+  it('deletes matching keys, walking the cursor to completion', async () => {
+    redis.scan
+      .mockResolvedValueOnce(['17', ['llm:dedup:h:aaa', 'llm:dedup:h:bbb']])
+      .mockResolvedValueOnce(['0', ['llm:dedup:h:ccc']]);
+    redis.del.mockResolvedValue(1);
+
+    const n = await deleteKeysByPattern(redis as any, 'llm:dedup:h:*');
+
+    expect(redis.scan).toHaveBeenNthCalledWith(1, '0', 'MATCH', 'llm:dedup:h:*', 'COUNT', '100');
+    expect(redis.scan).toHaveBeenNthCalledWith(2, '17', 'MATCH', 'llm:dedup:h:*', 'COUNT', '100'); // resumes where it left off
+    expect(n).toBe(3);
+  });
+
+  it('deletes PER BATCH, so memory stays flat however many keys match', async () => {
+    redis.scan
+      .mockResolvedValueOnce(['5', ['k1', 'k2']])
+      .mockResolvedValueOnce(['0', ['k3']]);
+    redis.del.mockResolvedValue(1);
+
+    await deleteKeysByPattern(redis as any, 'p:*');
+
+    expect(redis.del).toHaveBeenCalledTimes(2);
+    expect(redis.del).toHaveBeenNthCalledWith(1, 'k1', 'k2');
+    expect(redis.del).toHaveBeenNthCalledWith(2, 'k3');
+  });
+
+  it('never calls DEL with no keys, and answers 0 when nothing matches', async () => {
+    redis.scan.mockResolvedValueOnce(['0', []]);
+
+    expect(await deleteKeysByPattern(redis as any, 'p:*')).toBe(0);
+    expect(redis.del).not.toHaveBeenCalled();
+  });
+
+  it('uses SCAN and can never fall back to the blocking KEYS — the mock does not even have it', async () => {
+    // makeMockRedis exposes only scan + del: if this ever called redis.keys(), it
+    // would throw "redis.keys is not a function" rather than quietly block a server.
+    expect((redis as unknown as { keys?: unknown }).keys).toBeUndefined();
+    redis.scan.mockResolvedValueOnce(['0', ['k1']]);
+    redis.del.mockResolvedValue(1);
+
+    await expect(deleteKeysByPattern(redis as any, 'p:*')).resolves.toBe(1);
+  });
+
+  it('propagates Redis errors — the best-effort swallowing belongs to the caller that chose it', async () => {
+    redis.scan.mockRejectedValueOnce(new Error('Connection refused'));
+
+    await expect(deleteKeysByPattern(redis as any, 'p:*')).rejects.toThrow('Connection refused');
   });
 });
 

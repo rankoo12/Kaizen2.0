@@ -48,6 +48,7 @@ import { ArchetypeElementResolver } from '../modules/element-resolver/archetype.
 import { pickRandomCandidate, resolveCardTitle, seededIndex } from '../modules/element-resolver/random-element.selector';
 import { findRepeatedTargets } from '../modules/element-resolver/random-target';
 import { resolveCountSelector } from '../modules/element-resolver/countable';
+import { deleteKeysByPattern } from '../modules/element-resolver/redis-cache.utils';
 import { interpolateStep } from './run-context';
 import { shouldResolveFresh, healCertifiesAssertion } from './assertion-cache-policy';
 import { DeferredHeals, pageShowsText, type PendingHeal, type SettleDecision } from './deferred-heals';
@@ -212,8 +213,10 @@ async function describeResolved(page: Page, selector: string): Promise<string | 
 async function evictWrongSelector(tenantId: string, targetHash: string | null | undefined, selector: string): Promise<void> {
   if (targetHash) {
     await tenantQuery(tenantId, `DELETE FROM selector_cache WHERE content_hash = $1 AND (tenant_id = $2 OR is_shared = true) AND pinned_at IS NULL`, [targetHash, tenantId]);
-    const keys = await cacheRedis.keys(`llm:dedup:${targetHash}:*`).catch(() => [] as string[]);
-    if (keys.length > 0) await cacheRedis.del(...keys).catch(() => 0);
+    // SCAN, not KEYS: this runs on a hot path (every refused pick) and KEYS blocks
+    // the whole Redis server for O(keyspace). Best-effort — a failed eviction must
+    // not fail the step.
+    await deleteKeysByPattern(cacheRedis, `llm:dedup:${targetHash}:*`).catch(() => 0);
   }
   await tenantQuery(tenantId,
     `DELETE FROM selector_cache WHERE (tenant_id = $1 OR is_shared = true) AND pinned_at IS NULL

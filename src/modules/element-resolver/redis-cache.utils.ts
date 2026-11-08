@@ -28,6 +28,29 @@ export async function invalidateRedisCache(
 }
 
 /**
+ * Deletes every key matching `pattern`, walking the keyspace with a cursor SCAN.
+ * Never `KEYS`: KEYS is O(N) over the WHOLE keyspace and blocks the single-threaded
+ * server for the duration, so one eviction on a busy production Redis stalls every
+ * other command. SCAN visits a bounded slice per call. Deleting per batch also keeps
+ * memory flat however many keys match. SCAN can return a key twice across
+ * iterations — harmless for a delete, and the count is "keys handed to DEL", not a
+ * guarantee of distinct keys.
+ */
+export async function deleteKeysByPattern(redis: Redis, pattern: string): Promise<number> {
+  let cursor = '0';
+  let handed = 0;
+  do {
+    const [next, batch] = await redis.scan(cursor, 'MATCH', pattern, 'COUNT', '100');
+    cursor = next;
+    if (batch.length > 0) {
+      await redis.del(...batch);
+      handed += batch.length;
+    }
+  } while (cursor !== '0');
+  return handed;
+}
+
+/**
  * Returns true for Postgres error codes that are typically transient:
  *  - 08xxx: connection exceptions
  *  - 40001: serialization failure

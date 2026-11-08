@@ -33,6 +33,9 @@ Redis LLM dedup cache key now carries the tenant (it was content-addressed
 only; the old code served one tenant's private selector to another). Two
 eviction-path observations (Redis KEYS; shared-pool deletes on one tenant's
 refusal) recorded as the remaining S4 governance items. See §S4.
+Updated: 2026-11-08 (S4d) — the worker's wrong-pick eviction moved from the
+blocking Redis KEYS to cursor SCAN; the shared-pool-delete question is the one
+S4 governance item still open.
 Status: ACTIVE — this is the decision record for docs/research/2026-11-08.md
 and docs/research/2026-backfill.md. Items not listed under §2 or §3 were read
 and deliberately not adopted.
@@ -311,14 +314,20 @@ Backfill §3.4, with two repo corrections:
   shared pool, not in a side cache. Key version bumped 1.1.0 → 1.2.0 (no
   tenant-less entry is ever read again) with the `llm:dedup:{targetHash}:`
   prefix kept so pattern evictions still work.
-- **Two observations from that review, deliberately NOT changed here (S4
-  governance, need their own look):** (a) `evictWrongSelector` in the worker is
-  the only production use of Redis `KEYS` (O(N), blocks the server) while
-  `runs.ts` already uses cursor `SCAN` for the same eviction — it should move to
-  `SCAN`; (b) the same function deletes SHARED-pool `selector_cache` rows on any
-  single tenant's refusal of a pick (`tenant_id = $2 OR is_shared = true`):
-  conservative against a poisoned shared entry, but it lets one tenant evict
-  what others rely on — a write-path trust question, since a deletion is a write.
+- **Two observations from that review.** (a) **FIXED 2026-11-08
+  (fix/infra/worker-evict-scan):** `evictWrongSelector` in the worker was the
+  only production use of Redis `KEYS` (O(N) over the whole keyspace, blocks the
+  single-threaded server, on a hot path — every refused pick) while `runs.ts`
+  already used cursor `SCAN` for the same eviction. It now uses
+  `deleteKeysByPattern` (`redis-cache.utils.ts`: SCAN, deleting per batch).
+  Proven against the real Redis: 250 matching keys deleted over 20 SCAN rounds
+  in 10ms, `keys +0` in the server's own command stats, and decoy keys for a
+  different step and a different cache untouched. (b) **STILL OPEN — S4
+  governance, needs its own design:** the same function deletes SHARED-pool
+  `selector_cache` rows on any single tenant's refusal of a pick
+  (`tenant_id = $2 OR is_shared = true`): conservative against a poisoned shared
+  entry, but it lets one tenant evict what others rely on — a write-path trust
+  question, since a deletion is a write.
 - New pieces adopted: scope filter INSIDE the pgvector query (+
   `hnsw.iterative_scan`), N-distinct-tenant promotion with provenance
   columns, expected-state predicate (URL pattern + landmark signature) on
