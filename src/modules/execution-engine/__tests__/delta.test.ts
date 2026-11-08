@@ -1,6 +1,7 @@
 import {
   walk, pickDeltaMatch, summariseDelta, isDeltaScoped, captureDelta, captureDeltaBaseline,
-  STATE_CHANGING_ACTIONS, DELTA_CLEARING_ACTIONS, type DeltaElement,
+  STATE_CHANGING_ACTIONS, DELTA_CLEARING_ACTIONS, NOOP_DETECTABLE_ACTIONS,
+  readControlState, actionLeftControlUnchanged, type DeltaElement,
 } from '../delta';
 
 /**
@@ -304,5 +305,85 @@ describe('page capture', () => {
     const page = { evaluate: jest.fn().mockRejectedValue(new Error('Target closed')) };
     await expect(captureDeltaBaseline(page)).resolves.toEqual([]);
     await expect(captureDelta(page, ['a'])).resolves.toEqual([]);
+  });
+});
+
+// Finding #17 — an action that left the control it targeted exactly as it found it
+// did NOTHING, and must not be credited with whatever else the page did while it
+// ran. Found by the stress site's vacuous-clear must-fail guard: "clear a box that
+// is already empty, then assert the list is visible" passed in one round of three,
+// because the page was rendering its own list at that moment and the delta
+// (baseline before the render, diff after) credited the rows to the clear.
+describe('no-op action detection (finding #17)', () => {
+  it('can read back the effect of clear / check / uncheck / select — and deliberately not type', () => {
+    expect([...NOOP_DETECTABLE_ACTIONS].sort()).toEqual(['check', 'clear', 'select', 'uncheck']);
+    // Re-typing identical text still fires `input`, and apps react to it (re-run a
+    // search, re-validate): it can be a no-op on the value and not on the page.
+    expect(NOOP_DETECTABLE_ACTIONS.has('type')).toBe(false);
+    // …and every one of them is an action the delta machinery already tracks.
+    for (const a of NOOP_DETECTABLE_ACTIONS) expect(STATE_CHANGING_ACTIONS.has(a)).toBe(true);
+  });
+
+  describe('actionLeftControlUnchanged', () => {
+    const empty = JSON.stringify({ v: '', c: null, s: null });
+    const filled = JSON.stringify({ v: 'DHL', c: null, s: null });
+
+    it('clear on an already-empty field is a no-op', () => {
+      expect(actionLeftControlUnchanged('clear', empty, empty)).toBe(true);
+    });
+
+    it('clear on a field that HAD text is not — the delta is real evidence', () => {
+      expect(actionLeftControlUnchanged('clear', filled, empty)).toBe(false);
+    });
+
+    it('check on an already-ticked box, and select of the already-selected option, are no-ops', () => {
+      const ticked = JSON.stringify({ v: 'on', c: true, s: null });
+      expect(actionLeftControlUnchanged('check', ticked, ticked)).toBe(true);
+      const sel = JSON.stringify({ v: 'b', c: null, s: 1 });
+      expect(actionLeftControlUnchanged('select', sel, sel)).toBe(true);
+    });
+
+    it('a state that really changed is not a no-op', () => {
+      const off = JSON.stringify({ v: 'on', c: false, s: null });
+      const on = JSON.stringify({ v: 'on', c: true, s: null });
+      expect(actionLeftControlUnchanged('check', off, on)).toBe(false);
+      expect(actionLeftControlUnchanged('uncheck', on, off)).toBe(false);
+    });
+
+    it('UNKNOWN is never "unchanged" — claiming a no-op wrongly would throw real evidence away', () => {
+      expect(actionLeftControlUnchanged('clear', null, empty)).toBe(false);
+      expect(actionLeftControlUnchanged('clear', empty, null)).toBe(false);
+      expect(actionLeftControlUnchanged('clear', null, null)).toBe(false);
+    });
+
+    it('never fires for an action that cannot be read back — a click, or a type', () => {
+      expect(actionLeftControlUnchanged('click', empty, empty)).toBe(false);
+      expect(actionLeftControlUnchanged('type', empty, empty)).toBe(false);
+    });
+  });
+
+  describe('readControlState', () => {
+    it('reads the control through $eval on the resolved selector', async () => {
+      const page = { $eval: jest.fn(async () => '{"v":"","c":null,"s":null}') };
+      await expect(readControlState(page, 'role=textbox[name="Search deliveries"]')).resolves.toBe('{"v":"","c":null,"s":null}');
+      expect(page.$eval).toHaveBeenCalledWith('role=textbox[name="Search deliveries"]', expect.any(Function));
+    });
+
+    it('the in-page reader reports value, checked and selectedIndex', async () => {
+      // Run the actual reader against stubs of the three control shapes.
+      let reader!: (el: Element) => string;
+      const page = { $eval: jest.fn(async (_s: string, fn: (el: Element) => string) => { reader = fn; return 'x'; }) };
+      await readControlState(page, '#c');
+      const read = (el: unknown) => JSON.parse(reader(el as Element));
+      expect(read({ value: 'DHL' })).toEqual({ v: 'DHL', c: null, s: null });           // text input
+      expect(read({ value: 'on', checked: true })).toEqual({ v: 'on', c: true, s: null }); // checkbox
+      expect(read({ value: 'b', selectedIndex: 2 })).toEqual({ v: 'b', c: null, s: 2 });   // <select>
+    });
+
+    it('answers null — not a guess — when the element is missing or the page cannot $eval', async () => {
+      await expect(readControlState({ $eval: jest.fn().mockRejectedValue(new Error('no element')) }, '#gone')).resolves.toBeNull();
+      await expect(readControlState({}, '#x')).resolves.toBeNull();
+      await expect(readControlState(null, '#x')).resolves.toBeNull();
+    });
   });
 });

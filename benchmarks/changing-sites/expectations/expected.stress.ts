@@ -23,8 +23,10 @@ const expected: SiteExpectations = {
         'which is already empty — and then asserts the list is visible. Nothing changes, so the delta ' +
         'oracle correctly refuses it (AssertionNothingChanged): an action that did nothing cannot ' +
         'corroborate an assertion. Until the pruner stall (finding #4) was fixed this case died ' +
-        'StepWatchdogTimeout at step 1 and never reached that honest verdict. It must stay red — and a ' +
-        'run that PASSES it is a FALSE-PASS.',
+        'StepWatchdogTimeout at step 1 and never reached that honest verdict; and until finding #17 ' +
+        'was fixed it PASSED in 1 of the 6 rounds observed: when the page was rendering its own ' +
+        'list at that moment, the delta oracle credited the late rows to the no-op clear, and this ' +
+        'guard is what caught it. It must stay red — and a run that PASSES it is a FALSE-PASS.',
     },
     {
       id: 'stress.refresh.delayed',
