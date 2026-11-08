@@ -1,0 +1,117 @@
+{
+  "note": "Recorded by scripts/playwright-aria-contract.ts --write-golden. Behavior the cached role= selectors were minted under; re-record deliberately, never to make a check pass.",
+  "recordedWith": {
+    "playwright": "1.58.2",
+    "chromium": "145.0.7632.6"
+  },
+  "entries": [
+    {
+      "id": "plain-button",
+      "rawFirstLine": "- button \"Sign in\"",
+      "parsedName": "Sign in",
+      "roleSelectorCount": 1
+    },
+    {
+      "id": "leading-space-link",
+      "rawFirstLine": "- link \"Signup / Login\":",
+      "parsedName": "Signup / Login",
+      "roleSelectorCount": 1
+    },
+    {
+      "id": "inner-newlines-link",
+      "rawFirstLine": "- link \"Pricing page\":",
+      "parsedName": "Pricing page",
+      "roleSelectorCount": 1
+    },
+    {
+      "id": "img-escaped-quotes",
+      "rawFirstLine": "- img \"User avatar \\\"Ada Lovelace\\\"\"",
+      "parsedName": "User avatar \"Ada Lovelace\"",
+      "roleSelectorCount": 1
+    },
+    {
+      "id": "quotes-and-backslash",
+      "rawFirstLine": "- button \"Say \\\"hi\\\" \\\\ there\"",
+      "parsedName": "Say \"hi\" \\ there",
+      "roleSelectorCount": 1
+    },
+    {
+      "id": "aria-label-button",
+      "rawFirstLine": "- button \"Close dialog\": ×",
+      "parsedName": "Close dialog",
+      "roleSelectorCount": 1
+    },
+    {
+      "id": "labelled-textbox",
+      "rawFirstLine": "- textbox \"Email\"",
+      "parsedName": "Email",
+      "roleSelectorCount": 1
+    },
+    {
+      "id": "aria-label-textbox",
+      "rawFirstLine": "- textbox \"Search\"",
+      "parsedName": "Search",
+      "roleSelectorCount": 1
+    },
+    {
+      "id": "placeholder-only-textbox",
+      "rawFirstLine": "- textbox \"Your name\"",
+      "parsedName": "Your name",
+      "roleSelectorCount": 1
+    },
+    {
+      "id": "wrapped-checkbox",
+      "rawFirstLine": "- checkbox \"Remember me\"",
+      "parsedName": "Remember me",
+      "roleSelectorCount": 1
+    },
+    {
+      "id": "css-before-content",
+      "rawFirstLine": "- 'button \"New: Save\"'",
+      "parsedName": null,
+      "roleSelectorCount": null
+    },
+    {
+      "id": "combobox",
+      "rawFirstLine": "- combobox \"Role\":",
+      "parsedName": "Role",
+      "roleSelectorCount": 1
+    },
+    {
+      "id": "div-soup-button",
+      "rawFirstLine": "- button \"Engage reactor\": ⚡",
+      "parsedName": "Engage reactor",
+      "roleSelectorCount": 1
+    },
+    {
+      "id": "icon-only-button",
+      "rawFirstLine": "- button:",
+      "parsedName": null,
+      "roleSelectorCount": null
+    },
+    {
+      "id": "hidden-child-text",
+      "rawFirstLine": "- button \"Buy\"",
+      "parsedName": "Buy",
+      "roleSelectorCount": 1
+    },
+    {
+      "id": "heading",
+      "rawFirstLine": "- heading \"Reactor controls\" [level=2]",
+      "parsedName": "Reactor controls",
+      "roleSelectorCount": 1
+    },
+    {
+      "id": "closed-details-text",
+      "rawFirstLine": "- group: More Secret text",
+      "parsedName": null,
+      "roleSelectorCount": null
+    },
+    {
+      "id": "unassigned-slot-text",
+      "rawFirstLine": "- text: stray light text",
+      "parsedName": null,
+      "roleSelectorCount": null
+    }
+  ]
+}
