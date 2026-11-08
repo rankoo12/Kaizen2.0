@@ -509,3 +509,113 @@ describe('testCasesRoutes - POST /suites/:suiteId/run', () => {
     expect(lookup![1]).toContain('tenant-1');
   });
 });
+
+// ─── Finding #14: behindAuth travels with the case ────────────────────────────
+// Before migration 045 only the Test Writer's proving runs carried behindAuth, so
+// an ordinary run of an authenticated-scope case ran unprotected and a cache-miss
+// LLM resolution could teach the global archetype library a customer's private UI
+// vocabulary. The scope is a property of the case; every enqueue derives from it.
+// Spec: docs/specs/bench/spec-changing-sites.md §12 #14
+
+describe('testCasesRoutes - behindAuth travels with the case (finding #14)', () => {
+  let app: ReturnType<typeof Fastify>;
+  let mockQuery: jest.Mock;
+  let mockAdd: jest.Mock;
+  // The route holds this exact object; captured at registration because
+  // clearAllMocks() wipes createRunQueue's recorded results after the first test.
+  let queueHandle: { add: jest.Mock };
+
+  beforeAll(async () => {
+    app = Fastify();
+    app.decorateRequest('tenantId', '');
+    app.decorateRequest('userId', '');
+    await app.register(testCasesRoutes);
+    const { createRunQueue } = jest.requireMock('../../../queue');
+    const results = (createRunQueue as jest.Mock).mock.results;
+    queueHandle = results[results.length - 1].value;
+  });
+
+  beforeEach(() => {
+    mockQuery = jest.fn();
+    mockAdd = jest.fn();
+    queueHandle.add = mockAdd;
+    (getPool as jest.Mock).mockReturnValue({ query: mockQuery });
+    (withTenantTransaction as jest.Mock).mockImplementation(async (_t, cb) => cb({ query: mockQuery }));
+    (tenantQuery as jest.Mock).mockImplementation(
+      async (_t: string, sql: string, params?: unknown[]) => mockQuery(sql, params),
+    );
+    (tenantPool as jest.Mock).mockImplementation(() => ({ query: mockQuery }));
+    (LearnedCompiler.prototype.compile as jest.Mock).mockImplementation(
+      async (raw: string) => ({ action: 'click', rawText: raw }),
+    );
+    (usageThisMonth as jest.Mock).mockResolvedValue(0);
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  type CaseRow = { id: string; name: string; status: string; authenticated: boolean };
+  function wireDb(cases: CaseRow[]) {
+    let runSeq = 0;
+    mockQuery.mockImplementation(async (sql: string, params?: unknown[]) => {
+      const s = String(sql);
+      if (s.includes('FROM test_suites')) return { rows: [{ id: 'suite-1' }] };
+      if (s.includes('FROM test_cases') && s.includes('suite_id = $1')) return { rows: cases };
+      if (s.includes('FROM test_cases WHERE id = $1')) {
+        const c = cases.find((x) => x.id === params?.[0]);
+        return { rows: c ? [{ id: c.id, suite_id: 'suite-1', base_url: 'http://t', status: c.status, authenticated: c.authenticated }] : [] };
+      }
+      if (s.includes('FROM test_case_steps')) return { rows: [{ id: 'st-1', raw_text: 'click x', compiled_ast: null }] };
+      if (s.includes('llm_budget_tokens_monthly')) return { rows: [{ llm_budget_tokens_monthly: '5000' }] };
+      if (s.includes('INSERT INTO runs')) return { rows: [{ id: `run-${++runSeq}` }] };
+      throw new Error(`unexpected sql: ${s}`);
+    });
+  }
+
+  const payloadFor = (runId: string) => {
+    const call = mockAdd.mock.calls.find(([, p]) => p.runId === runId);
+    expect(call).toBeDefined();
+    return call![1] as { behindAuth?: boolean };
+  };
+
+  it('a single run of an authenticated case enqueues with behindAuth: true', async () => {
+    wireDb([{ id: 'c-admin', name: 'Admin', status: 'active', authenticated: true }]);
+
+    const res = await app.inject({ method: 'POST', url: '/cases/c-admin/run', payload: {} });
+    expect(res.statusCode).toBe(202);
+    expect(payloadFor('run-1').behindAuth).toBe(true);
+  });
+
+  it('a public case enqueues WITHOUT the flag — ordinary behavior is unchanged', async () => {
+    wireDb([{ id: 'c-pub', name: 'Public', status: 'active', authenticated: false }]);
+
+    const res = await app.inject({ method: 'POST', url: '/cases/c-pub/run', payload: {} });
+    expect(res.statusCode).toBe(202);
+    expect(payloadFor('run-1').behindAuth).toBeUndefined();
+  });
+
+  it('a mixed suite run flags exactly the authenticated cases', async () => {
+    wireDb([
+      { id: 'c1', name: 'Public home', status: 'active', authenticated: false },
+      { id: 'c2', name: 'Admin settings', status: 'active', authenticated: true },
+      { id: 'c3', name: 'Public pricing', status: 'active', authenticated: false },
+    ]);
+
+    const res = await app.inject({ method: 'POST', url: '/suites/suite-1/run' });
+    expect(res.statusCode).toBe(202);
+    const byCase = new Map<string, string>(
+      res.json().queued.map((q: { caseId: string; runId: string }) => [q.caseId, q.runId]),
+    );
+    expect(payloadFor(byCase.get('c1')!).behindAuth).toBeUndefined();
+    expect(payloadFor(byCase.get('c2')!).behindAuth).toBe(true);
+    expect(payloadFor(byCase.get('c3')!).behindAuth).toBeUndefined();
+  });
+
+  it('the case lookup actually selects the flag — a dropped column would silently unprotect every run', async () => {
+    wireDb([{ id: 'c-admin', name: 'Admin', status: 'active', authenticated: true }]);
+
+    await app.inject({ method: 'POST', url: '/cases/c-admin/run', payload: {} });
+    const lookup = mockQuery.mock.calls.find(([sql]) => String(sql).includes('FROM test_cases WHERE id = $1'));
+    expect(lookup).toBeDefined();
+    expect(String(lookup![0])).toMatch(/SELECT[^;]*\bauthenticated\b[^;]*FROM test_cases/);
+  });
+});

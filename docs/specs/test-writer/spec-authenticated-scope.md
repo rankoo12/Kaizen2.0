@@ -2,6 +2,7 @@
 
 Created: 2026-08-06
 Updated: 2026-08-17 — §11 expanded from design sketch to implementable spec
+Updated: 2026-11-08 — §4.1 amended: behindAuth travels with the case (migration 045)
 (Mission 1 deliverable 1): build status, the two backend gaps the UI needs, the
 error→copy contract, and the test plan.
 Branch: `feat/test-writer/authenticated-scope` (off main, after P2 merged as #65)
@@ -247,6 +248,16 @@ a `scope='authenticated'` job, and the worker suppresses BOTH
 `sharedPool.contribute` and `archetypeResolver.learn` when it is set. The
 tenant's OWN `selector_cache` writes continue — that is the tenant's own
 memory of its own app, and it is what makes the login prefix free (§6.3).
+
+> **Amended 2026-11-08 (migration 045, bench finding #14):** the flag is a
+> property of the CASE, not of who enqueued the run. As first built, only
+> proving runs carried it, so an ordinary `/cases/:id/run` or `/suites/:id/run`
+> of the same signed-in cases ran unprotected and a cache-miss LLM resolution
+> could have taught the global archetype library a customer's private UI
+> vocabulary. `test_cases.authenticated` is now derived from the generation
+> job's scope inside the case insert, and the case-run enqueue site sends
+> `behindAuth` from it. Existing cases were backfilled from their job's scope
+> (conservatively — a job's whole output is flagged).
 
 **The isolation test must change shape.** Today's guard is a text grep over
 `src/modules/test-writer/**` (safety.test.ts:173-197) and would catch neither
