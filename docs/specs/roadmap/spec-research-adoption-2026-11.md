@@ -7,8 +7,10 @@ Updated: 2026-11-08 (later) — heal-trust merged (PR #106); finding #14
 (behindAuth on the case) shipped early via migration 045 instead of waiting
 for S4 — S4 keeps the prompt-cache scoping review.
 Updated: 2026-11-08 (latest) — S2.1 shipped (model routing + reasoning_effort
-guard + retirement warning, defaults unchanged); the Luna flip is gated on the
-S2.2 A/B. See §S2 status.
+guard + retirement warning, defaults unchanged); real-API smoke A/B done
+(Luna 10/10 = gpt-4o-mini 10/10, JSON mode OK, effort none OK; an overstated
+reasoning-cost claim corrected with measured numbers); the Luna flip is gated
+on the full-bench S2.2 A/B. See §S2 status.
 Status: ACTIVE — this is the decision record for docs/research/2026-11-08.md
 and docs/research/2026-backfill.md. Items not listed under §2 or §3 were read
 and deliberately not adopted.
@@ -64,22 +66,42 @@ $0.50 out per 1M; 1.05M context; `reasoning.effort` none|low|**medium (default)*
 that nothing read; and the Test Writer gateway already honored the tier env — the
 real exposure was the runtime gateway's two HARDCODED `'gpt-4o-mini'` calls.
 
-- **S2.1 (this PR):** every model-calling site routes through `model-tier.ts`
-  (lazy env read); `reasoning_effort` is emitted only for models that accept it
-  (gpt-6-* gets `none` on the mini tier — its default `medium` would bill
-  reasoning tokens on every compile/resolve); billing records the model actually
-  used; both gateways log `llm.model_retiring` at boot while a retiring model is
-  configured. **Defaults deliberately unchanged** (gpt-4o-mini / gpt-4o): the
-  request on the wire is byte-identical to before (verified by capturing raw HTTP
-  bodies for default, Luna, an effort override, and an ignored override).
+- **S2.1 (shipped, PR #108):** every model-calling site routes through
+  `model-tier.ts` (lazy env read); `reasoning_effort` is emitted only for models
+  that accept it (gpt-6-* gets `none` on the mini tier — see the measured note
+  under S2.2 for why); billing records the model actually used; both gateways log
+  `llm.model_retiring` at boot while a retiring model is configured. **Defaults
+  deliberately unchanged** (gpt-4o-mini / gpt-4o): the request on the wire is
+  byte-identical to before (verified by capturing raw HTTP bodies for default,
+  Luna, an effort override, and an ignored override).
 - **S2.2 — the A/B that earns the flip (gated, PAID):** the local inbox answers
   with a weak Claude model regardless of the requested model name, so it can prove
   wire shape but NOT Luna's quality. Validating Luna needs real OpenAI calls on the
-  tenant key — a spend decision, to be bounded and estimated first (Luna's price
-  makes it small). Acceptance: FALSE-PASS stays 0, heal rates and the must-fail
-  probes match the haiku-floor baseline in campaign.jsonl. Open risk to test, not
-  assume: the three call sites use JSON mode (`response_format: json_object`),
-  which Luna's page does not confirm (it lists structured outputs).
+  tenant key. **Cost, measured:** the whole archived request history (3,513 calls,
+  ~9.1M input tokens, every bench since the inbox started) would cost roughly $1–2
+  to replay on Luna — cost is not the constraint, discipline is. Acceptance for the
+  flip: FALSE-PASS stays 0, heal rates and the must-fail probes match the
+  haiku-floor baseline in campaign.jsonl.
+  - **Smoke A/B DONE 2026-11-08 (real API, ~$0.01, same 10 prompts through the real
+    gateway — 7 compileStep incl. the assertion-polarity and count traps + 3
+    resolveElement incl. the 4-inert-decoys reactor and row-context disambiguation):**
+    `gpt-4o-mini` 10/10, `gpt-6-luna` 10/10 (effort `none`), identical tokens
+    (16,068 vs 16,028) and latency (11.7s vs 11.4s). This closed three open
+    questions: the tenant key is live with Luna access; **JSON mode works on Luna**
+    (the risk flagged because its page only lists structured outputs); and
+    `reasoning_effort: "none"` is accepted on Chat Completions.
+  - **Negative control, measured — correcting an assumption:** Luna at its default
+    `medium` effort used 16,244 tokens (+1.3%) and 12.3s (+7%) vs `none`. The
+    adaptive reasoning barely engages on trivial classification, so the earlier
+    claim that `medium` would "bill reasoning tokens on every compile/resolve" was
+    overstated. `none` stays (lowest latency, determinism, and function-calling
+    requires it) but it is NOT a large cost saving. Small sample, easy prompts.
+  - **Still to do before the flip:** the full-bench A/B (nightmare + social + the
+    fleet at `--skip-analyze` against the real API with
+    `KAIZEN_LLM_MODEL_MINI=gpt-6-luna`; the containers must be pointed off the local
+    inbox for it, e.g. via a temporary compose override — do not leave `.env`
+    edited), then flip the defaults in a small evidence-bearing PR. Deadline
+    2027-01-14; no rush, but do not let it drift into January.
 - **S2.3** openai SDK v4.104 → v7 (its `ReasoningEffort` type predates `none`; the
   single cast in `reasoningParamsFor` goes away). **S2.4** cache layout /
   `prompt_cache_key` / cached-token billing. **S2.5** Flex tier for background calls.
