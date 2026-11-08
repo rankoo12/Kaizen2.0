@@ -208,3 +208,76 @@ describe('PlaywrightDOMPruner', () => {
     expect(result[0].name).toBe('Legacy Playwright');
   });
 });
+
+// The accessible-name refinement is best-effort, so it must be BOUNDED. Bench
+// `stress` (finding #4): the page rebuilds its list in chunks, erasing the
+// data-kaizen-id stamps the pruner had just written; each stale locator then
+// waited Playwright's 30s default, one after another, so "Search deliveries"
+// type/clear died StepWatchdogTimeout on the UNCHANGED site, every round, with no
+// heal event. Found by tracing with DEBUG=pw:api: consecutive ariaSnapshot waits
+// exactly 30.0s apart.
+describe('PlaywrightDOMPruner — bounded accessible-name refinement', () => {
+  const raw = (i: number) => ({
+    kaizenId: `kz-${i}`, role: 'listitem', accessibleName: `computed ${i}`, attributes: {},
+    textContent: `row ${i}`, tagName: 'li', parentContext: '', centerPoint: { x: 0, y: 0 },
+  });
+
+  /** A page whose candidates behave per kaizenId: 'ok' answers, 'stale' rejects like a timed-out locator. */
+  function pageWith(behaviour: Array<'ok' | 'stale'>) {
+    const calls: Array<{ kz: string; opts: unknown }> = [];
+    const page = {
+      waitForLoadState: jest.fn().mockResolvedValue(undefined),
+      evaluate: jest.fn().mockResolvedValue(behaviour.map((_, i) => raw(i + 1))),
+      locator: jest.fn().mockImplementation((selector: string) => {
+        const m = /data-kaizen-id='([^']+)'/.exec(selector);
+        // The pruner first probes locator('body') for ariaSnapshot support.
+        if (!m) return { count: jest.fn().mockResolvedValue(0), ariaSnapshot: jest.fn() };
+        const kz = m[1];
+        const idx = Number(kz.replace('kz-', '')) - 1;
+        return {
+          count: jest.fn().mockResolvedValue(0),
+          ariaSnapshot: jest.fn(async (opts?: unknown) => {
+            calls.push({ kz, opts });
+            if (behaviour[idx] === 'stale') throw new Error('locator.ariaSnapshot: Timeout 1500ms exceeded.');
+            return `- listitem "refined ${idx + 1}"`;
+          }),
+        };
+      }),
+    };
+    return { page, calls };
+  }
+
+  it('gives EVERY snapshot call a short explicit timeout — never Playwright\'s 30s default', async () => {
+    const { page, calls } = pageWith(['ok', 'ok', 'ok']);
+    await new PlaywrightDOMPruner().prune(page, 'x');
+    expect(calls).toHaveLength(3);
+    for (const c of calls) expect(c.opts).toEqual({ timeout: 1500 });
+  });
+
+  it('stops after three stale candidates IN A ROW — a page rebuilding under us will not answer the rest either', async () => {
+    const { page, calls } = pageWith(['stale', 'stale', 'stale', 'stale', 'stale', 'stale']);
+    const result = await new PlaywrightDOMPruner().prune(page, 'x');
+
+    expect(calls.map((c) => c.kz)).toEqual(['kz-1', 'kz-2', 'kz-3']); // not six — and not 30s each
+    // The candidates are still all returned, keeping the name evaluate() computed.
+    expect(result.map((c) => c.name)).toEqual(
+      ['computed 1', 'computed 2', 'computed 3', 'computed 4', 'computed 5', 'computed 6'],
+    );
+  });
+
+  it('a successful refinement resets the streak — isolated stale ids do not end the pass', async () => {
+    //                 stale  stale  ok     stale  stale  stale  (stop)  (stop)
+    const { page, calls } = pageWith(['stale', 'stale', 'ok', 'stale', 'stale', 'stale', 'ok', 'ok']);
+    const result = await new PlaywrightDOMPruner().prune(page, 'x');
+
+    expect(calls.map((c) => c.kz)).toEqual(['kz-1', 'kz-2', 'kz-3', 'kz-4', 'kz-5', 'kz-6']);
+    expect(result[2].name).toBe('refined 3');   // the one that answered IS refined
+    expect(result[6].name).toBe('computed 7');  // never reached after the third miss in a row
+  });
+
+  it('refines everything when nothing is stale — the happy path is unchanged', async () => {
+    const { page } = pageWith(['ok', 'ok', 'ok', 'ok']);
+    const result = await new PlaywrightDOMPruner().prune(page, 'x');
+    expect(result.map((c) => c.name)).toEqual(['refined 1', 'refined 2', 'refined 3', 'refined 4']);
+  });
+});

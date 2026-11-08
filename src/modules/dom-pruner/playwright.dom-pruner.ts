@@ -20,6 +20,11 @@ import type { CandidateNode, SelectorEntry } from '../../types';
  * uses it to map its choice back to a physical element) but is NEVER the
  * primary selector stored in cache or used by the execution engine.
  */
+/** Per-candidate budget for the best-effort accessible-name refinement (see prune()). */
+const SNAPSHOT_TIMEOUT_MS = 1_500;
+/** Stop refining after this many stale candidates in a row — the page is rebuilding. */
+const MAX_CONSECUTIVE_SNAPSHOT_MISSES = 3;
+
 export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
   /**
    * RECON survey mode — the whole interactive surface of the page, capped.
@@ -427,17 +432,37 @@ export class PlaywrightDOMPruner implements IDOMPruner, IPageSurveyor {
       } catch { return false; }
     })();
 
+    //
+    // BOUNDED, because this refinement is best-effort and was not. The ids it
+    // reads were stamped moments ago by the evaluate() above, and a page that
+    // re-renders (a list rebuilt in chunks, a framework re-mount) erases them: the
+    // locator then waits Playwright's 30s default for an element that no longer
+    // exists, and the candidates are patched one after another — three stale rows
+    // were 60+ seconds, i.e. the step watchdog, with no heal event and no
+    // diagnostic (bench `stress`, finding #4: "Search deliveries" type/clear died
+    // `StepWatchdogTimeout` on the UNCHANGED site, every round, until traced with
+    // DEBUG=pw:api and a 30.0s gap between consecutive waits showed it).
+    // A live element answers in milliseconds, so a short timeout loses nothing;
+    // and three misses in a ROW mean the page is rebuilding under us, so the rest
+    // would only stall too — they keep the name evaluate() computed.
     if (supportsAriaSnapshot) {
+      let consecutiveMisses = 0;
       for (const raw of rawCandidates) {
+        if (consecutiveMisses >= MAX_CONSECUTIVE_SNAPSHOT_MISSES) break;
+        let snapshot: string;
         try {
-          const snapshot: string = await pwPage
+          snapshot = await pwPage
             .locator(`[data-kaizen-id='${raw.kaizenId}']`)
-            .ariaSnapshot();
-          const parsed = parseAriaSnapshotName(snapshot);
-          if (parsed !== null) {
-            raw.accessibleName = parsed;
-          }
-        } catch { /* keep the evaluate()-computed name as fallback */ }
+            .ariaSnapshot({ timeout: SNAPSHOT_TIMEOUT_MS });
+        } catch {
+          consecutiveMisses++; // stale or detached — keep the evaluate()-computed name
+          continue;
+        }
+        consecutiveMisses = 0;
+        const parsed = parseAriaSnapshotName(snapshot);
+        if (parsed !== null) {
+          raw.accessibleName = parsed;
+        }
       }
     }
 
