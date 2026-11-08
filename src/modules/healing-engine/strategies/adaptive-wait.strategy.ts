@@ -32,6 +32,12 @@ export class AdaptiveWaitStrategy implements IHealingStrategy {
   readonly name = 'AdaptiveWaitStrategy';
 
   canHandle(failure: ClassifiedFailure): boolean {
+    // Nothing resolved (NoSelectorsError) leaves no selector to wait FOR: the
+    // poll below would probe '' — which Playwright rejects — and swallow that
+    // as "not there yet" until the whole budget is gone, a blind sleep of up to
+    // ~40s that starved the one strategy able to act (ResolveAndRetry, which
+    // polls the DOM for the target itself). Measured on the nightmare site.
+    if (failure.previousSelector.trim() === '') return false;
     return failure.failureClass === 'TIMING' || failure.failureClass === 'PAGE_NOT_LOADED';
   }
 
