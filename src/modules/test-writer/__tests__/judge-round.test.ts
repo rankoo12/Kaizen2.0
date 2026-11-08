@@ -113,4 +113,68 @@ describe('judgeWithRepair', () => {
     expect(out.survivors).toEqual([weak]);            // original REVISE falls back
     expect(out.rejected).toEqual([]);
   });
+
+  // S3 — assertion-weakening guard. Repair agents "converge" partly by deleting or
+  // weakening assertions (arXiv 2605.01471): a rewrite that asserts less than the
+  // original has not fixed the test, it has made it easier to pass.
+  describe('assertion-weakening guard', () => {
+    const EL = '11111111-1111-4111-8111-111111111111';
+    const click = { action: 'click', target: { kind: 'element', elementId: EL } } as const;
+    const withIntents = (w: WrittenScenario, intents: unknown[]): WrittenScenario =>
+      ({ ...w, intents: intents as WrittenScenario['intents'] });
+    const strongText = { action: 'assert_text', value: 'Order confirmed' };
+    const visible = { action: 'assert_visible', target: { kind: 'element', elementId: EL } };
+
+    beforeEach(() => jest.clearAllMocks());
+
+    it('blocks a rewrite that DILUTES the oracle; a REVISE falls back to its original and the re-judge never sees it', async () => {
+      const original = withIntents(scenario('Checkout', ['click pay', 'verify the text "Order confirmed" is shown']), [click, strongText]);
+      const judge = jest.fn().mockResolvedValueOnce([verdict('Checkout', 'REVISE', 'asserts a volatile id')]);
+      // The "fix": swap the text check for a visibility check — easier to pass, proves less.
+      const rewrite = jest.fn(async (w: WrittenScenario): Promise<WriteOutcome> =>
+        ({ ok: true, scenario: withIntents(scenario(w.plan.name, ['click pay', 'verify the banner is visible']), [click, visible]) }));
+
+      const out = await judgeWithRepair([original], { judge, rewrite, obs });
+
+      expect(rewrite).toHaveBeenCalledTimes(1);
+      expect(judge).toHaveBeenCalledTimes(1);               // nothing was left to re-judge
+      expect(out.survivors).toEqual([original]);            // REVISE keeps the ORIGINAL
+      expect(out.repaired).toBe(0);
+      expect(obs.increment).toHaveBeenCalledWith('testwriter.judge_repair_weakened', { verdict: 'REVISE' });
+    });
+
+    it('blocks a rewrite that DELETES an assertion; a REJECT stays rejected, with the blocked attempt on the report', async () => {
+      const original = withIntents(scenario('Checkout', ['click pay', 'verify heading', 'verify the text "Order confirmed" is shown']), [click, visible, strongText]);
+      const judge = jest.fn().mockResolvedValueOnce([verdict('Checkout', 'REJECT', 'redundant assertion')]);
+      const rewrite = jest.fn(async (w: WrittenScenario): Promise<WriteOutcome> =>
+        ({ ok: true, scenario: withIntents(scenario(w.plan.name, ['click pay', 'verify the text "Order confirmed" is shown']), [click, strongText]) }));
+
+      const out = await judgeWithRepair([original], { judge, rewrite, obs });
+
+      expect(judge).toHaveBeenCalledTimes(1);
+      expect(out.survivors).toEqual([]);
+      expect(out.rejected).toEqual([{
+        name: 'Checkout', stage: 'judge',
+        reason: expect.stringContaining('rewrite blocked — the rewrite has fewer assertions than the original'),
+        steps: ['click pay', 'verify the text "Order confirmed" is shown'], // what was tried, readable
+      }]);
+      expect(obs.increment).toHaveBeenCalledWith('testwriter.judge_repair_weakened', { verdict: 'REJECT' });
+    });
+
+    it('lets a rewrite through when it asserts the same or more', async () => {
+      const original = withIntents(scenario('Sort listing', ['select "Price"', 'verify the banner is visible']), [click, visible]);
+      const judge = jest.fn()
+        .mockResolvedValueOnce([verdict('Sort listing', 'REVISE', 'visibility only')])
+        .mockResolvedValueOnce([verdict('Sort listing', 'PROPOSE')]);
+      const stronger = withIntents(scenario('Sort listing', ['select "Price"', 'verify the first item is "Cheapest"']), [click, { action: 'assert_text', value: 'Cheapest' }]);
+      const rewrite = jest.fn(async (): Promise<WriteOutcome> => ({ ok: true, scenario: stronger }));
+
+      const out = await judgeWithRepair([original], { judge, rewrite, obs });
+
+      expect(judge).toHaveBeenCalledTimes(2);
+      expect(out.survivors).toEqual([stronger]);
+      expect(out.repaired).toBe(1);
+      expect(obs.increment).not.toHaveBeenCalledWith('testwriter.judge_repair_weakened', expect.anything());
+    });
+  });
 });

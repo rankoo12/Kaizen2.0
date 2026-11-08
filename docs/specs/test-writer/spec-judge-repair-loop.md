@@ -2,6 +2,7 @@
 
 **Created:** 2026-08-17
 **Updated:** 2026-08-17 — judge tier finding recorded in §2.1; §2.2/§2.3 built (second PR), REVISE fallback rule added
+**Updated:** 2026-11-08 — §2.2 step 3a: the assertion-weakening guard (a rewrite may not assert less than its original)
 **Status:** Built (both PRs)
 **Owner:** test-writer
 **Amends:** `spec-generation-pipeline.md` §4 (gate stack), `spec-testwriter-ux.md` (rejection list)
@@ -122,6 +123,17 @@ In `runGenerationPhases`, after the first judge call:
 3. Rewritten scenarios go through the same schema/safety/render gates (they are new intents),
    then are **re-judged in one batched call**. PROPOSE → survivors; anything else → rejected
    with stage `judge` and both reasons on the report (`reason: "after one rewrite: …"`).
+3a. **Assertion-weakening guard (added 2026-11-08, `write/oracle-strength.ts`).** Before a
+   rewrite reaches the re-judge, its assertions are compared with the original's. A rewrite with
+   FEWER assertions, or a lower total strength (strong = text/count/attribute value, moderate =
+   URL/title/absence, weak = boolean-only visible/enabled/checked), is **blocked**: a REVISE
+   falls back to its original and a REJECT stays rejected with the blocked attempt's steps on
+   the report (`reason: "rewrite blocked — …"`; metric `testwriter.judge_repair_weakened`).
+   Why: repair agents "converge" partly by deleting or weakening assertions (arXiv 2605.01471),
+   and a judge that reads "the weak oracle is gone" as a fix has rewarded exactly that.
+   Deliberately conservative — a rewrite that merely deletes a WRONG assertion is blocked too,
+   and the fallback is what happened before repairs existed. Swapping a flagged assertion for
+   an equally strong one is allowed. A scenario whose original asserted nothing is unguarded.
 4. Dedup is not re-run (rewrites keep their action set by construction; only the oracle moves).
 5. **Fallback rule (as built):** a REVISE whose rewrite does not reach PROPOSE (or fails a
    gate) keeps its ORIGINAL — proposed with findings, exactly as REVISE always was, so the loop

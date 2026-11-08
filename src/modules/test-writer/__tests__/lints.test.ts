@@ -38,6 +38,61 @@ describe('lintScenario — delta assertion (the pre-state test)', () => {
   });
 });
 
+// S3 — a happy path that ACTS and then asserts only boolean-only things proves an
+// element exists, not that the action produced the right value (arXiv 2606.18168).
+// Scoped so it does not condemn the two shapes the rules above sanction: a
+// navigation-only test and a negative that asserts the rejection is visible.
+describe('lintScenario — oracle strength', () => {
+  const FLAG = 'boolean-only';
+
+  it('flags a positive scenario that acts and asserts only visibility', () => {
+    const steps: StepIntent[] = [
+      { action: 'navigate', url: 'https://shop.test/' },
+      { action: 'click', target: el },
+      { action: 'assert_visible', target: el },
+    ];
+    expect(lintScenario(steps, 'positive').join(' ')).toContain(FLAG);
+  });
+
+  it('flags it when several assertions are ALL boolean-only', () => {
+    const steps: StepIntent[] = [
+      { action: 'click', target: el },
+      { action: 'assert_visible', target: el },
+      { action: 'assert_enabled', target: el },
+    ];
+    expect(lintScenario(steps, 'positive').join(' ')).toContain(FLAG);
+  });
+
+  it('does not flag a test with ONE value-bearing assertion, however many weak ones surround it', () => {
+    const steps: StepIntent[] = [
+      { action: 'click', target: el },
+      { action: 'assert_visible', target: el },
+      { action: 'assert_text', value: 'Order confirmed' },
+    ];
+    expect(lintScenario(steps, 'positive').join(' ')).not.toContain(FLAG);
+  });
+
+  it('a URL assertion is not boolean-only — it is moderate, and not flagged', () => {
+    const steps: StepIntent[] = [{ action: 'click', target: el }, { action: 'assert_url', value: '/cart' }];
+    expect(lintScenario(steps, 'positive').join(' ')).not.toContain(FLAG);
+  });
+
+  it('leaves the sanctioned shapes alone: navigation-only, and a negative ending on the visible rejection', () => {
+    const navOnly: StepIntent[] = [
+      { action: 'navigate', url: 'https://shop.test/nope' },
+      { action: 'assert_visible', target: { kind: 'description', description: 'the not-found message' } },
+    ];
+    expect(lintScenario(navOnly, 'positive').join(' ')).not.toContain(FLAG);
+
+    const negative: StepIntent[] = [
+      { action: 'type', target: el, value: 'bad' },
+      { action: 'click', target: el },
+      { action: 'assert_visible', target: el },
+    ];
+    expect(lintScenario(negative, 'negative').join(' ')).not.toContain(FLAG);
+  });
+});
+
 describe('lintScenario — negative shape', () => {
   it('flags a negative that ends on an absence assertion', () => {
     const steps: StepIntent[] = [
