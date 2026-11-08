@@ -7,7 +7,7 @@ import { tenantQuery } from '../../db/transaction';
 import { toVectorSQL } from '../../utils/vector';
 import { invalidateRedisCache } from './redis-cache.utils';
 import { semanticGuardPasses } from './cache-semantic-guard';
-import { findFrameByUrl, framesOf } from '../../utils/frame-url';
+import { findFrameForSelector, framesOf } from '../../utils/frame-url';
 
 /**
  * Spec ref: Section 8 — Element Resolution & Caching (Levels 1–4)
@@ -247,11 +247,11 @@ export class CachedElementResolver implements IElementResolver {
       return false;
     };
 
+    const selector = row.selectors[0]?.selector;
     const frames = framesOf<{ url?: () => string; locator?: (s: string) => { count: () => Promise<number> } }>(context.page);
-    const frame = findFrameByUrl(frames, row.frameUrl);
+    const frame = await findFrameForSelector(frames, row.frameUrl, selector);
     if (!frame?.locator) return reject('frame_absent');
 
-    const selector = row.selectors[0]?.selector;
     if (!selector) return reject('no_selector');
 
     try {

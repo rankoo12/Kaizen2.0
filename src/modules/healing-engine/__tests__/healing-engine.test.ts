@@ -63,6 +63,29 @@ describe('HealingEngine', () => {
     expect(Object.prototype.hasOwnProperty.call(await without.heal(makeFailure(), makeContext()), 'deferredPersist')).toBe(false);
   });
 
+  it('passes the frame a strategy found its element in through to the worker — and does not invent one', async () => {
+    // A heal that located an element in a child frame but lost WHICH frame on the way
+    // would be re-executed against the main document and fail "honestly" forever.
+    const inFrame = new HealingEngine(
+      [makeStrategy('S1', true, { succeeded: true, newSelector: '#new', durationMs: 1, frameUrl: 'about:srcdoc' })],
+      mockObs as any,
+    );
+    expect((await inFrame.heal(makeFailure(), makeContext())).frameUrl).toBe('about:srcdoc');
+
+    // null is a statement ("the main document"), not an absence — it must survive too.
+    const mainDoc = new HealingEngine(
+      [makeStrategy('S1', true, { succeeded: true, newSelector: '#new', durationMs: 1, frameUrl: null })],
+      mockObs as any,
+    );
+    expect((await mainDoc.heal(makeFailure(), makeContext())).frameUrl).toBeNull();
+
+    const silent = new HealingEngine(
+      [makeStrategy('S1', true, { succeeded: true, newSelector: '#new', durationMs: 1 })],
+      mockObs as any,
+    );
+    expect(Object.prototype.hasOwnProperty.call(await silent.heal(makeFailure(), makeContext()), 'frameUrl')).toBe(false);
+  });
+
   it('skips strategies where canHandle returns false', async () => {
     const s1 = makeStrategy('S1', false, { succeeded: true, newSelector: '#x', durationMs: 1 });
     const s2 = makeStrategy('S2', true, { succeeded: true, newSelector: '#y', durationMs: 1 });

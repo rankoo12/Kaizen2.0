@@ -433,6 +433,109 @@ describe('ResolveAndRetryStrategy', () => {
       expect(corroborationOf()).toBe('name');
     });
 
+    // ── Picks inside a child frame ─────────────────────────────────────────────
+    // Traced live on the nightmare nested-iframe form: the model picked the right
+    // field (three selectors) and every one was discarded, because the probe was
+    // page.$ — which searches the MAIN document and answers null for a frame's
+    // element. The heal also never told the worker which frame to act in.
+    describe('a pick inside a child frame', () => {
+      const frameCandidate = (name: string, css: string, frameUrl: string, kaizenId: string) => ({
+        ...candidate(name, css), kaizenId, frameUrl,
+      });
+      const frameOf = (url: string, found: string[]) => ({
+        url: () => url,
+        locator: (sel: string) => ({ count: async () => (found.includes(sel) ? 1 : 0) }),
+        $: jest.fn(async (sel: string) => (found.includes(sel) ? {} : null)),
+      });
+      const pickOf = (kaizenId: string, selector: string) => ({
+        selectors: [{ selector, strategy: 'css', confidence: 0.9 }],
+        llmPickedKaizenId: kaizenId,
+      });
+
+      it('is adopted by probing INSIDE its frame, which is reported back — and is never cached', async () => {
+        const field = frameCandidate('Void email', '#void-email', 'about:srcdoc', 'f3-kz-1');
+        const pruner = { prune: jest.fn(async () => [field]) };
+        const llm = { resolveElement: jest.fn(async () => pickOf('f3-kz-1', '#void-email')), generateEmbedding: embed };
+        const inner = frameOf('about:srcdoc', ['#void-email']);
+        // The main document cannot see the element: page.$ would answer null.
+        const page = { $: jest.fn(async () => null), frames: () => [inner] };
+        const s = new ResolveAndRetryStrategy(pruner as any, llm as any, makeRedis() as any, obs as any);
+
+        const result = await s.heal(gatedFailure('the "Void email" field'), { ...makeContext(page), domain: 'site-x' } as any);
+        await flush();
+
+        expect(result.succeeded).toBe(true);
+        expect(result.newSelector).toBe('#void-email');
+        expect(result.frameUrl).toBe('about:srcdoc'); // the worker acts THERE
+        expect(page.$).not.toHaveBeenCalled(); // never probed the wrong document
+        expect(inner.$).toHaveBeenCalledWith('#void-email');
+        expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_frame_pick', { tenantId: 't1' });
+        expect(tenantQuery).not.toHaveBeenCalled(); // a frame-less cache row would miss next run
+      });
+
+      it('finds the right frame among several that share a url', async () => {
+        const field = frameCandidate('Void email', '#void-email', 'about:srcdoc', 'f3-kz-1');
+        const pruner = { prune: jest.fn(async () => [field]) };
+        const llm = { resolveElement: jest.fn(async () => pickOf('f3-kz-1', '#void-email')), generateEmbedding: embed };
+        const outer = frameOf('about:srcdoc', []);
+        const inner = frameOf('about:srcdoc', ['#void-email']);
+        const page = { $: jest.fn(async () => null), frames: () => [outer, inner] };
+        const s = new ResolveAndRetryStrategy(pruner as any, llm as any, makeRedis() as any, obs as any);
+
+        const result = await s.heal(gatedFailure('the "Void email" field'), { ...makeContext(page), domain: 'site-x' } as any);
+
+        expect(result.succeeded).toBe(true);
+        expect(inner.$).toHaveBeenCalledWith('#void-email');
+        expect(outer.$).not.toHaveBeenCalled();
+      });
+
+      it('a frame pick that fails the name gate is a last resort with NOTHING deferred', async () => {
+        const wrong = frameCandidate('Unrelated widget', '#other', 'about:srcdoc', 'f3-kz-2');
+        const pruner = { prune: jest.fn(async () => [wrong]) };
+        const llm = { resolveElement: jest.fn(async () => pickOf('f3-kz-2', '#other')), generateEmbedding: embed };
+        const page = { $: jest.fn(async () => null), frames: () => [frameOf('about:srcdoc', ['#other'])] };
+        const s = new ResolveAndRetryStrategy(pruner as any, llm as any, makeRedis() as any, obs as any);
+
+        const result = await s.heal(gatedFailure('the "Void email" field'), { ...makeContext(page), domain: 'site-x' } as any);
+
+        expect(result.succeeded).toBe(true); // heals the run; the downstream assert is the net
+        expect(result.frameUrl).toBe('about:srcdoc');
+        expect(result.deferredPersist).toBeUndefined(); // a frame pick is never cached, so nothing to commit later
+      });
+
+      it("scores the name gate against the PICKED candidate, not the main document's first", async () => {
+        // The first candidate is a main-document control whose name agrees with the
+        // target; the model picked an unrelated control in a frame. Scoring
+        // candidates[0] would have called the pick name-true.
+        const first = candidate('Void email', '#decoy-main');
+        const picked = frameCandidate('Unrelated widget', '#other', 'about:srcdoc', 'f3-kz-2');
+        const pruner = { prune: jest.fn(async () => [first, picked]) };
+        const llm = { resolveElement: jest.fn(async () => pickOf('f3-kz-2', '#other')), generateEmbedding: embed };
+        const page = { $: jest.fn(async () => null), frames: () => [frameOf('about:srcdoc', ['#other'])] };
+        const s = new ResolveAndRetryStrategy(pruner as any, llm as any, makeRedis() as any, obs as any);
+
+        await s.heal(gatedFailure('the "Void email" field'), { ...makeContext(page), domain: 'site-x' } as any);
+
+        expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_name_absent', { tenantId: 't1' });
+        expect(obs.increment).not.toHaveBeenCalledWith('healing.resolve_retry_success', { tenantId: 't1' });
+      });
+
+      it('a main-document pick reports the main document (null), so a stale frame target is cleared', async () => {
+        const good = candidate('Accept all cookies', '#accept');
+        const pruner = { prune: jest.fn(async () => [good]) };
+        const llm = { resolveElement: jest.fn(async () => ({ selectors: [{ selector: '#accept', strategy: 'css', confidence: 0.9 }], llmPickedKaizenId: null })), generateEmbedding: embed };
+        const page = { $: jest.fn(async () => ({})) };
+        const s = new ResolveAndRetryStrategy(pruner as any, llm as any, makeRedis() as any, obs as any);
+
+        const result = await s.heal(gatedFailure('the "Accept all" banner button'), { ...makeContext(page), domain: 'site-x' } as any);
+        await flush();
+
+        expect(result.succeeded).toBe(true);
+        expect(result.frameUrl).toBeNull();
+        expect(tenantQuery).toHaveBeenCalledTimes(1); // main-document heals still learn, as before
+      });
+    });
+
     it('stops retrying when the watchdog deadline leaves no room', async () => {
       const pruner = { prune: jest.fn(async () => []) };
       const s = new ResolveAndRetryStrategy(pruner as any, {} as any, makeRedis() as any, obs as any);

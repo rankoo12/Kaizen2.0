@@ -10,7 +10,7 @@ import { appendOutcome, computeConfidence } from './confidence';
 import { toVectorSQL } from '../../utils/vector';
 import { filterCandidatesByAction } from './action-role-filter';
 import { invalidateRedisCache, isTransient } from './redis-cache.utils';
-import { canonicalFrameUrl, findFrameByUrl, framesOf } from '../../utils/frame-url';
+import { canonicalFrameUrl, findFrameForSelector, framesOf } from '../../utils/frame-url';
 
 /**
  * Converts a CandidateNode into a compact semantic string for element_embedding.
@@ -598,10 +598,12 @@ export class LLMElementResolver implements IElementResolver {
   ): Promise<SelectorSet | null> {
     try {
       const frames = framesOf<FrameContext>(context.page);
-      const frame = cand.frameUrl ? findFrameByUrl(frames, cand.frameUrl) : null;
+      const kzSelector = cand.kaizenId ? `[data-kaizen-id='${cand.kaizenId}']` : null;
+      // The kaizen id carries a per-frame prefix, so it tells apart frames that
+      // share a URL (nested about:srcdoc widgets) where the URL alone cannot.
+      const frame = cand.frameUrl ? await findFrameForSelector(frames, cand.frameUrl, kzSelector) : null;
       if (!frame || !frame.locator) return null;
 
-      const kzSelector = cand.kaizenId ? `[data-kaizen-id='${cand.kaizenId}']` : null;
       const kz: SelectorEntry[] = kzSelector
         ? [{ selector: kzSelector, strategy: 'css', confidence: 0.5 }]
         : [];

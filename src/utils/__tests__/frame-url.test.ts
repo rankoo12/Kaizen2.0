@@ -1,4 +1,4 @@
-import { canonicalFrameUrl, findFrameByUrl, framesOf } from '../frame-url';
+import { canonicalFrameUrl, findFrameByUrl, findFrameForSelector, frameAfterHeal, framesMatchingUrl, framesOf } from '../frame-url';
 
 /**
  * Spec: docs/specs/reliability/spec-iframe-selector-caching.md §2
@@ -96,5 +96,92 @@ describe('framesOf', () => {
     expect(framesOf({})).toEqual([]);
     expect(framesOf(null)).toEqual([]);
     expect(framesOf({ frames: () => { throw new Error('closed'); } })).toEqual([]);
+  });
+});
+
+// Nested about:srcdoc widgets share ONE url, so the url says nothing about WHICH
+// frame. findFrameByUrl returned the first (the outermost), and a step acted in a
+// frame that did not contain its element. Seen live: the nightmare subscribe form,
+// three srcdoc hops deep.
+describe('framesMatchingUrl', () => {
+  const frame = (url: string) => ({ url: () => url });
+
+  it('returns every frame that shares the url', () => {
+    const a = frame('about:srcdoc');
+    const b = frame('about:srcdoc');
+    const other = frame('https://example.com/');
+    expect(framesMatchingUrl([a, other, b], 'about:srcdoc')).toEqual([a, b]);
+  });
+
+  it('prefers exact matches and only then falls back to canonical ones', () => {
+    const live = frame('https://cdn.example.com/x.html?s=1');
+    const sibling = frame('https://cdn.example.com/x.html?s=2');
+    expect(framesMatchingUrl([sibling, live], live.url())).toEqual([live]);
+    expect(framesMatchingUrl([sibling, live], 'https://cdn.example.com/x.html')).toEqual([sibling, live]);
+  });
+});
+
+describe('findFrameForSelector', () => {
+  const frame = (url: string, matches: Record<string, number> = {}) => ({
+    url: () => url,
+    locator: jest.fn((selector: string) => ({ count: async () => matches[selector] ?? 0 })),
+  });
+
+  it('tells apart frames that share a url by which one the selector matches in', async () => {
+    const outer = frame('about:srcdoc');
+    const mid = frame('about:srcdoc');
+    const inner = frame('about:srcdoc', { '#void-email': 1 });
+    expect(await findFrameForSelector([outer, mid, inner], 'about:srcdoc', '#void-email')).toBe(inner);
+  });
+
+  it('answers the first frame when none of the same-url frames matches (nothing that worked changes)', async () => {
+    const a = frame('about:srcdoc');
+    const b = frame('about:srcdoc');
+    expect(await findFrameForSelector([a, b], 'about:srcdoc', '#nope')).toBe(a);
+  });
+
+  it('does not probe at all when exactly one frame matches — byte-identical to findFrameByUrl', async () => {
+    const only = frame('https://cdn.example.com/index.html');
+    const result = await findFrameForSelector([only, frame('https://other.example/')], 'https://cdn.example.com/index.html', '#x');
+    expect(result).toBe(only);
+    expect(only.locator).not.toHaveBeenCalled();
+  });
+
+  it('answers null when no frame matches the url', async () => {
+    expect(await findFrameForSelector([frame('https://example.com/')], 'about:srcdoc', '#x')).toBeNull();
+  });
+
+  it('takes the first match when there is no selector to tell them apart', async () => {
+    const a = frame('about:srcdoc');
+    const b = frame('about:srcdoc');
+    expect(await findFrameForSelector([a, b], 'about:srcdoc', undefined)).toBe(a);
+  });
+
+  it('survives a frame that detaches or cannot parse the selector mid-probe', async () => {
+    const broken = { url: () => 'about:srcdoc', locator: () => { throw new Error('Frame was detached'); } };
+    const good = frame('about:srcdoc', { '#x': 1 });
+    expect(await findFrameForSelector([broken, good], 'about:srcdoc', '#x')).toBe(good);
+  });
+
+  it('tolerates frames that cannot count (a mock with only a url)', async () => {
+    const a = { url: () => 'about:srcdoc' };
+    const b = { url: () => 'about:srcdoc' };
+    expect(await findFrameForSelector([a, b], 'about:srcdoc', '#x')).toBe(a);
+  });
+});
+
+describe('frameAfterHeal', () => {
+  it('keeps the step\'s own frame when the heal re-tried its selector (nothing reported)', () => {
+    expect(frameAfterHeal('https://cdn.example.com/consent.html', undefined)).toBe('https://cdn.example.com/consent.html');
+    expect(frameAfterHeal(undefined, undefined)).toBeUndefined();
+  });
+
+  it('moves the action into the frame the heal found the element in', () => {
+    expect(frameAfterHeal(undefined, 'about:srcdoc')).toBe('about:srcdoc');
+    expect(frameAfterHeal('https://old.example/f', 'https://new.example/f')).toBe('https://new.example/f');
+  });
+
+  it('clears a stale frame when the heal found a main-document element (null)', () => {
+    expect(frameAfterHeal('https://cdn.example.com/consent.html', null)).toBeUndefined();
   });
 });

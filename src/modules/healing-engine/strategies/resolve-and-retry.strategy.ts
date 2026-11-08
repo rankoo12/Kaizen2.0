@@ -7,12 +7,16 @@ import { tenantQuery } from '../../../db/transaction';
 import { toVectorSQL } from '../../../utils/vector';
 import { serializeCandidateForEmbedding } from '../../element-resolver/llm.element-resolver';
 import { nameAbsent, nameOverlaps, quotedName } from '../../element-resolver/name-fidelity';
+import { findFrameForSelector, framesOf, type CountableFrame } from '../../../utils/frame-url';
 import type { Redis } from 'ioredis';
 
 type PageLike = {
   $(selector: string): Promise<unknown | null>;
   url?(): string;
+  frames?(): unknown[];
 };
+
+type ProbeFrame = CountableFrame & { $?: (selector: string) => Promise<unknown | null> };
 
 type PersistCandidates = Array<{
   role: string; name: string; cssSelector: string; xpath: string;
@@ -127,6 +131,7 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
         partial: boolean;
         sel: { selector: string; strategy: string; confidence?: number };
         candidates: PersistCandidates;
+        frameUrl: string | null;
       } | null = null;
 
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
@@ -134,9 +139,22 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
         if (candidates.length > 0) {
           const llmResult = await this.llmGateway.resolveElement(step, candidates, context.tenantId);
 
+          // A pick inside a child frame can only be found THERE: `page.$` searches
+          // the main document and answers null for it, which used to discard every
+          // frame pick — the model chose the right field three ways and all three
+          // were skipped (nightmare nested-iframe subscribe form, traced live). The
+          // picked candidate says which frame; the name gate below must also score
+          // THAT candidate, not the main document's first one.
+          const picked = llmResult.llmPickedKaizenId
+            ? candidates.find((c) => c.kaizenId === llmResult.llmPickedKaizenId)
+            : undefined;
+          const pickFrameUrl = picked?.frameUrl ?? null;
+
           for (const sel of llmResult.selectors) {
             try {
-              const handle = await page.$(sel.selector);
+              const handle = pickFrameUrl
+                ? await this.probeInFrame(page, pickFrameUrl, sel.selector)
+                : await page.$(sel.selector);
               if (handle === null) continue;
 
               // Name gate (finding #16): a persisted heal earns provenance,
@@ -151,7 +169,7 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
               // "Activate reactor") slipped through and was served-and-
               // trusted every run after. MAJORITY agreement persists; less
               // heals the run only.
-              const winner = candidates.find(
+              const winner = picked ?? candidates.find(
                 (c) => c.cssSelector === sel.selector || c.xpath === sel.selector,
               ) ?? candidates[0];
               const descriptor = `${winner.name} ${winner.textContent} ${winner.role}`;
@@ -169,7 +187,7 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
                   { tenantId: context.tenantId },
                 );
                 if (!lastResort || (partial && !lastResort.partial)) {
-                  lastResort = { selector: sel.selector, partial, sel, candidates };
+                  lastResort = { selector: sel.selector, partial, sel, candidates, frameUrl: pickFrameUrl };
                 }
                 continue; // a majority-agreeing pick may exist later in the list, or on retry
               }
@@ -178,12 +196,21 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
               // the NEXT run serves the healed selector, not the stale one that just
               // failed. Keyed on targetHash (selector_cache.content_hash stores the
               // TARGET hash). Only name-agreeing picks ever reach this line.
-              void this.persistHealedSelector(step, context, sel, candidates, 'name');
+              //
+              // A pick inside a frame heals the RUN only: the row this write makes has
+              // no frame identity, so it would be served next run as a main-document
+              // selector and miss. Frame-scoped caching is the resolver's job, under
+              // its own rules (canonical frame url; srcdoc stays session-only).
+              if (pickFrameUrl) {
+                this.observability.increment('healing.resolve_retry_frame_pick', { tenantId: context.tenantId });
+              } else {
+                void this.persistHealedSelector(step, context, sel, candidates, 'name');
+              }
 
               this.observability.increment('healing.resolve_retry_success', {
                 tenantId: context.tenantId,
               });
-              return { succeeded: true, newSelector: sel.selector, durationMs: Date.now() - start };
+              return { succeeded: true, newSelector: sel.selector, durationMs: Date.now() - start, frameUrl: pickFrameUrl };
             } catch {
               // try next selector
             }
@@ -219,7 +246,11 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
           succeeded: true,
           newSelector: pick.selector,
           durationMs: Date.now() - start,
-          deferredPersist: () => this.persistHealedSelector(step, context, pick.sel, pick.candidates, 'outcome'),
+          frameUrl: pick.frameUrl,
+          // A frame pick is never cached (see above), so there is nothing to defer.
+          ...(pick.frameUrl
+            ? {}
+            : { deferredPersist: () => this.persistHealedSelector(step, context, pick.sel, pick.candidates, 'outcome') }),
         };
       }
     } catch (e: any) {
@@ -227,6 +258,12 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
     }
 
     return { succeeded: false, newSelector: null, durationMs: Date.now() - start };
+  }
+
+  /** `page.$` for an element that lives in a child frame; null when it is not there. */
+  private async probeInFrame(page: PageLike, frameUrl: string, selector: string): Promise<unknown | null> {
+    const frame = await findFrameForSelector(framesOf<ProbeFrame>(page), frameUrl, selector);
+    return frame?.$ ? frame.$(selector) : null;
   }
 
   private async persistHealedSelector(

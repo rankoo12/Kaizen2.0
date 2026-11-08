@@ -2,6 +2,14 @@
 
 Created: 2026-08-05
 Updated: 2026-08-07 — migration renumbered 032 → 033 (test-writer branch owns 032)
+Updated: 2026-11-08 — frames that share ONE url (nested `about:srcdoc` widgets, a
+URL that says nothing about which frame) are told apart by what the selector
+matches in each: `findFrameForSelector` in src/utils/frame-url.ts, used by the
+engine, the resolver and the cache's frame guard; a single URL match behaves
+exactly as before. Heal strategies are frame-aware too (`HealingAttempt.frameUrl`),
+and a heal that adopts a pick inside a frame heals the run only — it is never
+cached, because the heal's write path carries no frame identity. See finding #18
+in specs/bench/spec-changing-sites.md.
 
 Backlog item **B9** in [spec-feature-backlog.md](../roadmap/spec-feature-backlog.md).
 Sibling of [spec-assertion-selector-caching.md](./spec-assertion-selector-caching.md) (B19) —

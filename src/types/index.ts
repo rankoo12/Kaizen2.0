@@ -366,6 +366,14 @@ export type HealingAttempt = {
    * nothing. Spec: spec-research-adoption-2026-11 §S4.
    */
   deferredPersist?: () => Promise<void>;
+  /**
+   * Where the healed element lives. Absent: the strategy re-tried the step's OWN
+   * selector, so whatever frame the step already targets still applies. `null`: the
+   * main document. A string: the live URL of the child frame the element was found
+   * in — a selector means nothing outside its frame, so the worker must re-execute
+   * the action there.
+   */
+  frameUrl?: string | null;
 };
 
 export type HealingResult = {
@@ -376,6 +384,8 @@ export type HealingResult = {
   durationMs: number;
   /** Passed through unchanged from the winning HealingAttempt. */
   deferredPersist?: () => Promise<void>;
+  /** Passed through unchanged from the winning HealingAttempt. */
+  frameUrl?: string | null;
 };
 
 // ─── LLM Gateway ─────────────────────────────────────────────────────────────
