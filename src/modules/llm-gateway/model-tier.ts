@@ -40,11 +40,15 @@ export type ReasoningEffort = (typeof REASONING_EFFORTS)[number];
 /** Families that accept `reasoning_effort` at all. gpt-4o rejects the parameter outright. */
 const REASONING_CAPABLE = /^(gpt-[5-9]|o\d)/i;
 /**
- * Families verified to accept `none` AND to default to spending reasoning tokens
- * when it is omitted. gpt-6-luna defaults to `medium` (developers.openai.com model
- * page, 2026-11-08): a classification call that never asked for reasoning would
- * silently pay for it on every compile/resolve. Earlier gpt-5 snapshots may not
- * accept `none`, so they only get an effort when env asks for one.
+ * Families verified to accept `none`. gpt-6-luna defaults to `medium`
+ * (developers.openai.com model page, 2026-11-08), so the mini tier asks for `none`
+ * explicitly. MEASURED, not assumed (2026-11-08, 10 real calls — 7 compileStep +
+ * 3 resolveElement): `medium` cost only +1.3% tokens and +7% latency over `none`
+ * on these easy prompts, because the model's reasoning is adaptive and barely
+ * engages on trivial classification. So `none` is kept for lowest latency,
+ * determinism, and because Chat Completions function-calling requires it — NOT
+ * for a large saving; harder prompts may differ (the S2.2 A/B will show). Earlier
+ * gpt-5 snapshots may not accept `none`, so they only get an effort when env asks.
  */
 const DEFAULTS_TO_NONE = /^gpt-6/i;
 
