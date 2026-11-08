@@ -10,10 +10,13 @@ Updated: 2026-11-08 (latest) — S2.1 shipped (model routing + reasoning_effort
 guard + retirement warning, defaults unchanged); real-API smoke A/B done
 (Luna 10/10 = gpt-4o-mini 10/10, JSON mode OK, effort none OK; an overstated
 reasoning-cost claim corrected with measured numbers).
-Updated: 2026-11-08 (final) — S2.2 (the paid real-API A/B) CANCELLED by the
+Updated: 2026-11-08 (later) — S2.2 (the paid real-API A/B) CANCELLED by the
 owner: project rule is zero OpenAI spend, everything validated locally. The
 Luna flip becomes an operator env change before 2027-01-14 (runbook callout in
 spec-deployment §4); S2.3–S2.5 deferred. See §S2 status.
+Updated: 2026-11-08 (S2b) — Playwright retargeted 1.65 → 1.64.1 (1.65 is
+inside the 7-day release-age window and brings an accessible-name change);
+aria-contract check added. See §S2b.
 Status: ACTIVE — this is the decision record for docs/research/2026-11-08.md
 and docs/research/2026-backfill.md. Items not listed under §2 or §3 were read
 and deliberately not adopted.
@@ -138,12 +141,60 @@ Follows backfill §3.2 as written, with these repo-specific points:
   `probabilities` as the confidence-decay SEED. Single-vendor/single-model —
   never the spine, always with the current path as fallback.
 
-### S2b — Playwright 1.58.2 → 1.65 (same infra window as S1/S2, own PR)
+### S2b — Playwright 1.58.2 → 1.64.1 (own PR); 1.65 deferred
 Pin the exact version (kill the `^1.49.1` drift), bump the Docker images in
-the same PR. The 1.65 accessible-name change (unrendered text excluded) can
-silently invalidate cached `role=X[name="Y"]` rows: measure it as HOT-PHASE
-TOKEN DRIFT on the bench (hot >0 tokens = name drift), and ship the research's
-re-derive migration for mismatched rows rather than letting them decay. The
+the same PR. **Target changed from 1.65 to 1.64.1 (2026-11-08)** after reading
+every release's notes and the registry:
+- 1.65.0 was published 2026-11-05 — younger than the repo's own 7-day
+  `min-release-age` policy (S1), so CI would refuse it until 2026-11-12.
+- The 1.65 accessible-name change (text the browser does not render — unslotted
+  text, closed `<details>` — leaves accessible names and aria snapshots) is
+  1.65-specific; 1.64.1 does not have it, so no cache migration is needed yet.
+- 1.64.1 carries a regression fix for Chromium 155+ aborting cross-origin
+  redirects when any route is registered (Kaizen registers none), and ships
+  Chromium 156 vs today's 145 — the security reason to move at all, since the
+  worker browses arbitrary customer sites.
+- Removed/changed APIs 1.59–1.64 (`Locator.ariaRef`, snapshot-update mode) are
+  not used anywhere in `src/`.
+
+**The real risk is the aria-snapshot format, not the API surface.** The DOM
+pruner patches every candidate's accessible name from the first line of
+`locator.ariaSnapshot()` (`parseAriaSnapshotName`), and cached `role=X[name="Y"]`
+selectors are minted from it; a format or name-computation shift would silently
+degrade hot runs into re-resolution. `scripts/playwright-aria-contract.ts`
+(`--write-golden` / `--check`, run inside the worker container) compares, for 18
+tricky elements, the raw first snapshot line, the parsed name, and whether
+`role=…[name=…]` round-trips to exactly one element, against a golden recorded
+under the previous pinned version. **Run it before and after every Playwright
+bump.** Known pre-existing gap it records rather than fixes: when a name contains
+a colon (`New: Save` via CSS `::before`) Playwright YAML-single-quotes the line,
+`parseAriaSnapshotName` returns null and the pruner falls back to its own
+computed name.
+
+**Result 2026-11-08 — SHIPPED on 1.64.1 / Chromium 156.** Contract `--check`
+against the 1.58.2 golden: 18/18 identical. Benches run with the cache left
+untouched (rows minted under 1.58.2 must still serve): vanilla 5/0/0/0 with ZERO
+LLM calls and ZERO heals in every phase (cleanest name-drift signal — every cached
+`role=…[name=…]` row served), social 21/3/1/0 (= baseline exactly), nightmare
+6/1/2/0 (baseline 6/0/3/0; the reactor case healed onto the real control this
+round — a model pick, still "healed-not-learned" by design — FALSE-PASS 0, both
+must-fail probes red). Round 1 (unchanged site) flips were 2 improvements + 1
+minor in social, 1 improvement + 1 regression in nightmare; the regression
+(Portal modal, `StepWatchdogTimeout` on "Summon modal") has the same signature as
+two failures at 12:35 and 12:51 BEFORE the bump — the known seeded-latency flake
+(finding #13), not the browser. Extra LLM resolutions in social r1 are cache
+carryover (each bench run ends on v2, so the next run starts on v1 with v2-era
+rows for renamed elements), not drift. Side facts: the worker and test-writer
+images ship **Node 26.13** (supported by Playwright, covered by the Nov 11
+security release — closes S1's open note on those two images); after a container
+recreate Docker Desktop's IPv6 port proxy can hang, so point the bench at
+`KAIZEN_API=http://127.0.0.1:3000`.
+
+**1.65 later** (eligible once it clears the release-age policy): re-record
+nothing — run `--check` against the 1.64.1 golden; the two cases pre-recorded for
+it (`closed-details-text`, `unassigned-slot-text`) are expected to drift, and the
+research's re-derive migration for mismatched cached rows ships with that bump,
+measured as HOT-PHASE TOKEN DRIFT on the bench (hot >0 tokens = name drift). The
 pruner `mode:'ai'`/`getByRef` refactor is a separate later step.
 
 ### S3 — Trust pack: test-writer quality gates (3–5 days)
