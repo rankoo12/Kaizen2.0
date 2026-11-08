@@ -28,6 +28,11 @@ figures recorded in §S3 CORRECTED (the sign-in prefix had distorted them).
 Updated: 2026-11-08 (S4b) — the worker re-derives behindAuth from the case
 (defense in depth for any future enqueue site); prompt-cache tenant scoping
 review is what remains of S4's behindAuth boundary.
+Updated: 2026-11-08 (S4c) — prompt-cache tenant scoping reviewed and fixed: the
+Redis LLM dedup cache key now carries the tenant (it was content-addressed
+only; the old code served one tenant's private selector to another). Two
+eviction-path observations (Redis KEYS; shared-pool deletes on one tenant's
+refusal) recorded as the remaining S4 governance items. See §S4.
 Status: ACTIVE — this is the decision record for docs/research/2026-11-08.md
 and docs/research/2026-backfill.md. Items not listed under §2 or §3 were read
 and deliberately not adopted.
@@ -284,14 +289,36 @@ Backfill §3.4, with two repo corrections:
   migration 045)**: behindAuth now travels with the CASE (`test_cases.
   authenticated`, derived from the generation job's scope at creation and
   sent by the single case-run enqueue site). It was a tiny, high-value
-  security fix that did not need to wait for the sprint. What REMAINS for S4
-  on this boundary: review prompt-cache tenant scoping (the campaign
-  observed cross-tenant prompt-cache replays — fine for public pages, needs
-  a decision for private ones). **Worker-side re-derivation SHIPPED
-  2026-11-08** (`src/workers/behind-auth.ts`): the worker protects a run when
-  the payload OR the case says so (never an override), fails closed on a
-  lookup error, and was proven live with an unflagged enqueue — see the #14 row
-  in spec-changing-sites §12.
+  security fix that did not need to wait for the sprint. **Worker-side
+  re-derivation SHIPPED 2026-11-08** (`src/workers/behind-auth.ts`): the worker
+  protects a run when the payload OR the case says so (never an override),
+  fails closed on a lookup error, and was proven live with an unflagged
+  enqueue — see the #14 row in spec-changing-sites §12.
+- **Prompt-cache tenant scoping — REVIEWED and FIXED 2026-11-08
+  (fix/security/dedup-key-tenant-scope).** The campaign's "cross-tenant
+  prompt-cache replays" were the BENCH inbox's answer cache
+  (`.kaizen-llm/cache`), which is tooling, not product. The product has two
+  caches that could matter: (1) the provider's automatic prompt caching —
+  organization-wide, and the cacheable PREFIX is the static system prompt, which
+  carries no tenant data (tenant content is in the per-call tail), so no change;
+  (2) the Redis `llm:dedup:*` resolution cache, whose key was content-addressed
+  only — no tenant. A hit returns the cached resolution wholesale (selector list
+  and prompted-candidate names), so two tenants presenting the same step over
+  the same candidate set (say, both testing one vendor's signed-in UI) shared an
+  entry; a test written for this review showed tenant B being served tenant A's
+  private selector on the old code. **Decision: scope it by tenant** — it is a
+  one-hour LLM-call dedupe, and cross-tenant LEARNING belongs in the governed
+  shared pool, not in a side cache. Key version bumped 1.1.0 → 1.2.0 (no
+  tenant-less entry is ever read again) with the `llm:dedup:{targetHash}:`
+  prefix kept so pattern evictions still work.
+- **Two observations from that review, deliberately NOT changed here (S4
+  governance, need their own look):** (a) `evictWrongSelector` in the worker is
+  the only production use of Redis `KEYS` (O(N), blocks the server) while
+  `runs.ts` already uses cursor `SCAN` for the same eviction — it should move to
+  `SCAN`; (b) the same function deletes SHARED-pool `selector_cache` rows on any
+  single tenant's refusal of a pick (`tenant_id = $2 OR is_shared = true`):
+  conservative against a poisoned shared entry, but it lets one tenant evict
+  what others rely on — a write-path trust question, since a deletion is a write.
 - New pieces adopted: scope filter INSIDE the pgvector query (+
   `hnsw.iterative_scan`), N-distinct-tenant promotion with provenance
   columns, expected-state predicate (URL pattern + landmark signature) on
