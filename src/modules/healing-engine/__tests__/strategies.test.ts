@@ -73,6 +73,20 @@ describe('AdaptiveWaitStrategy', () => {
     expect(strategy.canHandle(makeFailure('ELEMENT_MUTATED'))).toBe(false);
   });
 
+  it('declines when nothing resolved — there is no selector to wait for', async () => {
+    // NoSelectorsError leaves previousSelector ''. Polling '' throws in
+    // Playwright and the poll swallows that as "not there yet", so the strategy
+    // used to sleep out the whole step budget (~40s on the nightmare site) while
+    // the one strategy able to act sat behind it. canHandle must refuse instead.
+    const noSelector = { ...makeFailure('TIMING'), previousSelector: '' };
+    const blank = { ...makeFailure('TIMING'), previousSelector: '   ' };
+    expect(strategy.canHandle(noSelector)).toBe(false);
+    expect(strategy.canHandle(blank)).toBe(false);
+    expect(strategy.canHandle({ ...noSelector, failureClass: 'PAGE_NOT_LOADED' })).toBe(false);
+    // …while a real (even dead) selector still earns the wait.
+    expect(strategy.canHandle(makeFailure('TIMING'))).toBe(true);
+  });
+
   it('succeeds when element appears after wait', async () => {
     const page = {
       $: jest.fn().mockResolvedValueOnce(null).mockResolvedValueOnce({}),
