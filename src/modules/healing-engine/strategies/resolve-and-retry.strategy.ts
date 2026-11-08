@@ -6,7 +6,7 @@ import type { IObservability } from '../../observability/interfaces';
 import { tenantQuery } from '../../../db/transaction';
 import { toVectorSQL } from '../../../utils/vector';
 import { serializeCandidateForEmbedding } from '../../element-resolver/llm.element-resolver';
-import { nameAbsent } from '../../element-resolver/name-fidelity';
+import { nameAbsent, nameOverlaps, quotedName } from '../../element-resolver/name-fidelity';
 import type { Redis } from 'ioredis';
 
 type PageLike = {
@@ -108,11 +108,15 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
       const budgetAllows = (): boolean =>
         !context.deadlineAt || context.deadlineAt - Date.now() > RETRY_WAIT_MS + 6_000;
 
-      // A zero-overlap pick kept as last resort (finding #16): it may still
-      // heal the RUN on the final attempt — the downstream assert is the
-      // safety net — but it must never be cached, and a later attempt that
-      // finds a name-agreeing element always beats it.
-      let lastResort: { selector: string } | null = null;
+      // Picks that fail the persistence gate are kept as fallbacks (finding
+      // #16): they may still heal the RUN on the final attempt — the
+      // downstream assert is the safety net — but they must never be cached,
+      // and a later attempt that finds a majority-agreeing element always
+      // beats them. Two tiers: a PARTIAL-overlap pick (some target words on
+      // the element, not most — the reactor decoy "Activate" for "Activate
+      // reactor") outranks a ZERO-overlap one (the vault probe healing onto
+      // "Summon modal").
+      let lastResort: { selector: string; partial: boolean } | null = null;
 
       for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
         const candidates = await this.domPruner.prune(context.page, step.targetDescription ?? '');
@@ -124,22 +128,39 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
               const handle = await page.$(sel.selector);
               if (handle === null) continue;
 
-              // Name gate (finding #16): the picked element's own words must
-              // share SOMETHING with the target. The closed-vault probe showed
-              // a click-validated wrong pick ("Secret vault" healed onto
-              // "Summon modal") being PERSISTED with heal provenance — which
-              // the worker's name gates then trust. Zero overlap = wrong
-              // element until a retry proves otherwise.
+              // Name gate (finding #16): a persisted heal earns provenance,
+              // and provenance BYPASSES the worker's serve-time majority gate
+              // — so the persistence gate here must be at least as strict as
+              // the gate it overrides, or the gray zone becomes a poison
+              // vector. Proven live twice on the nightmare site: a
+              // click-validated wrong pick ("Secret vault" healed onto
+              // "Summon modal", zero overlap) was persisted with provenance,
+              // and after the first, narrower gate ("do NONE of the words
+              // agree?") an inert DECOY sharing one word ("Activate" for
+              // "Activate reactor") slipped through and was served-and-
+              // trusted every run after. MAJORITY agreement persists; less
+              // heals the run only.
               const winner = candidates.find(
                 (c) => c.cssSelector === sel.selector || c.xpath === sel.selector,
               ) ?? candidates[0];
               const descriptor = `${winner.name} ${winner.textContent} ${winner.role}`;
-              if (nameAbsent(step.targetDescription, descriptor)) {
-                this.observability.increment('healing.resolve_retry_name_absent', {
-                  tenantId: context.tenantId,
-                });
-                lastResort = lastResort ?? { selector: sel.selector };
-                continue; // a name-agreeing pick may exist later in the list, or on retry
+              // Gate on the QUOTED name when the step has one, exactly like
+              // the serve-time gate this persist will bypass. The full
+              // description dilutes the score with context words: `click the
+              // "Accept" button for "Sam Idowu"` names the button "Accept" —
+              // the row's owner is not ON the button, and scoring it refused
+              // persistence of an exact-name pick (social requests, live).
+              const target = quotedName(step.targetDescription) ?? step.targetDescription ?? '';
+              if (!nameOverlaps(target, descriptor)) {
+                const partial = !nameAbsent(target, descriptor);
+                this.observability.increment(
+                  partial ? 'healing.resolve_retry_partial_name' : 'healing.resolve_retry_name_absent',
+                  { tenantId: context.tenantId },
+                );
+                if (!lastResort || (partial && !lastResort.partial)) {
+                  lastResort = { selector: sel.selector, partial };
+                }
+                continue; // a majority-agreeing pick may exist later in the list, or on retry
               }
 
               // Persist the corrected selector (+ embeddings) into selector_cache so
@@ -166,10 +187,13 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
       }
 
       if (lastResort) {
-        // Final attempt exhausted and only a zero-overlap pick exists: heal
+        // Final attempt exhausted and only a sub-majority pick exists: heal
         // the RUN with it (an outcome assert downstream catches a wrong
         // element honestly), but NOTHING is persisted and no provenance is
         // earned — the self-shielding poison path of finding #16 is closed.
+        // A legit rename below majority overlap re-heals on every run
+        // instead of learning: an honest, budget-bounded GAP until S4's
+        // run-outcome-deferred persistence can prove the pick before caching.
         this.observability.increment('healing.resolve_retry_last_resort', {
           tenantId: context.tenantId,
         });

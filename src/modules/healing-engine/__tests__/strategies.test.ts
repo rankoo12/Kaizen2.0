@@ -1,3 +1,8 @@
+// ResolveAndRetry's persist path writes selector_cache through tenantQuery —
+// mocked here so the name-gate tests can assert "persisted" vs "never cached"
+// without a database.
+jest.mock('../../../db/transaction', () => ({ tenantQuery: jest.fn(async () => ({ rows: [] })) }));
+import { tenantQuery } from '../../../db/transaction';
 import { FallbackSelectorStrategy } from '../strategies/fallback-selector.strategy';
 import { AdaptiveWaitStrategy } from '../strategies/adaptive-wait.strategy';
 import { EscalationStrategy } from '../strategies/escalation.strategy';
@@ -233,6 +238,173 @@ describe('ResolveAndRetryStrategy', () => {
         expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_budget_exceeded', { tenantId: 't1' });
         jest.clearAllMocks();
       }
+    });
+  });
+
+  // ── Name gate + retry loop (findings #15, #16) ─────────────────────────────
+  // #16: a click-validated but WRONG pick ("Secret vault" healed onto "Summon
+  // modal") was persisted with heal provenance, which the worker's serve-time
+  // name gate then trusts — self-shielding poison. Because provenance BYPASSES
+  // that majority gate, the persistence gate here must be at least as strict:
+  // only a MAJORITY-overlap pick persists. Sub-majority picks (the inert decoy
+  // "Activate" for "Activate reactor" included) may still heal the run as a
+  // last resort on the final attempt, partial overlap outranking zero.
+  // #15: the re-resolver re-prunes up to 3 times, so a late-appearing renamed
+  // target gets found by a retry.
+
+  describe('name gate and retry loop', () => {
+    const makeRedis = () => ({ incr: jest.fn(async () => 1), expire: jest.fn(async () => 1) });
+    const obs = { log: jest.fn(), increment: jest.fn(), startSpan: jest.fn(), histogram: jest.fn() };
+    const embed = jest.fn(async () => Array(8).fill(0.1));
+
+    const candidate = (name: string, css: string, text = name) => ({
+      role: 'button', name, cssSelector: css, xpath: `//x${css}`, attributes: {}, textContent: text,
+    });
+    const gatedFailure = (target: string): ClassifiedFailure => ({
+      ...makeFailure('ELEMENT_MUTATED'),
+      step: { action: 'click', rawText: `click ${target}`, contentHash: 'abc', targetHash: 'th1', targetDescription: target } as any,
+    });
+    // persistHealedSelector is fire-and-forget (void) — flush it before asserting.
+    const flush = () => new Promise((r) => setImmediate(r));
+
+    afterEach(() => jest.clearAllMocks());
+
+    it('persists a name-agreeing pick with heal provenance', async () => {
+      const good = candidate('Accept all cookies', '#accept');
+      const pruner = { prune: jest.fn(async () => [good]) };
+      const llm = { resolveElement: jest.fn(async () => ({ selectors: [{ selector: '#accept', strategy: 'css', confidence: 0.9 }] })), generateEmbedding: embed };
+      const page = { $: jest.fn(async () => ({})) };
+      const s = new ResolveAndRetryStrategy(pruner as any, llm as any, makeRedis() as any, obs as any);
+
+      const result = await s.heal(gatedFailure('the "Accept all" banner button'), { ...makeContext(page), domain: 'site-x' } as any);
+      await flush();
+
+      expect(result.succeeded).toBe(true);
+      expect(result.newSelector).toBe('#accept');
+      expect(pruner.prune).toHaveBeenCalledTimes(1); // first attempt wins — no retries
+      expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_success', { tenantId: 't1' });
+      expect(tenantQuery).toHaveBeenCalledTimes(1); // the heal IS learned
+    });
+
+    it('zero-overlap pick heals the run as last resort but NEVER persists', async () => {
+      const wrong = candidate('Summon modal', '#modal-btn');
+      const pruner = { prune: jest.fn(async () => [wrong]) };
+      const llm = { resolveElement: jest.fn(async () => ({ selectors: [{ selector: '#modal-btn', strategy: 'css', confidence: 0.9 }] })), generateEmbedding: embed };
+      const page = { $: jest.fn(async () => ({})) };
+      const s = new ResolveAndRetryStrategy(pruner as any, llm as any, makeRedis() as any, obs as any);
+
+      const result = await s.heal(gatedFailure('open the "Secret vault"'), { ...makeContext(page), domain: 'site-x' } as any);
+      await flush();
+
+      expect(result.succeeded).toBe(true); // the downstream assert is the safety net
+      expect(result.newSelector).toBe('#modal-btn');
+      expect(pruner.prune).toHaveBeenCalledTimes(3); // all retries spent looking for better
+      expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_name_absent', { tenantId: 't1' });
+      expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_last_resort', { tenantId: 't1' });
+      expect(tenantQuery).not.toHaveBeenCalled(); // nothing cached, no provenance earned
+    });
+
+    it('gates on the QUOTED name — context words must not dilute an exact-name pick', async () => {
+      // Live on social: `click the "Accept" button for "Sam Idowu"` healed
+      // onto the exact "Accept" button, but scoring the FULL description
+      // ("sam"/"idowu" are the row's owner, not on the button) read 1/3 and
+      // refused persistence of a correct pick. The quoted name is the gate's
+      // subject, exactly as at serve time.
+      const good = candidate('Accept', '#accept-sam');
+      const pruner = { prune: jest.fn(async () => [good]) };
+      const llm = { resolveElement: jest.fn(async () => ({ selectors: [{ selector: '#accept-sam', strategy: 'css', confidence: 0.9 }] })), generateEmbedding: embed };
+      const page = { $: jest.fn(async () => ({})) };
+      const s = new ResolveAndRetryStrategy(pruner as any, llm as any, makeRedis() as any, obs as any);
+
+      const result = await s.heal(gatedFailure('the "Accept" button for "Sam Idowu"'), { ...makeContext(page), domain: 'site-x' } as any);
+      await flush();
+
+      expect(result.succeeded).toBe(true);
+      expect(result.newSelector).toBe('#accept-sam');
+      expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_success', { tenantId: 't1' });
+      expect(tenantQuery).toHaveBeenCalledTimes(1); // the exact-name pick IS learned
+    });
+
+    it('a PARTIAL-overlap pick (the decoy gray zone) heals the run but never persists', async () => {
+      // Live poison #2: four inert decoys labeled "Activate" beside the real
+      // "Engage reactor" control. "Activate" shares one of the target's two
+      // words — enough to beat the old none-agree gate, persisted with
+      // provenance, then served-and-trusted into a failing click every run.
+      const decoy = candidate('Activate', '#decoy-1');
+      const pruner = { prune: jest.fn(async () => [decoy]) };
+      const llm = { resolveElement: jest.fn(async () => ({ selectors: [{ selector: '#decoy-1', strategy: 'css', confidence: 0.9 }] })), generateEmbedding: embed };
+      const page = { $: jest.fn(async () => ({})) };
+      const s = new ResolveAndRetryStrategy(pruner as any, llm as any, makeRedis() as any, obs as any);
+
+      const result = await s.heal(gatedFailure('the "Activate reactor" button'), { ...makeContext(page), domain: 'site-x' } as any);
+      await flush();
+
+      expect(result.succeeded).toBe(true);
+      expect(result.newSelector).toBe('#decoy-1');
+      expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_partial_name', { tenantId: 't1' });
+      expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_last_resort', { tenantId: 't1' });
+      expect(tenantQuery).not.toHaveBeenCalled(); // sub-majority never earns provenance
+    });
+
+    it('a partial-overlap fallback outranks a zero-overlap one', async () => {
+      const unrelated = candidate('Summon modal', '#modal-btn');
+      const decoy = candidate('Activate', '#decoy-1');
+      const pruner = { prune: jest.fn(async () => [unrelated, decoy]) };
+      const llm = {
+        resolveElement: jest.fn(async () => ({
+          selectors: [
+            { selector: '#modal-btn', strategy: 'css', confidence: 0.9 }, // zero overlap, offered first
+            { selector: '#decoy-1', strategy: 'css', confidence: 0.8 },   // partial overlap
+          ],
+        })),
+        generateEmbedding: embed,
+      };
+      const page = { $: jest.fn(async () => ({})) };
+      const s = new ResolveAndRetryStrategy(pruner as any, llm as any, makeRedis() as any, obs as any);
+
+      const result = await s.heal(gatedFailure('the "Activate reactor" button'), { ...makeContext(page), domain: 'site-x' } as any);
+      await flush();
+
+      expect(result.succeeded).toBe(true);
+      expect(result.newSelector).toBe('#decoy-1'); // the partial pick, despite arriving second
+      expect(tenantQuery).not.toHaveBeenCalled();
+    });
+
+    it('a later name-agreeing pick beats the last resort (#15 retry finds the late target)', async () => {
+      const wrong = candidate('Summon modal', '#modal-btn');
+      const late = candidate('Secret vault', '#vault-btn');
+      // Attempt 1: only the decoy exists. Attempt 2: the renamed target has rendered.
+      const pruner = { prune: jest.fn(async () => [wrong]).mockResolvedValueOnce([wrong]).mockResolvedValue([wrong, late]) };
+      const llm = {
+        resolveElement: jest
+          .fn(async () => ({ selectors: [{ selector: '#vault-btn', strategy: 'css', confidence: 0.9 }] }))
+          .mockResolvedValueOnce({ selectors: [{ selector: '#modal-btn', strategy: 'css', confidence: 0.9 }] }),
+        generateEmbedding: embed,
+      };
+      const page = { $: jest.fn(async () => ({})) };
+      const s = new ResolveAndRetryStrategy(pruner as any, llm as any, makeRedis() as any, obs as any);
+
+      const result = await s.heal(gatedFailure('open the "Secret vault"'), { ...makeContext(page), domain: 'site-x' } as any);
+      await flush();
+
+      expect(result.succeeded).toBe(true);
+      expect(result.newSelector).toBe('#vault-btn'); // the agreeing pick, not the earlier decoy
+      expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_success', { tenantId: 't1' });
+      expect(obs.increment).not.toHaveBeenCalledWith('healing.resolve_retry_last_resort', { tenantId: 't1' });
+      expect(tenantQuery).toHaveBeenCalledTimes(1); // only the good pick persisted
+    });
+
+    it('stops retrying when the watchdog deadline leaves no room', async () => {
+      const pruner = { prune: jest.fn(async () => []) };
+      const s = new ResolveAndRetryStrategy(pruner as any, {} as any, makeRedis() as any, obs as any);
+
+      const result = await s.heal(
+        gatedFailure('the "Launch" button'),
+        { ...makeContext({}), deadlineAt: Date.now() + 1_000 } as any, // < wait + 6s floor
+      );
+
+      expect(result.succeeded).toBe(false);
+      expect(pruner.prune).toHaveBeenCalledTimes(1); // budget said no second attempt
     });
   });
 });

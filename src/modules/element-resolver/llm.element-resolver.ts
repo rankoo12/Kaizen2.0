@@ -874,6 +874,13 @@ export class LLMElementResolver implements IElementResolver {
     // lives in, or NULL for the main document. It travels with the selectors because a
     // frame-scoped selector is meaningless — and, run against the top document, actively
     // harmful — without knowing where to run it.
+    // `attribution - 'healed'`: heal provenance belongs to the SELECTORS it
+    // was earned with — the worker's serve-time name gate trusts a
+    // provenance-stamped row sight unseen (finding #5), so a fresh un-gated
+    // resolution that rewrites the selectors must not inherit the stamp.
+    // Proven live (finding #16, 2026-11-08): a row heal-stamped for "Post"
+    // was later rewritten by this upsert to the renamed "Publish" and kept
+    // claiming heal-validated trust it never re-earned.
     const sql = `INSERT INTO selector_cache
            (tenant_id, content_hash, domain, selectors, step_embedding, element_embedding, frame_url)
          VALUES ($1, $2, $3, $4, $5::vector, $6::vector, $7)
@@ -883,6 +890,7 @@ export class LLMElementResolver implements IElementResolver {
            step_embedding    = EXCLUDED.step_embedding,
            element_embedding = EXCLUDED.element_embedding,
            frame_url         = EXCLUDED.frame_url,
+           attribution       = selector_cache.attribution - 'healed',
            updated_at        = now()
          WHERE selector_cache.pinned_at IS NULL`;
     const params = [
