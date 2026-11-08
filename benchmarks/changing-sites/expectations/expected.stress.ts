@@ -14,6 +14,19 @@ const expected: SiteExpectations = {
   defaultOutcome: 'pass-unchanged',
   expectations: [
     {
+      id: 'stress.deliveries.vacuous-clear',
+      match: { namePattern: 'deliveries list loads with count' },
+      mutation: 'none',
+      outcome: 'must-fail',
+      notes:
+        'A VACUOUS generated draft, kept as a regression guard (2026-11-08): it clears the Search box — ' +
+        'which is already empty — and then asserts the list is visible. Nothing changes, so the delta ' +
+        'oracle correctly refuses it (AssertionNothingChanged): an action that did nothing cannot ' +
+        'corroborate an assertion. Until the pruner stall (finding #4) was fixed this case died ' +
+        'StepWatchdogTimeout at step 1 and never reached that honest verdict. It must stay red — and a ' +
+        'run that PASSES it is a FALSE-PASS.',
+    },
+    {
       id: 'stress.refresh.delayed',
       match: { stepPattern: 'refresh stats|stats refreshed' },
       mutation: 'delayed-render',
