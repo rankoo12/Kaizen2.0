@@ -6,6 +6,7 @@ import type { IObservability } from '../../observability/interfaces';
 import { tenantQuery } from '../../../db/transaction';
 import { toVectorSQL } from '../../../utils/vector';
 import { serializeCandidateForEmbedding } from '../../element-resolver/llm.element-resolver';
+import { nameAbsent, nameOverlaps, quotedName } from '../../element-resolver/name-fidelity';
 import type { Redis } from 'ioredis';
 
 type PageLike = {
@@ -89,35 +90,114 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
       const page = context.page as PageLike;
       const step = failure.step;
 
-      // Fresh DOM candidates
-      const candidates = await this.domPruner.prune(context.page, step.targetDescription ?? '');
-      if (candidates.length === 0) {
-        return { succeeded: false, newSelector: null, durationMs: Date.now() - start };
+      // ── Retry loop (finding #15) ──────────────────────────────────────────
+      // The old single-shot re-resolve raced late-appearing targets: a banner
+      // button that both RENDERS LATE and was RENAMED got re-resolved against
+      // a DOM it was not in yet, and nothing ever tried again (proven live on
+      // the nightmare cookie family — one case won the race, two lost it,
+      // model-independent). The re-resolver now re-prunes and re-picks up to
+      // three times within the step's remaining watchdog budget: the patience
+      // belongs to the RESOLVER, not only to the wait-for-the-dead-selector
+      // strategy ahead of it.
+      const MAX_ATTEMPTS = 3;
+      // Env-tunable like the hourly budget (read per call): tests set it to 1,
+      // and a deployment can tighten or relax the between-attempt settle.
+      const envWait = Number(process.env.HEAL_RESOLVE_RETRY_WAIT_MS);
+      const RETRY_WAIT_MS = Number.isFinite(envWait) && envWait >= 0 ? envWait : 2_500;
+      // Leave enough room after a wait for a prune + LLM pick + probe.
+      const budgetAllows = (): boolean =>
+        !context.deadlineAt || context.deadlineAt - Date.now() > RETRY_WAIT_MS + 6_000;
+
+      // Picks that fail the persistence gate are kept as fallbacks (finding
+      // #16): they may still heal the RUN on the final attempt — the
+      // downstream assert is the safety net — but they must never be cached,
+      // and a later attempt that finds a majority-agreeing element always
+      // beats them. Two tiers: a PARTIAL-overlap pick (some target words on
+      // the element, not most — the reactor decoy "Activate" for "Activate
+      // reactor") outranks a ZERO-overlap one (the vault probe healing onto
+      // "Summon modal").
+      let lastResort: { selector: string; partial: boolean } | null = null;
+
+      for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+        const candidates = await this.domPruner.prune(context.page, step.targetDescription ?? '');
+        if (candidates.length > 0) {
+          const llmResult = await this.llmGateway.resolveElement(step, candidates, context.tenantId);
+
+          for (const sel of llmResult.selectors) {
+            try {
+              const handle = await page.$(sel.selector);
+              if (handle === null) continue;
+
+              // Name gate (finding #16): a persisted heal earns provenance,
+              // and provenance BYPASSES the worker's serve-time majority gate
+              // — so the persistence gate here must be at least as strict as
+              // the gate it overrides, or the gray zone becomes a poison
+              // vector. Proven live twice on the nightmare site: a
+              // click-validated wrong pick ("Secret vault" healed onto
+              // "Summon modal", zero overlap) was persisted with provenance,
+              // and after the first, narrower gate ("do NONE of the words
+              // agree?") an inert DECOY sharing one word ("Activate" for
+              // "Activate reactor") slipped through and was served-and-
+              // trusted every run after. MAJORITY agreement persists; less
+              // heals the run only.
+              const winner = candidates.find(
+                (c) => c.cssSelector === sel.selector || c.xpath === sel.selector,
+              ) ?? candidates[0];
+              const descriptor = `${winner.name} ${winner.textContent} ${winner.role}`;
+              // Gate on the QUOTED name when the step has one, exactly like
+              // the serve-time gate this persist will bypass. The full
+              // description dilutes the score with context words: `click the
+              // "Accept" button for "Sam Idowu"` names the button "Accept" —
+              // the row's owner is not ON the button, and scoring it refused
+              // persistence of an exact-name pick (social requests, live).
+              const target = quotedName(step.targetDescription) ?? step.targetDescription ?? '';
+              if (!nameOverlaps(target, descriptor)) {
+                const partial = !nameAbsent(target, descriptor);
+                this.observability.increment(
+                  partial ? 'healing.resolve_retry_partial_name' : 'healing.resolve_retry_name_absent',
+                  { tenantId: context.tenantId },
+                );
+                if (!lastResort || (partial && !lastResort.partial)) {
+                  lastResort = { selector: sel.selector, partial };
+                }
+                continue; // a majority-agreeing pick may exist later in the list, or on retry
+              }
+
+              // Persist the corrected selector (+ embeddings) into selector_cache so
+              // the NEXT run serves the healed selector, not the stale one that just
+              // failed. Keyed on targetHash (selector_cache.content_hash stores the
+              // TARGET hash). Only name-agreeing picks ever reach this line.
+              void this.persistHealedSelector(step, context, sel, candidates);
+
+              this.observability.increment('healing.resolve_retry_success', {
+                tenantId: context.tenantId,
+              });
+              return { succeeded: true, newSelector: sel.selector, durationMs: Date.now() - start };
+            } catch {
+              // try next selector
+            }
+          }
+        }
+
+        if (attempt < MAX_ATTEMPTS && budgetAllows()) {
+          await new Promise((r) => setTimeout(r, RETRY_WAIT_MS));
+        } else {
+          break;
+        }
       }
 
-      const llmResult = await this.llmGateway.resolveElement(step, candidates, context.tenantId);
-
-      for (const sel of llmResult.selectors) {
-        try {
-          const handle = await page.$(sel.selector);
-          if (handle === null) continue;
-
-          // Persist the corrected selector (+ embeddings) into selector_cache so the
-          // NEXT run serves the healed selector, not the stale one that just failed.
-          // Without this the row keeps its dead selector, every run re-fails and
-          // re-heals, and the 2/hr rate limit soon leaves the step permanently broken.
-          // NB: selector_cache.content_hash stores the step's TARGET hash (see the
-          // LLM resolver's write-back INSERT) — key on targetHash, not contentHash,
-          // or the UPDATE matches zero rows and the fix never persists.
-          void this.persistHealedSelector(step, context, sel, candidates);
-
-          this.observability.increment('healing.resolve_retry_success', {
-            tenantId: context.tenantId,
-          });
-          return { succeeded: true, newSelector: sel.selector, durationMs: Date.now() - start };
-        } catch {
-          // try next selector
-        }
+      if (lastResort) {
+        // Final attempt exhausted and only a sub-majority pick exists: heal
+        // the RUN with it (an outcome assert downstream catches a wrong
+        // element honestly), but NOTHING is persisted and no provenance is
+        // earned — the self-shielding poison path of finding #16 is closed.
+        // A legit rename below majority overlap re-heals on every run
+        // instead of learning: an honest, budget-bounded GAP until S4's
+        // run-outcome-deferred persistence can prove the pick before caching.
+        this.observability.increment('healing.resolve_retry_last_resort', {
+          tenantId: context.tenantId,
+        });
+        return { succeeded: true, newSelector: lastResort.selector, durationMs: Date.now() - start };
       }
     } catch (e: any) {
       this.observability.log('warn', 'healing.resolve_retry_error', { error: e.message });

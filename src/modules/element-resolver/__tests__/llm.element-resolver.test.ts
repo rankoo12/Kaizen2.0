@@ -117,6 +117,14 @@ describe('LLMElementResolver', () => {
       expect.stringContaining('INSERT INTO selector_cache'),
       expect.arrayContaining(['tenant-1', 'test-target-hash', 'youtube.com']),
     );
+    // Finding #16, third hardening: a fresh resolution that rewrites a row's
+    // selectors must not inherit the row's heal-provenance stamp — the
+    // serve-time name gate trusts `attribution.healed` sight unseen, and the
+    // stamp belongs to the selectors it was earned with.
+    expect(mockQuery).toHaveBeenCalledWith(
+      expect.stringContaining("attribution       = selector_cache.attribution - 'healed'"),
+      expect.anything(),
+    );
   });
 
   it('does not persist when all selectors fail live DOM validation', async () => {

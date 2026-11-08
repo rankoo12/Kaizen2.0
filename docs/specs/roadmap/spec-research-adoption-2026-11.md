@@ -1,6 +1,8 @@
 # Spec: Research adoption — November 2026
 
 Created: 2026-11-08
+Updated: 2026-11-08 — S1 shipped (PR #105); S4 gains run-outcome-deferred
+heal persistence (residual of the #16 fix on fix/engine/heal-trust).
 Status: ACTIVE — this is the decision record for docs/research/2026-11-08.md
 and docs/research/2026-backfill.md. Items not listed under §2 or §3 were read
 and deliberately not adopted.
@@ -95,6 +97,14 @@ Backfill §3.4, with two repo corrections:
   columns, expected-state predicate (URL pattern + landmark signature) on
   cache rows — the predicate would also have caught finding #6's family
   earlier — and quarantine-not-delete demotion.
+- **Run-outcome-deferred heal persistence** (from the #16 fix, 2026-11-08):
+  the heal-trust branch gates persistence+provenance on MAJORITY name
+  agreement, which closes the poison vector but makes sub-majority legit
+  renames (cookie "Accept the inevitable" → "Fine. Proceed.") re-heal every
+  run instead of learning. The corroboration that distinguishes a right
+  zero-overlap rename from a wrong pick is the RUN'S OUTCOME: hold the
+  pending persist in the worker and commit it only when the healed step's
+  downstream steps pass. Lands here, where write-path trust rules live.
 
 ## 3. Deferred, with reasons
 
