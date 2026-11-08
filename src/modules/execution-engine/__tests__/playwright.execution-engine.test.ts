@@ -447,6 +447,99 @@ describe('PlaywrightExecutionEngine', () => {
       expect(evalMock).toHaveBeenCalledWith(expect.any(Function), 'reset');
     });
 
+    // ── Finding #12: a lazy feed grows AFTER a scroll-triggered fetch ───────────
+    // The old sweep stopped the moment a container could not scroll further. For
+    // infinite scroll that point looks identical to the real end of the content, so
+    // content behind a delayed batch (nightmare ledger: row 333 is in the fourth
+    // batch, each arriving 300–1500ms after the scroll that triggers it) was
+    // unreachable. The sweep now gives the page a bounded chance to GROW first.
+    describe('scroll-to-find on a lazy feed (finding #12)', () => {
+      /** Scripts page.evaluate by its argument: 'advance' | 'reset' | 'size'. */
+      const scripted = (opts: { advance: boolean[]; sizes: Array<{ h: number; n: number }> | ((i: number) => { h: number; n: number }) }) => {
+        const calls: string[] = [];
+        let a = 0;
+        let s = 0;
+        const fn = jest.fn(async (_f: unknown, arg: string) => {
+          calls.push(arg);
+          if (arg === 'advance') return opts.advance[Math.min(a++, opts.advance.length - 1)];
+          if (arg === 'size') {
+            const i = s++;
+            return typeof opts.sizes === 'function' ? opts.sizes(i) : opts.sizes[Math.min(i, opts.sizes.length - 1)];
+          }
+          return false; // reset
+        });
+        return { fn, calls };
+      };
+
+      it('waits for the next batch at the end of the rendered rows, then finds the row', async () => {
+        let scans = 0;
+        // 20 polling scans miss, the first sweep scan misses, the scan AFTER the batch arrives hits.
+        mockPage.$eval.mockImplementation(async () => (++scans >= 22 ? { selector: 'div#ledger-row-333', text: 'Entry #333' } : null));
+        const { fn, calls } = scripted({
+          advance: [true, false, true, false],           // scroll → end of loaded rows → (batch arrives) scroll → end
+          sizes: [{ h: 4400, n: 120 }, { h: 4400, n: 120 }, { h: 4400, n: 120 }, { h: 8800, n: 220 }], // grows on the 3rd poll
+        });
+        mockPage.evaluate = fn;
+
+        const result = await engine.executeStep(makeStep('Entry #333'), selectorSet, mockPage);
+
+        expect(result.status).toBe('passed');
+        expect(result.selectorUsed).toBe('div#ledger-row-333');
+        expect(mockObservability.increment).toHaveBeenCalledWith('engine.assert_text_scroll_grew');
+        expect(mockObservability.increment).toHaveBeenCalledWith('engine.assert_text_scroll_found');
+        expect(calls).toContain('size'); // it really did measure the page rather than give up
+      });
+
+      it('gives up after ONE bounded wait when the page never grows — and still restores the scroll', async () => {
+        mockPage.$eval.mockResolvedValue(null);
+        const { fn, calls } = scripted({ advance: [true, false], sizes: [{ h: 4400, n: 120 }] }); // never grows
+        mockPage.evaluate = fn;
+
+        await expect(
+          engine.executeStep(makeStep('never-there'), selectorSet, mockPage),
+        ).rejects.toThrow(/not found anywhere on the page/);
+
+        // One baseline read + 12 polls, then it concludes: bounded, not open-ended.
+        expect(calls.filter((c) => c === 'size')).toHaveLength(13);
+        expect(mockPage.waitForTimeout).toHaveBeenCalledWith(250);
+        expect(mockObservability.increment).not.toHaveBeenCalledWith('engine.assert_text_scroll_grew');
+        expect(calls[calls.length - 1]).toBe('reset'); // the scroll is undone on a miss
+      });
+
+      it('keeps the fast path: a page with NOTHING scrollable concludes at once, no growth wait', async () => {
+        // Absent text on an ordinary page must not pay for a feed that does not exist.
+        mockPage.$eval.mockResolvedValue(null);
+        const { fn, calls } = scripted({ advance: [false], sizes: [{ h: 1, n: 1 }] });
+        mockPage.evaluate = fn;
+
+        await expect(
+          engine.executeStep(makeStep('never-there'), selectorSet, mockPage),
+        ).rejects.toThrow(/not found anywhere on the page/);
+
+        expect(calls).not.toContain('size');
+        expect(calls).toEqual(['advance', 'reset']);
+      });
+
+      it('an endless feed is bounded: at most 8 end-of-content waits per sweep', async () => {
+        mockPage.$eval.mockResolvedValue(null);
+        // Always another page below, and the page grows on every probe.
+        const { fn } = scripted({ advance: [true, false], sizes: (i) => ({ h: 1000 * (i + 1), n: 10 * (i + 1) }) });
+        mockPage.evaluate = jest.fn(async (f: unknown, arg: string) => {
+          if (arg === 'advance') return advanceToggle();
+          return fn(f, arg);
+        });
+        let flip = false;
+        const advanceToggle = () => { flip = !flip; return flip; }; // true, false, true, false…
+
+        await expect(
+          engine.executeStep(makeStep('never-there'), selectorSet, mockPage),
+        ).rejects.toThrow(/not found anywhere on the page/);
+
+        const grew = (mockObservability.increment as jest.Mock).mock.calls.filter((c) => c[0] === 'engine.assert_text_scroll_grew');
+        expect(grew).toHaveLength(8);
+      });
+    });
+
     it('throws when value is null', async () => {
       await expect(
         engine.executeStep(makeStep(null), selectorSet, mockPage),
