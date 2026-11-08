@@ -4,6 +4,7 @@
 
 **Status:** Draft
 **Date:** 2026-04-17
+**Updated:** 2026-11-08 — §4 gains the LLM model variables and the 2027-01-14 gpt-4o retirement action
 
 ---
 
@@ -300,12 +301,29 @@ envVarGroups:
 | `REDIS_URL` | — | Upstash connection string | Upstash connection string |
 | `OPENAI_API_KEY` | — | Your key | Your key |
 | `LLM_PROVIDER` | — | `openai` | `openai` |
+| `KAIZEN_LLM_MODEL_MINI` | — | unset → `gpt-4o-mini` | unset → `gpt-4o-mini` |
+| `KAIZEN_LLM_MODEL_FRONTIER` | — | unset → `gpt-4o` | unset → `gpt-4o` |
 | `JWT_PRIVATE_KEY` | — | Generated RSA PEM | — |
 | `JWT_PUBLIC_KEY` | — | Matching public PEM | — |
 | `CORS_ORIGIN` | — | `https://<vercel-domain>` | — |
 | `PORT` | — | `3000` | — |
 | `WORKER_CONCURRENCY` | — | — | `2` |
 | `DB_SSL` | — | `true` | `true` |
+
+> **Operator action before 2027-01-14 — OpenAI retires `gpt-4o` and `gpt-4o-mini`.**
+> The code defaults still point at them. Before that date, set
+> `KAIZEN_LLM_MODEL_MINI` and `KAIZEN_LLM_MODEL_FRONTIER` on the API **and** the
+> worker (and the test-writer service) to the replacement — OpenAI's deprecations
+> page names `gpt-6-luna` for both — and restart them. No code change or deploy of
+> new code is needed (`src/modules/llm-gateway/model-tier.ts` reads the variables
+> per call). Both gateways log `llm.model_retiring` at boot for as long as a
+> retiring model is configured, so a deployment that forgot shows up in its logs.
+> The replacement was **not validated against the real API by Kaizen's tooling**
+> (project rule: no OpenAI spend in dev/bench); the only evidence is a one-time
+> 10-prompt smoke test on 2026-11-08 where `gpt-6-luna` matched `gpt-4o-mini`
+> 10/10 with JSON mode and `reasoning_effort: "none"` accepted. Canary it:
+> flip one worker first and watch `llm.compileStep_failed` / `llm.resolveElement_failed`.
+> Rollback is unsetting the variables. Spec: spec-research-adoption-2026-11 §S2.
 
 ---
 

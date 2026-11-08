@@ -14,9 +14,13 @@ import type { IObservability } from '../observability/interfaces';
  * modelFor(). Until 2026-11 the runtime gateway hardcoded 'gpt-4o-mini' twice,
  * so the Jan 14 2027 retirement of the gpt-4o family could not be fixed by env.
  *
- * Defaults stay on the models that work today. Flipping them to gpt-6-luna is a
- * deliberate, evidence-gated change (the campaign harness A/B — FALSE-PASS must
- * stay 0), not something plumbing should do by side effect.
+ * Defaults stay on the models that work today, and Kaizen's own tooling does not
+ * flip them: the project rule is zero OpenAI spend, so a replacement can't be
+ * validated here (the local inbox answers with a Claude model whatever name is
+ * requested). Moving to gpt-6-luna before 2027-01-14 is an OPERATOR action — set
+ * KAIZEN_LLM_MODEL_MINI / KAIZEN_LLM_MODEL_FRONTIER in production and canary it
+ * (docs/specs/deployment/spec-deployment.md §4); the gateways warn at boot until
+ * it is done.
  */
 export type ModelTier = 'mini' | 'frontier';
 
@@ -47,7 +51,7 @@ const REASONING_CAPABLE = /^(gpt-[5-9]|o\d)/i;
  * on these easy prompts, because the model's reasoning is adaptive and barely
  * engages on trivial classification. So `none` is kept for lowest latency,
  * determinism, and because Chat Completions function-calling requires it — NOT
- * for a large saving; harder prompts may differ (the S2.2 A/B will show). Earlier
+ * for a large saving; harder prompts may differ (small sample; never re-measured). Earlier
  * gpt-5 snapshots may not accept `none`, so they only get an effort when env asks.
  */
 const DEFAULTS_TO_NONE = /^gpt-6/i;
