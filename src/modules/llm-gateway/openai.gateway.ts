@@ -6,6 +6,7 @@ import type { StepAST, CandidateNode, LLMResolutionResult, CompactCandidate } fr
 import type { IBillingMeter } from '../billing-meter/interfaces';
 import type { IObservability } from '../observability/interfaces';
 import { isSecretStep } from '../test-writer/secret-steps';
+import { modelFor, reasoningParamsFor, warnOnRetiringModels } from './model-tier';
 
 /**
  * Actions that can only target specific ARIA roles.
@@ -113,6 +114,7 @@ export class OpenAIGateway implements ILLMGateway {
     this.openai = new OpenAI({
       apiKey: apiKey ?? process.env.OPENAI_API_KEY ?? 'sk-mock-key',
     });
+    warnOnRetiringModels(this.observability, [modelFor('mini')]);
   }
 
   private buildDedupKey(contentHash: string, rawText: string, domain: string, candidates: CandidateNode[]): string {
@@ -130,9 +132,11 @@ export class OpenAIGateway implements ILLMGateway {
 
   async compileStep(rawText: string, tenantId: string): Promise<StepAST> {
     const span = this.observability.startSpan('llm.compileStep', { tenantId });
+    const model = modelFor('mini');
     try {
       const response = await this.openai.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model,
+        ...reasoningParamsFor(model, 'mini'),
         response_format: { type: 'json_object' },
         messages: [
           {
@@ -223,7 +227,7 @@ Return only valid JSON.`,
         eventType: 'LLM_CALL',
         quantity: tokens,
         unit: 'tokens',
-        metadata: { model: 'gpt-4o-mini', purpose: 'compileStep' },
+        metadata: { model, purpose: 'compileStep' },
       });
 
       this.observability.increment('llm.tokens_used', { purpose: 'compileStep' });
@@ -238,6 +242,7 @@ Return only valid JSON.`,
 
   async resolveElement(step: StepAST, candidates: CandidateNode[], tenantId: string): Promise<LLMResolutionResult> {
     const span = this.observability.startSpan('llm.resolveElement', { tenantId });
+    const model = modelFor('mini');
     try {
       const roleFiltered = filterByActionRole(candidates, step.action);
       const filtered = scoreAndRankCandidates(roleFiltered, step.targetDescription ?? '').slice(0, 7);
@@ -281,7 +286,8 @@ Return only valid JSON.`,
         .join('\n');
 
       const response = await this.openai.chat.completions.create({
-        model: 'gpt-4o-mini',
+        model,
+        ...reasoningParamsFor(model, 'mini'),
         response_format: { type: 'json_object' },
         messages: [
           {
@@ -313,7 +319,7 @@ Return only valid JSON.`,
         eventType: 'LLM_CALL',
         quantity: tokens,
         unit: 'tokens',
-        metadata: { model: 'gpt-4o-mini', purpose: 'resolveElement' },
+        metadata: { model, purpose: 'resolveElement' },
       });
 
       // Map the returned kaizenId back to the pre-generated stable selectors.

@@ -6,6 +6,9 @@ heal persistence (residual of the #16 fix on fix/engine/heal-trust).
 Updated: 2026-11-08 (later) — heal-trust merged (PR #106); finding #14
 (behindAuth on the case) shipped early via migration 045 instead of waiting
 for S4 — S4 keeps the prompt-cache scoping review.
+Updated: 2026-11-08 (latest) — S2.1 shipped (model routing + reasoning_effort
+guard + retirement warning, defaults unchanged); the Luna flip is gated on the
+S2.2 A/B. See §S2 status.
 Status: ACTIVE — this is the decision record for docs/research/2026-11-08.md
 and docs/research/2026-backfill.md. Items not listed under §2 or §3 were read
 and deliberately not adopted.
@@ -47,6 +50,40 @@ below is MEASURED by this harness, so it completes first. Owner: this session.
   spot-run (social) green.
 
 ### S2 — LLM gateway modernization (3–4 days; hard-fails Jan 14 2027)
+
+**Status 2026-11-08 — S2.1 SHIPPED (plumbing, zero behavior change by default);
+S2.2–S2.5 below remain** (the separate "S2b" section further down is Playwright,
+unrelated). Facts re-verified against OpenAI's primary pages
+(developers.openai.com deprecations + `gpt-6-luna` model page): `gpt-4o-2024-08-06`,
+`gpt-4o-2024-11-20` and `gpt-4o-mini-2024-07-18` shut down **2027-01-14**
+(announced 2026-10-14), replacement `gpt-6-luna` ($0.10 in / $0.01 cached /
+$0.50 out per 1M; 1.05M context; `reasoning.effort` none|low|**medium (default)**
+|high|xhigh|max; Chat Completions supported, function calling only with effort
+`none`). Corrections to this section's own text: the router is `modelFor(tier)`
+(not `getModelForTier`); `OPENAI_MODEL` in `.env`/`.env.example` was dead config
+that nothing read; and the Test Writer gateway already honored the tier env — the
+real exposure was the runtime gateway's two HARDCODED `'gpt-4o-mini'` calls.
+
+- **S2.1 (this PR):** every model-calling site routes through `model-tier.ts`
+  (lazy env read); `reasoning_effort` is emitted only for models that accept it
+  (gpt-6-* gets `none` on the mini tier — its default `medium` would bill
+  reasoning tokens on every compile/resolve); billing records the model actually
+  used; both gateways log `llm.model_retiring` at boot while a retiring model is
+  configured. **Defaults deliberately unchanged** (gpt-4o-mini / gpt-4o): the
+  request on the wire is byte-identical to before (verified by capturing raw HTTP
+  bodies for default, Luna, an effort override, and an ignored override).
+- **S2.2 — the A/B that earns the flip (gated, PAID):** the local inbox answers
+  with a weak Claude model regardless of the requested model name, so it can prove
+  wire shape but NOT Luna's quality. Validating Luna needs real OpenAI calls on the
+  tenant key — a spend decision, to be bounded and estimated first (Luna's price
+  makes it small). Acceptance: FALSE-PASS stays 0, heal rates and the must-fail
+  probes match the haiku-floor baseline in campaign.jsonl. Open risk to test, not
+  assume: the three call sites use JSON mode (`response_format: json_object`),
+  which Luna's page does not confirm (it lists structured outputs).
+- **S2.3** openai SDK v4.104 → v7 (its `ReasoningEffort` type predates `none`; the
+  single cast in `reasoningParamsFor` goes away). **S2.4** cache layout /
+  `prompt_cache_key` / cached-token billing. **S2.5** Flex tier for background calls.
+
 Follows backfill §3.2 as written, with these repo-specific points:
 - Route openai.gateway.ts:135/284 through `getModelForTier()` — the retirement
   cannot be fixed by env alone (verified).
