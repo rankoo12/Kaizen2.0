@@ -195,4 +195,42 @@ describe('runStepLoop — stop-on-fail', () => {
     expect(result.stepsExecuted).toBe(0);
     expect(result.cancelled).toBe(false);
   });
+
+  // ─── Watchdog kills are stamped, not silent (finding #10a) ──────────────────
+
+  it('watchdog kill fires onStepWatchdog with the step and budget, then stops the run', async () => {
+    const steps = makeSteps(3);
+    const onStepWatchdog = jest.fn().mockResolvedValue(undefined);
+    const deps = makeDeps({
+      executeStep: jest.fn()
+        .mockResolvedValueOnce({ status: 'passed', healed: false, afterPng: null })
+        .mockImplementationOnce(() => new Promise(() => { /* wedged forever */ })),
+      onStepWatchdog,
+      stepWatchdogMs: 20,
+    });
+
+    const result = await runStepLoop('run-wd', steps, deps);
+
+    // The kill itself is recorded — before the generic failure hook — so the
+    // run page can say WHY the step died instead of showing an empty failure.
+    expect(onStepWatchdog).toHaveBeenCalledWith(1, steps[1], 20);
+    expect(deps.onStepFailed).toHaveBeenCalledWith(1, steps[1]);
+    expect(deps.recordSkippedSteps).toHaveBeenCalledWith(steps, 2, 'prior_step_failed');
+    expect(result.runPassed).toBe(false);
+    expect(result.stepsExecuted).toBe(1); // the wedged step never completed
+  });
+
+  it('a throwing onStepWatchdog never blocks the teardown', async () => {
+    const steps = makeSteps(1);
+    const deps = makeDeps({
+      executeStep: jest.fn().mockImplementationOnce(() => new Promise(() => { /* wedged */ })),
+      onStepWatchdog: jest.fn().mockRejectedValue(new Error('db down')),
+      stepWatchdogMs: 20,
+    });
+
+    const result = await runStepLoop('run-wd2', steps, deps);
+
+    expect(result.runPassed).toBe(false);
+    expect(deps.recordSkippedSteps).toHaveBeenCalledWith(steps, 1, 'prior_step_failed');
+  });
 });

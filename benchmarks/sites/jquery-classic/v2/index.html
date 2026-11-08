@@ -1,0 +1,79 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Harbor Desk</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="jquery.min.js"></script>
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">Harbor Desk</span>
+    <span class="tagline">the 2012-era support console, lovingly preserved</span>
+  </header>
+  <main>
+    <h1 id="page-title">Support workspace</h1>
+
+    <!-- v2 mutation: feature-removed (MUST-FAIL). The Reports tab and its pane
+         are GONE — product killed the feature. A v1 test that clicks "Reports"
+         or asserts the weekly report must fail honestly; any heal that lands
+         the click somewhere else and goes green is a false-pass. -->
+    <div class="tabbar" id="tabbar" role="tablist">
+      <button class="tab active" id="tab-overview" role="tab">Overview</button>
+      <button class="tab" id="tab-activity" role="tab">Activity</button>
+    </div>
+
+    <section class="tab-pane" id="pane-overview">
+      <h2>Overview</h2>
+      <p id="overview-copy">Queue is quiet: 3 open tickets, oldest is 2 days.</p>
+      <button class="btn" id="open-announcement">Open announcement</button>
+
+      <h2 style="margin-top:28px">Common questions</h2>
+      <!-- v2 mutation: dom-restructure. The accordion is reordered (escalation
+           first) and each item is wrapped in a new .acc-frame div. Same
+           headings, same bodies, same behavior. -->
+      <div class="accordion" id="faq-accordion">
+        <div class="acc-frame">
+          <div class="acc-item" id="acc-escalation">
+            <button class="acc-head" id="acc-escalation-head">Escalation path</button>
+            <div class="acc-body">Tier 2 picks up anything older than 24 hours automatically.</div>
+          </div>
+        </div>
+        <div class="acc-frame">
+          <div class="acc-item" id="acc-hours">
+            <button class="acc-head" id="acc-hours-head">Support hours</button>
+            <div class="acc-body">We answer Monday to Friday, 9:00–18:00 CET.</div>
+          </div>
+        </div>
+        <div class="acc-frame">
+          <div class="acc-item" id="acc-refunds">
+            <button class="acc-head" id="acc-refunds-head">Refund policy</button>
+            <div class="acc-body">Full refund inside 30 days, no questions asked.</div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="tab-pane hidden" id="pane-activity">
+      <h2>Activity</h2>
+      <button class="btn" id="load-entries">Load entries</button>
+      <table class="log hidden" id="activity-table">
+        <thead><tr><th>When</th><th>Who</th><th>What</th></tr></thead>
+        <tbody id="activity-body"></tbody>
+      </table>
+    </section>
+  </main>
+
+  <div class="modal-scrim hidden" id="modal-scrim">
+    <div class="modal" role="dialog" aria-labelledby="modal-title">
+      <h2 id="modal-title">Scheduled maintenance</h2>
+      <p>Harbor Desk will be read-only this Sunday from 02:00 to 03:00 UTC.</p>
+      <button class="btn" id="modal-close">Got it</button>
+    </div>
+  </div>
+
+  <footer>Harbor Desk is a synthetic site for the Kaizen engine bench.</footer>
+  <script src="app.js"></script>
+</body>
+</html>

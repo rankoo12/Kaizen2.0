@@ -784,6 +784,20 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
           await page.waitForTimeout(400);
         }
 
+        // ── Scroll-to-find ──────────────────────────────────────────────────
+        // A virtualized/windowed list renders only the visible rows, so content
+        // deeper in the list is NOT in the DOM and no amount of polling can see
+        // it. Do what a human does next: advance every scrollable container one
+        // viewport at a time, re-scanning between steps. Runs only after the
+        // normal poll has already missed, so the passing path pays nothing.
+        // On a find the scroll stays (the content is now rendered); on a miss
+        // positions are restored and the assertion fails exactly as before.
+        // Spec: docs/specs/workers/spec-hover-reveal-scroll-find.md §2
+        if (!match) {
+          match = await this.scrollSweepForText(page, scanBody, needle);
+          if (match) this.observability.increment('engine.assert_text_scroll_found');
+        }
+
         this.observability.log('info', 'engine.assert_text_check', {
           rawValue: step.value,
           needle,
@@ -837,6 +851,67 @@ export class PlaywrightExecutionEngine implements IExecutionEngine {
    * and compare. An empty selector set (primitive found nothing countable) fails
    * loudly — a count assertion must never pass without a real count.
    */
+  /**
+   * Scroll-to-find for assert_text: advance every scrollable container (and the
+   * document scroller) one viewport-step at a time, re-running the page scan
+   * between steps, until the text renders, nothing advances, or the step cap is
+   * hit. Positions are restored on a miss and kept on a find. Main frame only.
+   * Best-effort by contract: any error returns null and the assertion fails as
+   * it would have. Spec: docs/specs/workers/spec-hover-reveal-scroll-find.md §2
+   */
+  private async scrollSweepForText(
+    page: PlaywrightPageLike,
+    scanBody: (root: Element, search: string) => { selector: string; text: string } | null,
+    needle: string,
+  ): Promise<{ selector: string; text: string } | null> {
+    // Runs in-browser. mode 'advance' moves every scrollable one step and says
+    // whether anything moved; 'reset' restores the positions saved on the first
+    // advance. The save lives on window so it survives between evaluate calls.
+    const scrollStep = (mode: string): boolean => {
+      const w = window as unknown as { __kzScrollSave?: number[] };
+      const els = ([document.scrollingElement as Element | null] as Array<Element | null>)
+        .concat(Array.from(document.querySelectorAll<Element>('*')))
+        .filter((el): el is Element => {
+          if (!el) return false;
+          const h = el as HTMLElement;
+          if (h.scrollHeight - h.clientHeight <= 100) return false;
+          if (el === document.scrollingElement) return true;
+          const oy = getComputedStyle(el).overflowY;
+          return oy === 'auto' || oy === 'scroll';
+        })
+        .slice(0, 5);
+      if (mode === 'reset') {
+        const saved = w.__kzScrollSave ?? [];
+        els.forEach((el, i) => { if (saved[i] != null) (el as HTMLElement).scrollTop = saved[i]; });
+        delete w.__kzScrollSave;
+        return false;
+      }
+      if (!w.__kzScrollSave) w.__kzScrollSave = els.map((el) => (el as HTMLElement).scrollTop);
+      let advanced = false;
+      for (const el of els) {
+        const h = el as HTMLElement;
+        const before = h.scrollTop;
+        h.scrollTop = before + Math.max(200, Math.floor(h.clientHeight * 0.9));
+        if (h.scrollTop > before + 1) advanced = true;
+      }
+      return advanced;
+    };
+
+    try {
+      for (let i = 0; i < 60; i++) {
+        const advanced = await page.evaluate(scrollStep, 'advance');
+        if (!advanced) break;
+        await page.waitForTimeout(150); // let the window re-render the new rows
+        const found = await page.$eval('body', scanBody, needle).catch(() => null);
+        if (found) return found; // keep the scroll — the content is rendered here
+      }
+      await page.evaluate(scrollStep, 'reset').catch(() => false);
+    } catch {
+      /* best-effort — the assertion fails exactly as it would have */
+    }
+    return null;
+  }
+
   private async executeAssertCount(
     step: StepAST,
     selectorSet: SelectorSet,

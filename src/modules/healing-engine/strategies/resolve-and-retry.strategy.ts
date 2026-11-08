@@ -5,15 +5,30 @@ import type { IDOMPruner } from '../../dom-pruner/interfaces';
 import type { IObservability } from '../../observability/interfaces';
 import { tenantQuery } from '../../../db/transaction';
 import { toVectorSQL } from '../../../utils/vector';
+import { serializeCandidateForEmbedding } from '../../element-resolver/llm.element-resolver';
 import type { Redis } from 'ioredis';
 
 type PageLike = {
   $(selector: string): Promise<unknown | null>;
+  url?(): string;
 };
 
 const BUDGET_KEY = (tenantId: string) => `healing:resolve_retry:${tenantId}`;
-const MAX_PER_HOUR = 2;
+const DEFAULT_MAX_PER_HOUR = 2;
 const TTL_SECONDS = 3600;
+
+/**
+ * Hourly re-resolution budget per tenant. Env-overridable (read per call so
+ * tests and long-lived workers see changes without a restart) because a suite
+ * whose target site just changed can legitimately need many re-resolutions in
+ * one run — the engine-robustness bench mutates a whole site at once, and a
+ * production tenant pushing a redesign hits the same wall.
+ * Spec: docs/specs/bench/spec-changing-sites.md
+ */
+function maxPerHour(): number {
+  const raw = Number(process.env.HEAL_RESOLVE_RETRY_PER_HOUR);
+  return Number.isInteger(raw) && raw > 0 ? raw : DEFAULT_MAX_PER_HOUR;
+}
 
 /**
  * ResolveAndRetryStrategy — Priority 4
@@ -22,7 +37,9 @@ const TTL_SECONDS = 3600;
  * Triggers a fresh LLM element resolution, updates both step_embedding and
  * element_embedding in selector_cache on success, then retries the selector in DOM.
  *
- * Rate-limited: max 2 calls per tenant per hour (Redis counter).
+ * Rate-limited: max 2 calls per tenant per hour by default (Redis counter);
+ * override with HEAL_RESOLVE_RETRY_PER_HOUR for site-redesign bursts and the
+ * changing-sites bench.
  * Handles: ELEMENT_REMOVED, ELEMENT_MUTATED
  */
 export class ResolveAndRetryStrategy implements IHealingStrategy {
@@ -61,7 +78,7 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
     const current = await this.redis.incr(budgetKey);
     if (current === 1) await this.redis.expire(budgetKey, TTL_SECONDS);
 
-    if (current > MAX_PER_HOUR) {
+    if (current > maxPerHour()) {
       this.observability.increment('healing.resolve_retry_budget_exceeded', {
         tenantId: context.tenantId,
       });
@@ -92,7 +109,7 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
           // NB: selector_cache.content_hash stores the step's TARGET hash (see the
           // LLM resolver's write-back INSERT) — key on targetHash, not contentHash,
           // or the UPDATE matches zero rows and the fix never persists.
-          void this.persistHealedSelector(step.targetHash, context, sel, candidates, step.rawText);
+          void this.persistHealedSelector(step, context, sel, candidates);
 
           this.observability.increment('healing.resolve_retry_success', {
             tenantId: context.tenantId,
@@ -110,43 +127,83 @@ export class ResolveAndRetryStrategy implements IHealingStrategy {
   }
 
   private async persistHealedSelector(
-    targetHash: string,
+    step: { targetHash: string; action: string; targetDescription: string | null },
     context: HealingContext,
     healed: { selector: string; strategy: string; confidence?: number },
     candidates: Array<{ role: string; name: string; cssSelector: string; xpath: string; attributes: Record<string, string>; textContent: string }>,
-    rawText: string,
   ): Promise<void> {
+    const targetHash = step.targetHash;
     try {
-      const stepEmbedding = await this.llmGateway.generateEmbedding(rawText);
+      // CRITICAL: embed the SAME canonical texts the resolver embeds on its own
+      // write-back (`action + targetDescription`, serializeCandidateForEmbedding)
+      // — the read-time semantic guard compares against those. The first cut
+      // embedded step.rawText here and, under exact-text hash embeddings, every
+      // healed row was REJECTED and deleted at the very next resolve
+      // (cache_resolver.semantic_reject), so the heal un-learned itself and the
+      // bench judged healed-not-learned forever (finding #5's second half).
+      const stepEmbedding = await this.llmGateway.generateEmbedding(`${step.action} ${step.targetDescription ?? ''}`);
 
       const winner = candidates.find(
         (c) => c.cssSelector === healed.selector || c.xpath === healed.selector,
       ) ?? candidates[0];
-      const elementText = `${winner.role}: ${winner.textContent || winner.name}`.trim();
-      const elementEmbedding = await this.llmGateway.generateEmbedding(elementText);
+      const pageUrl = (() => { try { return (context.page as PageLike).url?.(); } catch { return undefined; } })();
+      const urlPath = pageUrl ? new URL(pageUrl).pathname : undefined;
+      const elementEmbedding = await this.llmGateway.generateEmbedding(serializeCandidateForEmbedding(winner, urlPath));
 
       // Overwrite the stale selector with the healed one and restore confidence —
       // it was just validated against the live DOM (page.$ !== null), so the next
       // run should trust and serve it instead of the dead selector. GREATEST keeps
       // an already-higher confidence; the reset outcome window prevents the prior
       // failures from immediately demoting the corrected selector below the 0.4
-      // serve threshold.
+      // serve threshold. The `healed` attribution key is what the resolver
+      // surfaces as SelectorSet.healProvenance (bench finding #5).
       const selectorsJson = JSON.stringify([
         { selector: healed.selector, strategy: healed.strategy, confidence: healed.confidence ?? 0.9 },
       ]);
-      await tenantQuery(
-        context.tenantId,
-        `UPDATE selector_cache
-         SET selectors         = $1::jsonb,
-             step_embedding    = $2::vector,
-             element_embedding = $3::vector,
-             confidence_score  = GREATEST(confidence_score, 0.9),
-             outcome_window    = '[true]'::jsonb,
-             last_verified_at  = now(),
-             updated_at        = now()
-         WHERE content_hash = $4 AND tenant_id = $5`,
-        [selectorsJson, toVectorSQL(stepEmbedding), toVectorSQL(elementEmbedding), targetHash, context.tenantId],
-      );
+      if (context.domain) {
+        // UPSERT, not UPDATE: by the time this strategy runs, the stale row has
+        // usually been EVICTED by the worker's resolution-recovery gates — an
+        // UPDATE then matches zero rows and the heal is never learned, so every
+        // run re-fails and re-heals (judged healed-not-learned, GAP). Keyed on
+        // the (tenant_id, content_hash, domain) unique index.
+        await tenantQuery(
+          context.tenantId,
+          `INSERT INTO selector_cache
+             (tenant_id, content_hash, domain, selectors, step_embedding, element_embedding,
+              confidence_score, outcome_window, last_verified_at, attribution)
+           VALUES ($5, $4, $6, $1::jsonb, $2::vector, $3::vector, 0.9, '[true]'::jsonb, now(),
+                   jsonb_build_object('healed', jsonb_build_object('strategy', 'resolve_and_retry', 'at', now())))
+           ON CONFLICT (tenant_id, content_hash, domain) DO UPDATE
+           SET selectors         = EXCLUDED.selectors,
+               step_embedding    = EXCLUDED.step_embedding,
+               element_embedding = EXCLUDED.element_embedding,
+               confidence_score  = GREATEST(selector_cache.confidence_score, 0.9),
+               outcome_window    = '[true]'::jsonb,
+               last_verified_at  = now(),
+               updated_at        = now(),
+               attribution       = COALESCE(selector_cache.attribution, '{}'::jsonb)
+                                   || jsonb_build_object('healed', jsonb_build_object('strategy', 'resolve_and_retry', 'at', now()))`,
+          [selectorsJson, toVectorSQL(stepEmbedding), toVectorSQL(elementEmbedding), targetHash, context.tenantId, context.domain],
+        );
+      } else {
+        // No domain in context (an older caller): the row can only be updated in
+        // place — correct when it survived, silently learns nothing when evicted.
+        await tenantQuery(
+          context.tenantId,
+          `UPDATE selector_cache
+           SET selectors         = $1::jsonb,
+               step_embedding    = $2::vector,
+               element_embedding = $3::vector,
+               confidence_score  = GREATEST(confidence_score, 0.9),
+               outcome_window    = '[true]'::jsonb,
+               last_verified_at  = now(),
+               updated_at        = now(),
+               attribution       = COALESCE(attribution, '{}'::jsonb)
+                                   || jsonb_build_object('healed', jsonb_build_object('strategy', 'resolve_and_retry', 'at', now()))
+           WHERE content_hash = $4 AND tenant_id = $5`,
+          [selectorsJson, toVectorSQL(stepEmbedding), toVectorSQL(elementEmbedding), targetHash, context.tenantId],
+        );
+      }
     } catch (e: any) {
       this.observability.log('warn', 'healing.embedding_update_failed', { error: e.message });
     }

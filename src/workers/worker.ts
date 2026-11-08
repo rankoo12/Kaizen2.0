@@ -28,7 +28,7 @@ import { type Page } from 'playwright';
 import { BrowserPool } from './browser-pool';
 import { cancelKey } from './cancel-keys';
 import { canonicalFrameUrl } from '../utils/frame-url';
-import { runStepLoop } from './step-loop';
+import { runStepLoop, STEP_WATCHDOG_MS } from './step-loop';
 import { handleTabAction } from './tab-manager';
 import pino from 'pino';
 import { PinoObservability } from '../modules/observability/pino.observability';
@@ -75,7 +75,8 @@ import type { RunJobPayload } from '../queue';
 import type { StepAST, ClassifiedFailure, SelectorSet, SelectorEntry, RunContext } from '../types';
 import { isSecretStep, redactStepText, REDACTED } from '../modules/test-writer/secret-steps';
 import { settleAfterNavigation, settleDom } from '../modules/execution-engine/settle';
-import { quotedName, nameOverlaps, countDriftMatch } from './name-fidelity';
+import { quotedName, nameOverlaps, countDriftMatch, nameAbsent } from './name-fidelity';
+import { revealHiddenTarget } from './reveal';
 
 // ─── Module Setup ─────────────────────────────────────────────────────────────
 
@@ -387,6 +388,24 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
           stepsSkipped: compiledSteps.length - (stepIndex + 1),
         });
       },
+      // A watchdog kill aborts the step MID-FLIGHT: its own bookkeeping never
+      // ran, so without this stamp the run shows an unexplained empty failure
+      // (`failed: #1 ?` on the bench — no failure class, no heal events, and
+      // "Target page closed" noise from the abandoned call). Finding #10a.
+      onStepWatchdog: async (stepIndex, step, watchdogMs) => {
+        obs.increment('worker.step_watchdog_killed', { action: step.action });
+        await insertStepResult(
+          tenantId, runId, step, stepIndex, 'failed',
+          null, null, watchdogMs,
+          null, null, null, null, 0, null,
+          'StepWatchdogTimeout',
+          stepIds[stepIndex] ?? null,
+        );
+        runLog?.log('execute',
+          `step ${String(stepIndex + 1).padStart(2, '0')} exceeded the ${Math.round(watchdogMs / 1000)}s watchdog — killed mid-flight (resolution + recovery + healing spent the whole budget)`,
+          { stepIndex, level: 'error', data: { watchdogMs } });
+        await runLog?.flush();
+      },
       onCancelled: (stepsCompleted) => {
         logger.info({ event: 'run_cancelled', runId, stepsCompleted });
       },
@@ -677,6 +696,15 @@ async function executeStep(
   });
   const resolutionContext = { tenantId, domain, page, pageUrl: page.url(), behindAuth };
   const stepStart = Date.now();
+  // ── Recovery time budget (finding #10b) ─────────────────────────────────────
+  // Every recovery layer below is individually bounded, but on a slow-rendering
+  // page their SUM used to out-spend the step watchdog — which then killed the
+  // step mid-flight, throwing away all evidence (finding #10a stamps that kill;
+  // this budget makes it rare). Layers check `recoveryBudgetLeft()` before
+  // spending more; past the soft deadline (80% of the watchdog) they skip to an
+  // honest failure instead of starting work the watchdog would destroy.
+  const softDeadlineAt = stepStart + Math.floor(STEP_WATCHDOG_MS * 0.8);
+  const recoveryBudgetLeft = (): number => softDeadlineAt - Date.now();
   // Accessible name of the element chosen by a click_random step — captured into
   // the run context for later {{variable}} reference (Gap C wires the store).
   let randomPickName: string | null = null;
@@ -841,7 +869,27 @@ async function executeStep(
   let selectorSet: SelectorSet;
   if (deltaScoped && !onlyRemovals && !viewSwapped) {
     const elements = delta.last!.elements;
-    const pick = pickDeltaMatch(step.targetDescription ?? '', elements, quotedName(delta.last!.afterStep));
+    let pick = pickDeltaMatch(step.targetDescription ?? '', elements, quotedName(delta.last!.afterStep));
+    // ── Delta name-fidelity for assertions (finding #2) ───────────────────────
+    // pickDeltaMatch's "about" gate accepts a role-only match — right for
+    // generic kind-descriptions ("a confirmation dialog") and a FALSE PASS for
+    // named controls: react-spa renamed "Sign in"→"Log in" and the visibility
+    // assert of the OLD name went green off the renamed button (the fidelity
+    // gates exempt delta, so nothing downstream catches it). An assertion's
+    // INTERACTIVE delta pick must share at least one salient word with the
+    // target — role included, so "a confirmation dialog" still matches a
+    // dialog; prose picks (the error message → "Target URL needs to…") stay
+    // exempt, that lookup is the delta oracle's whole point. Zero overlap
+    // demotes to no-pick and the assertion fails honestly.
+    // Spec: docs/specs/bench/spec-changing-sites.md §12 (#2)
+    if (pick && step.action.startsWith('assert') && pick.interactive
+        && nameAbsent(step.targetDescription, `${pick.name} ${pick.text} ${pick.role}`)) {
+      obs.increment('worker.delta_pick_name_refused');
+      runLog?.log('resolve',
+        `what changed has a ${pick.role} ("${(pick.text || pick.name).slice(0, 40)}") but it does not carry "${(step.targetDescription ?? '').slice(0, 40)}" — refusing the lookalike`,
+        { stepIndex, level: 'warn', data: { refused: pick.text || pick.name, role: pick.role } });
+      pick = null;
+    }
     // The whole delta rides as candidates and the pick is marked, so the run
     // page shows "what changed" with the chosen element highlighted — a person
     // can check the choice, not just read an opaque [data-kz-delta] selector.
@@ -1008,6 +1056,16 @@ async function executeStep(
     && step.action !== 'assert_text' && step.action !== 'assert_not_text' && step.action !== 'assert_count';
   const refuseWrongName = async (): Promise<void> => {
     if (selectorSet.selectors.length === 0 || !gateApplies) return;
+    // Heal-provenance trust (finding #5): this exact-hash entry was persisted by
+    // a VALIDATED heal — the original name-anchored selector died and a verified
+    // re-resolution adopted this one. The name mismatch about to be found IS the
+    // rename that heal fixed; refusing (and evicting) it here is what kept every
+    // renamed control in a re-heal loop (judged healed-not-learned, GAP).
+    // Interactions only — an assertion must still carry the name it asserts.
+    if (selectorSet.healProvenance && !step.action.startsWith('assert')) {
+      obs.increment('worker.heal_provenance_trusted', { action: step.action });
+      return;
+    }
     const quoted = quotedName(step.targetDescription);
     if (!quoted) return;
     const sel = selectorSet.selectors[0].selector;
@@ -1037,7 +1095,7 @@ async function executeStep(
   // DOM go quiet, resolve once more (the retry pick faces the same gate), and
   // only then fail into healing.
   const RETRYABLE_INTERACTIONS = new Set(['click', 'double_click', 'right_click', 'type', 'select', 'check', 'uncheck', 'hover', 'clear']);
-  if (selectorSet.selectors.length === 0 && RETRYABLE_INTERACTIONS.has(step.action)) {
+  if (selectorSet.selectors.length === 0 && RETRYABLE_INTERACTIONS.has(step.action) && recoveryBudgetLeft() > 5_000) {
     obs.increment('worker.resolution_retry_after_settle', { action: step.action });
     runLog?.log('resolve', 'nothing resolved — letting the page settle and resolving once more', { stepIndex, level: 'warn' });
     await settleDom(page);
@@ -1047,6 +1105,103 @@ async function executeStep(
       obs.log('warn', 'worker.resolution_failed', { runId, action: step.action, error: e.message });
     }
     await refuseWrongName();
+  }
+
+  // ── Wrong element under async latency: settle and re-resolve ────────────────
+  // A step resolved against a still-rendering page returns a confident WRONG
+  // element — the persistent Notifications bell for "Add friend"/"Play"/"Block"
+  // (the name-blind element cache rubber-stamps whatever chrome control is
+  // present on the skeleton), or the "Messages" nav LINK for a message input
+  // that loads 900ms late. The quoted-name gate above misses these because the
+  // compiler drops the quotes. Detect the two unambiguous wrong-pick signals —
+  // the resolved name shares ZERO salient words with the target, or a fill
+  // action landed on a link — then let the DOM settle (patiently, so late
+  // content paints) and re-resolve through the normal cache-first chain. Adopt
+  // only a NON-suspect result; otherwise restore the original pick, so a correct
+  // but oddly-named resolution is never made worse. Spec: spec-changing-sites §12 (#6).
+  const FILL_ACTIONS = new Set(['type', 'select', 'check', 'uncheck', 'clear']);
+  const isSuspectPick = async (set: SelectorSet): Promise<boolean> => {
+    if (!step.targetDescription || set.selectors.length === 0) return false;
+    const sel = set.selectors[0].selector;
+    if (FILL_ACTIONS.has(step.action) && /^role=link\b/.test(sel)) return true; // can't type into a link
+    const descriptor = await describeResolved(page, sel).catch(() => null);
+    return descriptor !== null && nameAbsent(step.targetDescription, descriptor);
+  };
+  // healProvenance skips the suspect gate the same way (see refuseWrongName):
+  // RETRYABLE_INTERACTIONS already excludes assertions on this path.
+  if (gateApplies && !selectorSet.healProvenance && RETRYABLE_INTERACTIONS.has(step.action) && await isSuspectPick(selectorSet)) {
+    const original = selectorSet;
+    obs.increment('worker.suspect_pick_retry', { action: step.action, source: selectorSet.resolutionSource ?? 'unknown' });
+    runLog?.log('resolve', `suspect pick (${selectorSet.selectors[0].selector.slice(0, 50)}) for "${(step.targetDescription ?? '').slice(0, 40)}" — settling and re-resolving`, { stepIndex, level: 'warn' });
+    let recovered = false;
+    let current = selectorSet;
+    // Each iteration costs a settle (≤3s) + a resolve (possibly an LLM call);
+    // never start one the watchdog would kill (finding #10b).
+    for (let attempt = 0; attempt < 3 && !recovered && recoveryBudgetLeft() > 8_000; attempt++) {
+      // Evict the suspect entry from every cache layer FIRST — the verify run
+      // proved that without this the re-resolve is served the SAME poisoned
+      // selector all three times ("the Mira Chen conversation" kept getting the
+      // cached "Messages" nav link) and the retry loop recovers nothing. The
+      // in-memory `original` survives eviction, so restore-below still works.
+      if (current.fromCache && current.selectors.length > 0) {
+        await evictWrongSelector(tenantId, step.targetHash, current.selectors[0].selector).catch(() => {});
+      }
+      await settleDom(page, 600, 3000); // patient: outlast the pre-render quiet gap
+      let next: SelectorSet;
+      try { next = await resolver.resolve(step, resolutionContext); }
+      catch { continue; }
+      current = next;
+      if (next.selectors.length > 0 && !(await isSuspectPick(next))) {
+        selectorSet = next;
+        recovered = true;
+        obs.increment('worker.suspect_pick_recovered', { action: step.action });
+        runLog?.log('resolve', `recovered: "${(step.targetDescription ?? '').slice(0, 40)}" → ${next.selectors[0].selector.slice(0, 50)} (${next.resolutionSource})`, { stepIndex, data: { source: next.resolutionSource } });
+      }
+    }
+    if (!recovered) {
+      // Unrecovered and still suspect: refuse, don't restore. The pick was
+      // confirmed wrong three times (a real descriptor sharing ZERO salient
+      // words with the target), and acting on it is the one move that cannot
+      // be undone — the Notifications bell "passed" a click meant for the
+      // "Accept" button (requests.rename, v2) and the run died downstream on
+      // an honest assert, while the heal chain, never consulted, could have
+      // re-resolved the renamed button. Failing into healing instead costs at
+      // worst one heal (which re-validates by outcome); a correct-but-oddly-
+      // named element is not here — its descriptor is null or shares a word,
+      // neither of which is suspect. (No quotedName gate: the step compiler
+      // DROPS the quotes from targetDescription, so "the Accept button for
+      // Sam Idowu" arrives unquoted — gating on quotes made this unreachable.)
+      obs.increment('worker.suspect_pick_refused', { action: step.action });
+      runLog?.log('resolve',
+        `suspect pick not recovered — refusing ${original.selectors[0].selector.slice(0, 50)} for "${(step.targetDescription ?? '').slice(0, 40)}" and failing into healing`,
+        { stepIndex, level: 'warn', data: { selector: original.selectors[0].selector } });
+      selectorSet = { selectors: [], fromCache: false, cacheSource: null, resolutionSource: null, similarityScore: null };
+    }
+  }
+
+  // ── Hover-to-reveal: the named element exists but is hidden ─────────────────
+  // Last resort after every recovery above: a control inside a :hover-revealed
+  // menu (Buzzly's profile "Block" inside the "⋯" menu) is hidden at resolution
+  // time, so the pruner never offers it — resolution ends empty or still
+  // suspect on a page where a human would simply hover the trigger first.
+  // revealHiddenTarget scans for a HIDDEN element carrying the step's named
+  // target, hovers its nearest visible ancestor, verifies it became visible,
+  // and the step proceeds against it (resolutionSource 'reveal'). Strict name
+  // containment means a lookalike is never revealed. Spec: spec-hover-reveal-scroll-find.md §1
+  if (
+    RETRYABLE_INTERACTIONS.has(step.action) && step.targetDescription && recoveryBudgetLeft() > 6_000 &&
+    (selectorSet.selectors.length === 0 || (gateApplies && !selectorSet.healProvenance && await isSuspectPick(selectorSet)))
+  ) {
+    const revealed = await revealHiddenTarget(page, step.targetDescription).catch(() => null);
+    if (revealed) {
+      obs.increment('worker.reveal_recovered', { action: step.action });
+      runLog?.log('resolve', `revealed hidden "${(step.targetDescription ?? '').slice(0, 40)}" → ${revealed}`, { stepIndex, data: { selector: revealed } });
+      selectorSet = {
+        selectors: [{ selector: revealed, strategy: 'css', confidence: 1 }],
+        fromCache: false, cacheSource: null, resolutionSource: 'reveal', similarityScore: null,
+        tokensUsed: selectorSet.tokensUsed, // the failed resolution's spend stays on the books
+      };
+    }
   }
 
   // Assertions must never be persisted to the selector cache — re-verify every run.
@@ -1085,6 +1240,35 @@ async function executeStep(
     stepError = e;
   }
 
+  // ── Reveal-retry: the action failed on an element that is hover-hidden ─────
+  // The resolution-time reveal gate above only fires when resolution came back
+  // EMPTY or suspect. But once the cache has learned the right selector for a
+  // menu item (Buzzly's profile "Block" inside the "⋯" menu), resolution
+  // SUCCEEDS — and the click then dies on a hidden element, handing the healing
+  // chain a chance to re-resolve onto a name-mismatched neighbour ("More
+  // options"). Before healing gets it, do what a human does: hover the trigger,
+  // verify the named target became visible, retry the action on it. Adopted
+  // only when the retried action passes; otherwise the failure path proceeds
+  // exactly as before. Spec: docs/specs/workers/spec-hover-reveal-scroll-find.md §1
+  if (result.status === 'failed' && RETRYABLE_INTERACTIONS.has(step.action) && step.targetDescription && recoveryBudgetLeft() > 6_000) {
+    const revealed = await revealHiddenTarget(page, step.targetDescription).catch(() => null);
+    if (revealed) {
+      const revealSet: SelectorSet = {
+        selectors: [{ selector: revealed, strategy: 'css', confidence: 1 }],
+        fromCache: false, cacheSource: null, resolutionSource: 'reveal', similarityScore: null,
+        tokensUsed: selectorSet.tokensUsed, // the original resolution's spend stays on the books
+      };
+      const retry = await engine.executeStep(step, revealSet, page).catch(() => null);
+      if (retry && retry.status === 'passed') {
+        obs.increment('worker.reveal_recovered', { action: step.action });
+        runLog?.log('resolve', `action failed on hidden "${(step.targetDescription ?? '').slice(0, 40)}" — hover-revealed → ${revealed}`, { stepIndex, data: { selector: revealed } });
+        selectorSet = revealSet;
+        result = retry;
+        stepError = null;
+      }
+    }
+  }
+
   // If this step navigated (login, category nav, an <a> click), let the destination SETTLE
   // before the next step resolves — the first interaction after a nav (e.g. add-to-cart
   // right after login) must not race a half-rendered page, which yields a transient
@@ -1099,31 +1283,42 @@ async function executeStep(
   // carries a delta-scoped oracle. A navigation step throws the memory away:
   // "what changed" across a deliberate page change is the whole page, which
   // would restrict nothing. Spec §1.
-  if (delta.enabled && result.status !== 'failed') {
+  // A closure because TWO success paths need it: the direct pass below, and a
+  // HEALED action further down — a heal that re-executed its action changed
+  // the page just as a clean pass does, and skipping the capture starved the
+  // following delta-scoped assertion into AssertionNoAction (finding #3: the
+  // stress site's refresh-stats flow healed the click, then failed the assert
+  // for the wrong reason). Spec: docs/specs/bench/spec-changing-sites.md §12 (#3)
+  const captureWhatChanged = async (): Promise<void> => {
+    if (!delta.enabled) return;
     if (DELTA_CLEARING_ACTIONS.has(step.action)) {
       delta.baseline = null;
       delta.last = null;
-    } else if (STATE_CHANGING_ACTIONS.has(step.action) && delta.baseline) {
-      // The click has returned; the app may still be rendering what it did.
-      await settleDom(page);
-      const after = await captureDeltaFull(page, delta.baseline);
-      const changed = after.elements;
-      delta.last = {
-        elements: changed,
-        removed: after.removed,
-        afterStep: step.rawText,
-        dialogAccepted: delta.dialogs.count > dialogsBefore,
-      };
-      // "What changed" is page text, and a login step's delta is whatever the
-      // app renders around the credential it just accepted. The same rule the
-      // rest of this function follows: a secret step writes no evidence.
-      if (!secretStep) {
-        runLog?.log('execute', `what changed: ${summariseDelta(changed)}`, {
-          stepIndex,
-          data: { changed: changed.slice(0, 10).map((el) => ({ role: el.role, name: el.name, text: el.text })) },
-        });
-      }
+      return;
     }
+    if (!STATE_CHANGING_ACTIONS.has(step.action) || !delta.baseline) return;
+    // The click has returned; the app may still be rendering what it did.
+    await settleDom(page);
+    const after = await captureDeltaFull(page, delta.baseline);
+    const changed = after.elements;
+    delta.last = {
+      elements: changed,
+      removed: after.removed,
+      afterStep: step.rawText,
+      dialogAccepted: delta.dialogs.count > dialogsBefore,
+    };
+    // "What changed" is page text, and a login step's delta is whatever the
+    // app renders around the credential it just accepted. The same rule the
+    // rest of this function follows: a secret step writes no evidence.
+    if (!secretStep) {
+      runLog?.log('execute', `what changed: ${summariseDelta(changed)}`, {
+        stepIndex,
+        data: { changed: changed.slice(0, 10).map((el) => ({ role: el.role, name: el.name, text: el.text })) },
+      });
+    }
+  };
+  if (result.status !== 'failed') {
+    await captureWhatChanged();
   }
 
   runLog?.log(isAssertion ? 'assert' : 'execute',
@@ -1177,8 +1372,10 @@ async function executeStep(
     }
     // Never cache assertion selectors (they verify per-run state and can embed
     // run-specific data like the current email); also skip caching for the
-    // direct click_random pick whose selector is a transient data-kz-rand marker.
-    const cacheable = !isAssertion && step.action !== 'click_random';
+    // direct click_random pick whose selector is a transient data-kz-rand marker,
+    // and for a hover-reveal pass whose data-kz-reveal stamp dies with the page —
+    // persisting it would poison the next run's resolution with a dead selector.
+    const cacheable = !isAssertion && step.action !== 'click_random' && selectorSet.resolutionSource !== 'reveal';
     if (result.selectorUsed && cacheable) {
       await resolver.recordSuccess(step.targetHash, domain, result.selectorUsed, tenantId).catch((e: any) =>
         obs.log('warn', 'worker.record_success_failed', { error: e.message }),
@@ -1258,9 +1455,27 @@ async function executeStep(
     previousSelector: selectorSet.selectors[0]?.selector ?? '',
   };
 
+  // The heal chain's waits (AdaptiveWait alone can sit 20s) must not START when
+  // the watchdog is about to kill them mid-flight — a half-finished heal records
+  // confusing partial evidence and wastes an LLM call, while an honest classified
+  // failure right now keeps the evidence whole (finding #10b).
+  if (recoveryBudgetLeft() < 10_000) {
+    obs.increment('worker.heal_skipped_no_budget', { failureClass });
+    runLog?.log('heal',
+      `step ${String(stepIndex + 1).padStart(2, '0')} failed (${failureClass}) — no time budget left for healing (${Math.round((Date.now() - stepStart) / 1000)}s spent of the ${Math.round(STEP_WATCHDOG_MS / 1000)}s watchdog); failing honestly`,
+      { stepIndex, level: 'error', data: { failureClass, spentMs: Date.now() - stepStart } });
+    await runLog?.flush();
+    return { status: 'failed', healed: false, afterPng };
+  }
+
   runLog?.log('heal', `step ${String(stepIndex + 1).padStart(2, '0')} failed (${failureClass}) — attempting heal`, { stepIndex, level: 'warn', data: { failureClass } });
 
-  const healingResult = await healingEngine.heal(classifiedFailure, { tenantId, runId, page });
+  const healingResult = await healingEngine.heal(classifiedFailure, {
+    tenantId, runId, page, domain,
+    // Hard watchdog cutoff minus margin — lets AdaptiveWait be exactly as
+    // patient as the step can afford, instead of a fixed 10s (finding #10b).
+    deadlineAt: stepStart + STEP_WATCHDOG_MS - 5_000,
+  });
 
   // An assertion that healed by RE-RESOLVING its target verified an element the
   // test never named — the resolver picked it only after the named one was not
@@ -1285,6 +1500,40 @@ async function executeStep(
   }
 
   if (healingResult.succeeded) {
+    // A strategy "succeeding" means it LOCATED a live element — not that the
+    // action ran. Until 2026-10-08 the step was marked healed right here, so a
+    // wait-strategy heal of a click was a PHANTOM: the click never dispatched,
+    // the run continued green past an action that never happened (changing-
+    // sites bench, stress site: 20s-late widget "healed" with no effect; the
+    // following assertion failed honestly — but a test ending on the click
+    // would have been a false-pass). A heal of an ACTION now re-executes the
+    // step against the healed selector and only counts when that passes.
+    // Assertions keep their own stricter gate above (healCertifiesAssertion).
+    if (!step.action.startsWith('assert')) {
+      const healedSet: SelectorSet = {
+        ...selectorSet,
+        selectors: [{
+          selector: healingResult.newSelector ?? classifiedFailure.previousSelector,
+          strategy: selectorSet.selectors[0]?.strategy ?? 'css',
+          confidence: 1,
+        }],
+      };
+      const retry = await engine.executeStep(step, healedSet, page).catch((e: any) => ({
+        status: 'failed' as const, errorType: 'HealRetryThrew', errorMessage: e?.message,
+      }));
+      if (retry.status !== 'passed') {
+        obs.increment('worker.heal_retry_failed', { failureClass, strategy: healingResult.strategyUsed ?? 'unknown' });
+        runLog?.log('heal',
+          `heal located an element but the retried action still failed (${healingResult.strategyUsed}) — not a heal`,
+          { stepIndex, level: 'error', data: { strategy: healingResult.strategyUsed, newSelector: healingResult.newSelector } });
+        await runLog?.flush();
+        return { status: 'failed', healed: false, afterPng };
+      }
+      // The healed action ran and passed — feed the delta memory exactly as a
+      // clean pass would, so a following delta-scoped assertion judges what the
+      // action produced instead of erroring AssertionNoAction (finding #3).
+      await captureWhatChanged();
+    }
     obs.increment('worker.step_healed', { failureClass, strategy: healingResult.strategyUsed });
     logger.info({
       event: 'step_healed',

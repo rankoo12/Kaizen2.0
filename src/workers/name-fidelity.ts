@@ -30,6 +30,31 @@ export function nameOverlaps(quoted: string, descriptor: string): boolean {
 }
 
 /**
+ * True when the step NAMES a target (has salient words) and NONE of those words
+ * appear in the resolved element's descriptor — the unambiguous signature of a
+ * confident WRONG pick under async latency: the page was still a skeleton, so
+ * the resolver returned a persistent-chrome element (the Notifications bell for
+ * "Add friend", "Play", "Create event" …) that the name-blind element cache
+ * rubber-stamped. Distinct from nameOverlaps, which asks "do the MAJORITY
+ * agree?" — this asks "do NONE agree?", a far narrower, safer trigger for the
+ * expensive settle-and-re-resolve recovery. A target with no salient words
+ * (nothing to check) is never absent. Same tokenizer as nameOverlaps.
+ */
+export function nameAbsent(target: string | null | undefined, descriptor: string | null | undefined): boolean {
+  if (!target || !descriptor) return false;
+  const words = salientWords(target);
+  if (words.length === 0) return false;
+  const hay = descriptor.toLowerCase();
+  return words.every((w) => !hay.includes(w));
+}
+
+/** The target's meaningful lowercase words — the shared tokenizer behind the name gates. */
+export function salientWords(target: string): string[] {
+  const STOP = new Set(['the', 'a', 'an', 'and', 'or', 'of', 'to', 'in', 'on', 'for', 'button', 'link', 'field']);
+  return target.toLowerCase().split(/[^a-z0-9]+/).filter((w) => (w.length > 1 || /[0-9]/.test(w)) && !STOP.has(w));
+}
+
+/**
  * A trailing standalone number on a control's name is usually a LIVE COUNT
  * badge ("Demo 5" = the Demo suite with 5 tests), and the run's own earlier
  * tests change it — six clicks died across runs 23–24 because the count moved

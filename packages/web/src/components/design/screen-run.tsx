@@ -84,6 +84,7 @@ const SOURCE_OF: Record<string, string> = {
   pgvector_element: 'global',  // L4 — element-level vector / shared pool
   llm: 'llm',                  // L5 — the model read the page
   delta: 'delta',              // Δ  — picked from what the previous action changed
+  reveal: 'pattern',           // ◉  — hidden element hover-revealed, no model call
 };
 
 function SourceBadge({ source, tokens }: { source: string | null; tokens: number }) {

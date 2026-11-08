@@ -1,0 +1,64 @@
+PURPOSE
+Buzzly is a synthetic social network — the most complicated site in this
+bench on purpose. One single-page app on hash routes: Feed (#/), Explore
+(#/explore), Friends (#/friends), Messages (#/messages), Groups (#/groups),
+and profile pages (#/profile-mira, #/profile-jon, #/profile-amara,
+#/profile-dev, #/profile-elin, #/profile-carla). Everything renders
+client-side with visible loading states; content arrives in stages.
+
+ROLES
+One signed-in demo user ("You"). No login flow; nothing persists past reload.
+
+CRITICAL FLOWS
+- Feed: a Stories strip (clicking a person's story shows its text, e.g. the
+  Jon Park story shows "Shipped the thing!"), a composer labeled
+  "What's buzzing?" with a "Post" button (posting shows "Your post is live."
+  and prepends the post; an empty post shows "Write something first."), and
+  a feed of 12 posts that loads in TWO batches — the counter line ends at
+  "12 posts in your feed". Each post has Like (flips to "Liked" and bumps
+  the like count), Comment (opens a box; writing and clicking "Reply" adds
+  "You: <text>" to the comments), and Share (shows
+  "Post shared to your timeline.").
+- Explore: a "Search Buzzly" field with live results after a short debounce.
+  Searching "coffee" finds Elin Sorensen and the #coffee topic with a
+  '<n> results for "coffee"' count line; clicking a person opens their
+  profile.
+- Profiles: name, bio, "<n> friends · <n> posts" stats, an "Add friend"
+  button ("Friend request sent to <name>."), and Posts / About / Photos tabs
+  that switch content client-side.
+- Friends: two pending requests, each with an "Accept" button
+  ("You are now friends with <name>." and the person joins the friends
+  list, whose count line updates); a friends list where each row has a
+  "Message" link.
+- Messages: a conversation list; opening one loads the thread (visible
+  loading line first); typing and clicking "Send" appends "You: <text>" and
+  shows "Delivered".
+- Groups: four group cards with "Join" buttons — joining shows
+  "Joined <group>." and the button becomes a "Joined" flag.
+- Notifications: a "Notifications" button in the header with an unread badge;
+  opening it lists notifications (e.g. "Hiking Buddies posted a new route.")
+  and "Mark all as read" shows "All caught up." and clears the badge.
+
+BUSINESS RULES
+- The feed count line always matches the rendered posts once loading ends.
+- Like counts change by exactly one per toggle; comment counts match the list.
+- Nothing persists across a reload; every page is reachable from the top nav.
+
+PRIORITIES
+Every outcome text quoted above, each as its own short test: posting (success
+and the empty error), liking, replying, sharing, opening a story, searching
+with the count line, adding a friend, accepting a request, sending a message,
+joining a group, and clearing notifications. Tab switching on a profile and
+navigation between all five sections.
+
+TEST-WRITING STANDARD
+- Name every test after its section and primary action.
+- Every test must END on a step verifying the visible outcome text quoted
+  above — never stop at the click.
+- Keep tests short: navigate, act, verify. One flow per test.
+
+CAUTIONS
+- Content loads in visible stages — a missing element is usually still
+  loading, not absent.
+- There is nothing to delete and no settings anywhere; all data is synthetic
+  and any typed value is safe.

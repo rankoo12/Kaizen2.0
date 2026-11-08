@@ -1,4 +1,40 @@
-import { quotedName, nameOverlaps, countDriftMatch } from '../name-fidelity';
+import { quotedName, nameOverlaps, countDriftMatch, nameAbsent, salientWords } from '../name-fidelity';
+
+describe('salientWords — the shared tokenizer behind the name gates', () => {
+  it('drops stopwords and single letters, keeps digits', () => {
+    expect(salientWords('the "Block user" menu item')).toEqual(['block', 'user', 'menu', 'item']);
+    expect(salientWords('the Demo 0 suite')).toEqual(['demo', '0', 'suite']);
+    expect(salientWords('the button')).toEqual([]); // stopwords only → nothing to gate on
+  });
+});
+
+describe('nameAbsent — the suspect-wrong-pick-under-latency trigger (finding #6)', () => {
+  it('flags the real latency mis-picks the bench caught (zero shared word)', () => {
+    expect(nameAbsent('the Add friend button', 'Notifications')).toBe(true);
+    expect(nameAbsent('the "Play" button for Ridge traverse', 'Notifications')).toBe(true);
+    expect(nameAbsent('the Create event button', 'Notifications')).toBe(true);
+    expect(nameAbsent('the "Write a comment…" field', "What's buzzing?")).toBe(true);
+  });
+
+  it('does NOT flag a resolution that shares any salient word', () => {
+    expect(nameAbsent('the Add friend button', 'Add friend')).toBe(false);
+    expect(nameAbsent('the message field', 'Messages')).toBe(false); // "message" ⊂ "messages"
+    expect(nameAbsent('the Pro plan button', 'Choose Pro')).toBe(false); // shares "pro"
+    expect(nameAbsent('the search box', 'Search Buzzly')).toBe(false);
+  });
+
+  it('never flags when there is nothing to check', () => {
+    expect(nameAbsent('the button', 'Notifications')).toBe(false); // only stopwords
+    expect(nameAbsent(null, 'x')).toBe(false);
+    expect(nameAbsent('x', null)).toBe(false);
+  });
+
+  it('is stricter than nameOverlaps: a half-match is absent=false but overlaps=false', () => {
+    // "Pro plan" vs "Choose Pro": 1 of 2 words → overlaps false (<=50%), absent false (one matched).
+    expect(nameOverlaps('Pro plan', 'Choose Pro')).toBe(false);
+    expect(nameAbsent('Pro plan', 'Choose Pro')).toBe(false);
+  });
+});
 
 describe('quotedName', () => {
   it('extracts the double-quoted name', () => {

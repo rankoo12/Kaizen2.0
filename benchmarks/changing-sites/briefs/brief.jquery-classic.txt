@@ -1,0 +1,39 @@
+PURPOSE
+Harbor Desk is a synthetic old-school support console: one page
+(/index.html) with three tabs, an accordion of common questions, an
+announcement modal, and an on-demand activity table.
+
+ROLES
+Anonymous agent; no login; nothing persists.
+
+CRITICAL FLOWS
+- Tabs: Overview (default), Reports, Activity. Clicking a tab shows its panel.
+- Overview: the text "Queue is quiet: 3 open tickets" is visible, plus an
+  "Open announcement" button that opens a "Scheduled maintenance" dialog with
+  a "Got it" button that closes it.
+- Common questions accordion on Overview: "Support hours", "Refund policy",
+  "Escalation path". Clicking a heading reveals its answer text (e.g. Refund
+  policy → "Full refund inside 30 days, no questions asked.").
+- Reports tab: a "Load weekly report" button; clicking it shows
+  "Weekly report ready: 42 tickets, 94% satisfaction."
+- Activity tab: a "Load entries" button; clicking it shows a three-row table
+  including "closed ticket #4411".
+
+BUSINESS RULES
+- Only one accordion answer is open at a time.
+- The report line and activity rows do not exist until their buttons are
+  clicked.
+
+PRIORITIES
+Each tab opening; the announcement modal opening AND closing; each accordion
+answer; the weekly report line; the activity table contents.
+
+TEST-WRITING STANDARD
+- Name every test after its area and primary action.
+- Every test must END on a step verifying the visible outcome text quoted
+  above — never stop at the click.
+- Keep tests short: act, verify.
+
+CAUTIONS
+- There is nothing to delete or configure anywhere.
+- All content is synthetic and static; everything is safe to click.

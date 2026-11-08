@@ -1,0 +1,38 @@
+PURPOSE
+Nimbus Store is a synthetic single-page shop built with React. Three views on
+hash routes: Home (#/), Products (#/products), Account (#/account). The page
+renders client-side a moment after load; navigation never reloads the page.
+
+ROLES
+Anonymous visitor everywhere. The Account view "signs in" with any email —
+it only shows a confirmation message; there is no real account.
+
+CRITICAL FLOWS
+- Home: headline "Gear that keeps up with you" and a "Browse products" button
+  that opens the Products view.
+- Products: four product cards — Aurora Lamp $49, Drift Keyboard $129, Pebble
+  Mouse $39, Haven Headphones $199 — each with an "Add to wishlist" button.
+  Clicking one shows "Added <product> to your wishlist."
+- Account: an "Email address" field and a "Sign in" button. Clicking it shows
+  "Signed in as <email>." (or "Signed in as guest." when the field is empty).
+- The top nav (Home / Products / Account) switches views from anywhere.
+
+BUSINESS RULES
+- Nothing persists; every view resets on reload.
+- The wishlist message always names the most recently added product.
+
+PRIORITIES
+Each view's primary action with its visible outcome: browsing from Home,
+adding at least two different products to the wishlist, signing in with a
+typed email, and nav switching between all three views.
+
+TEST-WRITING STANDARD
+- Name every test after its view and primary action.
+- Every test must END on a step verifying the visible outcome text quoted
+  above — never stop at the click.
+- Keep tests short: navigate, act, verify.
+
+CAUTIONS
+- The app renders shortly after page load — nothing exists instantly.
+- There is nothing to delete or configure anywhere.
+- All data is synthetic; any typed values are safe.

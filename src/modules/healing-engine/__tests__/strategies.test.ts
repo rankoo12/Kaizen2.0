@@ -87,6 +87,42 @@ describe('AdaptiveWaitStrategy', () => {
     const result = await strategy.heal(makeFailure('TIMING'), makeContext(page));
     expect(result.succeeded).toBe(false);
   }, 15000);
+
+  it('deadline-aware: waits past the classic 10s when the watchdog budget allows (finding #10b)', async () => {
+    // Fixed cap waits 500+1000+2000+4000+2500 = 10s across 5 polls. With a
+    // 40s budget (deadline − reserve) the doubling keeps going — a 20s-late
+    // element (7th poll at 31.5s+) is only reachable deadline-aware.
+    const waits: number[] = [];
+    const page = {
+      $: jest.fn()
+        .mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null).mockResolvedValueOnce(null).mockResolvedValueOnce(null)
+        .mockResolvedValueOnce({}), // appears on the 7th poll — past the fixed cap
+      waitForTimeout: jest.fn().mockImplementation(async (ms: number) => { waits.push(ms); }),
+    };
+    const context = { ...makeContext(page), deadlineAt: Date.now() + 55_000 }; // 55s left − 15s reserve = 40s budget
+
+    const result = await strategy.heal(makeFailure('TIMING'), context);
+
+    expect(result.succeeded).toBe(true);
+    expect(waits.length).toBe(7);
+    expect(waits.reduce((a, b) => a + b, 0)).toBeGreaterThan(10_000); // genuinely waited past the old cap
+  });
+
+  it('deadline-aware: a short remaining budget still gets the classic 10s floor', async () => {
+    const waits: number[] = [];
+    const page = {
+      $: jest.fn().mockResolvedValue(null),
+      waitForTimeout: jest.fn().mockImplementation(async (ms: number) => { waits.push(ms); }),
+    };
+    // Deadline nearly spent: floor keeps the classic budget, never less.
+    const context = { ...makeContext(page), deadlineAt: Date.now() + 12_000 };
+
+    const result = await strategy.heal(makeFailure('TIMING'), context);
+
+    expect(result.succeeded).toBe(false);
+    expect(waits.reduce((a, b) => a + b, 0)).toBe(10_000);
+  });
 });
 
 // ─── EscalationStrategy ───────────────────────────────────────────────────────
@@ -125,5 +161,70 @@ describe('ResolveAndRetryStrategy', () => {
     // Genuinely-unrelated classes still opt out.
     expect(strategy.canHandle(makeFailure('LOGIC_FAILURE'))).toBe(false);
     expect(strategy.canHandle(makeFailure('PAGE_NOT_LOADED'))).toBe(false);
+  });
+
+  // ── Hourly budget (HEAL_RESOLVE_RETRY_PER_HOUR) ────────────────────────────
+  // The cap is read per call: a mutated site needs many re-resolutions in one
+  // suite run, so the changing-sites bench (and a tenant mid-redesign) raises
+  // it via env without a worker restart.
+
+  describe('hourly budget', () => {
+    const makeRedis = () => {
+      const counts = new Map<string, number>();
+      return {
+        incr: jest.fn(async (key: string) => {
+          const next = (counts.get(key) ?? 0) + 1;
+          counts.set(key, next);
+          return next;
+        }),
+        expire: jest.fn(async () => 1),
+      };
+    };
+    // Empty pruner candidates: a within-budget call returns {succeeded:false}
+    // AFTER consulting the pruner; an over-budget call never reaches it.
+    const pruner = { prune: jest.fn(async () => []) };
+    const obs = { log: jest.fn(), increment: jest.fn(), startSpan: jest.fn(), histogram: jest.fn() };
+
+    afterEach(() => {
+      delete process.env.HEAL_RESOLVE_RETRY_PER_HOUR;
+      jest.clearAllMocks();
+    });
+
+    it('defaults to 2 per hour — third call is rejected before any LLM work', async () => {
+      const s = new ResolveAndRetryStrategy(pruner as any, {} as any, makeRedis() as any, obs as any);
+      await s.heal(makeFailure('ELEMENT_MUTATED'), makeContext({}));
+      await s.heal(makeFailure('ELEMENT_MUTATED'), makeContext({}));
+      expect(pruner.prune).toHaveBeenCalledTimes(2);
+
+      const third = await s.heal(makeFailure('ELEMENT_MUTATED'), makeContext({}));
+      expect(third.succeeded).toBe(false);
+      expect(pruner.prune).toHaveBeenCalledTimes(2); // not consulted
+      expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_budget_exceeded', { tenantId: 't1' });
+    });
+
+    it('honors HEAL_RESOLVE_RETRY_PER_HOUR without a new instance', async () => {
+      const s = new ResolveAndRetryStrategy(pruner as any, {} as any, makeRedis() as any, obs as any);
+      process.env.HEAL_RESOLVE_RETRY_PER_HOUR = '5';
+      for (let i = 0; i < 5; i++) await s.heal(makeFailure('ELEMENT_MUTATED'), makeContext({}));
+      expect(pruner.prune).toHaveBeenCalledTimes(5);
+      expect(obs.increment).not.toHaveBeenCalledWith('healing.resolve_retry_budget_exceeded', { tenantId: 't1' });
+
+      const sixth = await s.heal(makeFailure('ELEMENT_MUTATED'), makeContext({}));
+      expect(sixth.succeeded).toBe(false);
+      expect(pruner.prune).toHaveBeenCalledTimes(5);
+    });
+
+    it('rejects nonsense overrides and keeps the default', async () => {
+      for (const bad of ['0', '-3', 'many', '2.5']) {
+        process.env.HEAL_RESOLVE_RETRY_PER_HOUR = bad;
+        const s = new ResolveAndRetryStrategy(pruner as any, {} as any, makeRedis() as any, obs as any);
+        await s.heal(makeFailure('ELEMENT_MUTATED'), makeContext({}));
+        await s.heal(makeFailure('ELEMENT_MUTATED'), makeContext({}));
+        const third = await s.heal(makeFailure('ELEMENT_MUTATED'), makeContext({}));
+        expect(third.succeeded).toBe(false);
+        expect(obs.increment).toHaveBeenCalledWith('healing.resolve_retry_budget_exceeded', { tenantId: 't1' });
+        jest.clearAllMocks();
+      }
+    });
   });
 });

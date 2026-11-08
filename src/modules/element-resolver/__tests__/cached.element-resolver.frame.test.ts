@@ -182,13 +182,13 @@ describe('CachedElementResolver — frame guard', () => {
     expect(result.frameUrl).toBeUndefined();
   });
 
-  it('promotes a frame entry into Redis as v3, so the L1 hit is guarded too', async () => {
+  it('promotes a frame entry into Redis as v4, so the L1 hit is guarded too', async () => {
     mockQuery.mockResolvedValueOnce(dbRowWithFrame(CONSENT_CANONICAL));
 
     await resolver.resolve(makeStep(), context(pageWithFrames([CONSENT_LIVE])));
 
     const written = JSON.parse(mockRedis.setex.mock.calls[0][2]);
-    expect(written.v).toBe(3);
+    expect(written.v).toBe(4);
     expect(written.frameUrl).toBe(CONSENT_CANONICAL);
   });
 });

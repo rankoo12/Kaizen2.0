@@ -166,7 +166,14 @@ export type ResolutionSource =
    * can say so instead of "this step did not need to find an element".
    * Spec: docs/specs/test-writer/spec-oracle-delta-and-fidelity.md §1
    */
-  | 'delta';
+  | 'delta'
+  /**
+   * Hover-to-reveal recovery: the named element existed in the DOM but was
+   * hidden inside a hover-gated container (a "⋯" menu); the worker hovered its
+   * nearest visible ancestor to reveal it and targeted it directly. No model
+   * call. Spec: docs/specs/workers/spec-hover-reveal-scroll-find.md
+   */
+  | 'reveal';
 
 /**
  * Compact snapshot of one DOM candidate as presented to the LLM.
@@ -222,6 +229,16 @@ export type SelectorSet = {
    * top document. Undefined for ordinary main-document elements.
    */
   frameUrl?: string;
+  /**
+   * True when this EXACT-HASH cache entry (redis/db_exact) was persisted by a
+   * validated heal (ResolveAndRetry: action re-executed and passed). Its
+   * selector was adopted precisely because the original name-anchored one died
+   * — a RENAMED control — so the worker's name gates treat the name mismatch
+   * as the known rename, not a wrong pick, and serve it instead of evicting it
+   * into a re-heal loop every run (bench finding #5, healed-not-learned).
+   * Interactions only; assertions stay strict. Never set on vector-tier hits.
+   */
+  healProvenance?: boolean;
 };
 
 export type ResolutionContext = {
@@ -316,6 +333,24 @@ export type HealingContext = {
   runId: string;
   /** Typed as unknown here; consuming modules import Page from playwright directly. */
   page: unknown;
+  /**
+   * The run's cache domain (the same normalization recordSuccess keys on).
+   * ResolveAndRetry needs it to UPSERT its healed selector: the stale row is
+   * often already EVICTED by the resolution-recovery gates when the heal runs,
+   * and an UPDATE into a deleted row silently learns nothing (bench finding #5
+   * — every renamed control re-healed forever). Optional so existing
+   * constructors compile; without it the persist falls back to UPDATE-only.
+   */
+  domain?: string;
+  /**
+   * Epoch-ms hard deadline for this step (the watchdog cutoff minus a safety
+   * margin). AdaptiveWait scales its patience to this instead of a fixed 10s:
+   * on a page whose content genuinely arrives 20s+ late, the fixed cap gave up
+   * before the element existed — the old "pass" relied on earlier recovery
+   * layers ACCIDENTALLY wasting enough time first (bench finding #10b).
+   * Optional; strategies fall back to their fixed budgets without it.
+   */
+  deadlineAt?: number;
 };
 
 export type HealingAttempt = {

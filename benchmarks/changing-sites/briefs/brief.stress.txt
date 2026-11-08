@@ -1,0 +1,37 @@
+PURPOSE
+Relay Ops is a synthetic delivery-operations dashboard that renders SLOWLY on
+purpose: skeleton placeholders first, data when the fake backend answers.
+Two pages: Dashboard (/index.html) and Deliveries (/deliveries.html).
+
+ROLES
+Anonymous operator; no login; nothing persists.
+
+CRITICAL FLOWS
+- Dashboard: three KPI cards appear after a short loading shimmer — "Open
+  deliveries 12", "On-time rate 96%", "Fleet in service 8" — along with a
+  "Refresh stats" button. Clicking it shows "Stats refreshed just now."
+- Deliveries: a list of 20 rows streams in ("20 deliveries shown" when done),
+  each like "Delivery #1001 — Ben · Osaka". A "Search deliveries" field
+  filters live by courier or city (typing "Lisbon" shows 5, clearing shows
+  20, with the count line updating). Clicking a row opens a detail panel
+  titled "Delivery #<id>" with the courier, city and status.
+
+BUSINESS RULES
+- Everything renders late; content that is not there yet is loading, not
+  missing.
+- The "<n> deliveries shown" line always matches the visible rows.
+
+PRIORITIES
+The three KPI values; the refresh confirmation; the full list count; search
+filtering with the count verified; a row's detail panel contents.
+
+TEST-WRITING STANDARD
+- Name every test after its page and primary action.
+- Every test must END on a step verifying the visible outcome text quoted
+  above — never stop at the click.
+- Keep tests short: navigate, act, verify.
+
+CAUTIONS
+- Rendering is deliberately delayed — wait for content rather than declaring
+  it absent.
+- There is nothing to delete or configure anywhere; everything is synthetic.

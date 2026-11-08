@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Relay Ops</title>
+  <link rel="stylesheet" href="styles.css">
+</head>
+<body>
+  <header class="topbar">
+    <span class="brand">Relay Ops</span>
+    <nav aria-label="Main">
+      <a href="index.html" id="nav-dashboard">Dashboard</a>
+      <a href="deliveries.html" id="nav-deliveries">Deliveries</a>
+    </nav>
+  </header>
+  <main>
+    <h1 id="dash-title">Operations dashboard</h1>
+    <p class="lede">Everything below renders late on purpose — skeletons first, data when the "backend" answers.</p>
+
+    <div class="cards" id="kpi-cards">
+      <div class="card skeleton" id="kpi-open"><div class="shimmer"></div></div>
+      <div class="card skeleton" id="kpi-ontime"><div class="shimmer"></div></div>
+      <div class="card skeleton" id="kpi-fleet"><div class="shimmer"></div></div>
+    </div>
+
+    <div id="refresh-area"></div>
+  </main>
+  <footer>Relay Ops is a synthetic site for the Kaizen engine bench.</footer>
+  <script src="app.js"></script>
+</body>
+</html>

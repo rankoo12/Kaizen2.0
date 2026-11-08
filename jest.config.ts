@@ -8,7 +8,9 @@ const config: Config = {
       tsconfig: 'tsconfig.test.json',
     },
   },
-  roots: ['<rootDir>/src'],
+  // benchmarks/changing-sites ships a judge whose honesty guarantees are unit
+  // tested like product code — the bench is only trustworthy if the judge is.
+  roots: ['<rootDir>/src', '<rootDir>/benchmarks/changing-sites'],
   testMatch: ['**/__tests__/**/*.ts', '**/*.test.ts'],
   testPathIgnorePatterns: ['/node_modules/', '\\.integration\\.test\\.ts$'],
   collectCoverageFrom: [

@@ -1,0 +1,44 @@
+PURPOSE
+Lumen Notes (a synthetic marketing + account site) sells a shared-notes product.
+Four small pages: Home, Pricing, Contact, Login. Everything is client-side; no
+data persists. The whole site is a public demo built to be tested.
+
+ROLES
+Anonymous visitor everywhere. The login page has a demo account: username
+"demo", password "demo123". Signing in only shows a welcome message — there is
+no signed-in area. Wrong credentials show an error message.
+
+CRITICAL FLOWS
+- Home (/index.html): headline "Notes your whole team can read", a "Get started"
+  button that goes to the Pricing page, three feature cards, and a nav with
+  Home / Pricing / Contact / Login on every page.
+- Pricing (/pricing.html): three plans — Starter $9, Pro $29, Enterprise $99 —
+  each with a "Choose <plan>" button. Clicking one shows the text
+  "You selected the <plan> plan."
+- Contact (/contact.html): Full name, Email address, Topic (Support / Sales /
+  Feedback) and Message, plus a "Send message" button. Submitting with every
+  field filled shows "Thanks, we got your message." Submitting with a missing
+  field shows "Please fill in every field."
+- Login (/login.html): Username and Password fields and a "Sign in" button.
+  demo / demo123 shows "Welcome back, demo!". Anything else shows
+  "Invalid username or password."
+
+BUSINESS RULES
+- Nothing persists between pages or reloads; every page is independent.
+- The contact form requires name, email and message (topic always has a value).
+
+PRIORITIES
+Each page's primary action with its visible outcome text: choosing each plan,
+sending the contact form (both the success and the missing-field error), the
+login success and the login failure, and the Get started navigation.
+
+TEST-WRITING STANDARD
+- Name every test after its page and primary action, e.g. "Pricing: choosing
+  the Pro plan confirms the selection".
+- Every test must END on a step that verifies the visible outcome text the flow
+  produces (the messages quoted above) — never stop at the click.
+- Keep tests short: navigate, act, verify the outcome.
+
+CAUTIONS
+- There is nothing to delete, configure, or reset anywhere on the site.
+- All data is synthetic; typing any values is safe and expected.

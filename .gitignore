@@ -66,6 +66,11 @@ benchmarks/testwriter/results/
 # local LLM inbox (prompts contain page text)
 .kaizen-llm/
 
+# Changing-sites bench — live/ is the runtime docroot the harness swaps
+# (v1/v2/... are the committed sources); results are generated artifacts
+benchmarks/sites/*/live/
+benchmarks/changing-sites/results/
+
 # QA-agent baseline artifacts — specs are committed, generated outputs are not
 benchmarks/claude-qa/**/.auth-state.json
 benchmarks/claude-qa/whitebox/test-results/

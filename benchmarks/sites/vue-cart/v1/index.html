@@ -1,0 +1,49 @@
+﻿<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Verdant Grocer</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="vue.min.js"></script>
+</head>
+<body>
+  <!-- verdant build v1 -->
+  <div id="app" v-cloak>
+    <header class="topbar">
+      <span class="brand">Verdant Grocer</span>
+      <nav aria-label="Main">
+        <a href="#" id="nav-catalog" @click.prevent="view = 'catalog'">Catalog</a>
+        <a href="#" id="nav-cart" @click.prevent="view = 'cart'">Cart</a>
+      </nav>
+      <span class="badge" id="cart-badge" v-if="cart.length">{{ cart.length }}</span>
+    </header>
+
+    <main v-if="view === 'catalog'">
+      <h1 id="catalog-title">Today's produce</h1>
+      <div class="cards">
+        <div class="card" v-for="p in products" :id="'product-' + p.id" :key="p.id">
+          <h3>{{ p.name }}</h3>
+          <p class="price">{{ p.price }}</p>
+          <button class="btn" :id="'add-' + p.id" @click="add(p)">Add to cart</button>
+        </div>
+      </div>
+      <p class="status ok" id="catalog-status" role="status" v-if="lastAdded">{{ lastAdded }} added to your cart.</p>
+    </main>
+
+    <main v-if="view === 'cart'">
+      <h1 id="cart-title">Your cart</h1>
+      <button class="btn" id="checkout" @click="checkout" v-if="cart.length && !ordered">Checkout</button>
+      <p class="lede" id="cart-empty" v-if="!cart.length && !ordered">Your cart is empty — add something from the catalog.</p>
+      <ul class="cart-list" id="cart-list" v-if="cart.length">
+        <li v-for="(item, i) in cart" :key="i">{{ item.name }} — {{ item.price }}</li>
+      </ul>
+      <p class="lede" id="cart-count" v-if="cart.length && !ordered">In your cart: {{ cart.length }} items</p>
+      <p class="status ok" id="order-status" role="status" v-if="ordered">Order placed — thank you!</p>
+    </main>
+
+    <footer>Verdant Grocer is a synthetic site for the Kaizen engine bench.</footer>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

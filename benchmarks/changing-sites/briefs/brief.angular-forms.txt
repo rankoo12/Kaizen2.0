@@ -1,0 +1,41 @@
+PURPOSE
+Fieldstone HR is a synthetic HR console — forms are the product. Four pages:
+Home (/index.html), Register (/register.html), Profile (/profile.html),
+Directory (/directory.html).
+
+ROLES
+Anonymous admin everywhere; no login. Nothing persists between pages.
+
+CRITICAL FLOWS
+- Register: Full name, Work email, Role (Engineer / Designer / Manager), and a
+  handbook confirmation checkbox, then a "Create account" control.
+  All filled + checked → "Account created for <name>." Missing name or email →
+  "Name and work email are required." Unchecked box → "The handbook
+  confirmation is required."
+- Profile: Display name, Bio, a monthly-digest checkbox, and "Save profile".
+  With a display name → "Profile saved successfully." Without →
+  "A display name is required."
+- Directory: a "Search people" field filtering a five-person table live, with
+  a "<n> people shown" count line. Typing "Platform" shows 2 people; typing
+  "Lisbon" shows 2; clearing shows all 5.
+- Home links to Register via "Register an employee".
+
+BUSINESS RULES
+- Register requires name, email, and the checked confirmation.
+- Profile requires only the display name.
+- The directory count line always matches the visible rows.
+
+PRIORITIES
+Register success and BOTH its error messages; profile save success and its
+error; directory filtering with the count line verified; the Home → Register
+navigation.
+
+TEST-WRITING STANDARD
+- Name every test after its page and primary action.
+- Every test must END on a step verifying the visible outcome text quoted
+  above — never stop at the click.
+- Keep tests short: navigate, fill, act, verify.
+
+CAUTIONS
+- There is nothing to delete and no settings to change anywhere.
+- All data is synthetic; any typed values are safe.
