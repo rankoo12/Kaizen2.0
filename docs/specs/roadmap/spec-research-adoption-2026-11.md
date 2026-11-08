@@ -19,6 +19,9 @@ inside the 7-day release-age window and brings an accessible-name change);
 aria-contract check added. See §S2b.
 Updated: 2026-11-08 (S4a) — run-outcome-deferred heal persistence shipped
 (social 21/3/1/0 → 24/0/1/0, no poison rows). See §S4.
+Updated: 2026-11-08 (S3a) — oracle-strength lint + assertion-weakening guard
+shipped (the two S3 gates that need no model); measured on 1,465 generated
+cases. See §S3.
 Status: ACTIVE — this is the decision record for docs/research/2026-11-08.md
 and docs/research/2026-backfill.md. Items not listed under §2 or §3 were read
 and deliberately not adopted.
@@ -206,6 +209,40 @@ Inconclusive", cross-step symbolic oracles, judge validation with kappa +
 swapped order. This converts the bench's internal honesty culture into
 customer-visible product — the direct answer to Momentic/Checksum and the
 top recurring user complaints (silent passes, agents gaming tests).
+
+**S3a SHIPPED 2026-11-08 (feat/trust/oracle-strength-gates) — the two gates that
+need no model.** Started from what exists: `lints.ts` already covered vacuity,
+negative shape, determinism and the `click_random` loop; `oracle-audit.ts`'s
+`weakOracle` is a different thing (a post-run flag for "the terminal assertion's
+element was picked by the LLM resolver"). What was missing is a STATIC strength
+taxonomy, now `write/oracle-strength.ts`: strong = compares a concrete value
+(text / count / attribute), moderate = URL / title / absence of text, weak =
+boolean-only (visible / enabled / checked).
+- **Lint** (advisory — the finding rides into the judge's prompt and a REVISE
+  sends it through the repair round): a POSITIVE scenario that ACTS and asserts
+  only boolean-only things. Scoped on purpose: a navigation-only test ("arrive at
+  the 404 page, heading visible") and a negative ("the error is visible") are
+  shapes the existing rules sanction; condemning them would re-open a fixed bug.
+- **Assertion-weakening guard** in `judgeWithRepair`: a rewrite with fewer
+  assertions OR lower total strength than the original is blocked before the
+  re-judge — REVISE falls back to its original, REJECT stays rejected with the
+  blocked attempt's steps on the report (`testwriter.judge_repair_weakened`).
+  Conservative by design: a rewrite that merely deletes a wrong assertion is also
+  blocked. The heal half of the research item needs no new code — the engine
+  already refuses to certify an assertion healed onto a different element
+  (`healCertifiesAssertion`).
+- **Measured on the 1,465 generated cases in the dev DB (compiled steps, no LLM):**
+  39.6% carry a value-bearing assertion, **46.2% assert at best a URL / title /
+  absence**, 14.2% are boolean-only, and the lint would flag at most 13.7%
+  (upper bound — the real lint also exempts negatives). So the lint is a signal
+  on roughly one test in eight, not a flood, and the larger weak-oracle population
+  is the URL/title-only tests — the natural next target.
+- **Still open, deliberately (each needs a model or labelled data we do not
+  have):** judge "no evidence = Inconclusive" and per-criterion calls (prompt
+  changes), cross-step symbolic oracles (a WRITE capability), judge validation
+  with kappa + swapped order (needs ~100 hand-labelled tests), COMPREHEND
+  implicit constraints. Under the no-OpenAI-spend rule these can only be
+  validated on the local inbox, which answers with a weak Claude model.
 
 ### S4 — Shared-pool write-path governance (~1 week)
 Backfill §3.4, with two repo corrections:

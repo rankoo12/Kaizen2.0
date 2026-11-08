@@ -1,6 +1,7 @@
 import type { IObservability } from '../../observability/interfaces';
 import type { JudgeVerdict, ScenarioRejection } from '../../../types/test-writer';
 import type { WrittenScenario, WriteOutcome } from './scenario-writer';
+import { assertionWeakening } from './oracle-strength';
 
 /**
  * JUDGE with one repair round.
@@ -92,6 +93,17 @@ export async function judgeWithRepair(
       };
     }
     if (outcome.ok) {
+      // A repair that "fixes" a test by asserting less has not fixed it — repair
+      // agents converge partly by deleting or weakening assertions (arXiv
+      // 2605.01471). Block it before it can reach the re-judge: REVISE falls back
+      // to its original (as before repairs existed), REJECT stays rejected.
+      // Spec: spec-research-adoption-2026-11 §S3.
+      const weakening = assertionWeakening(p.original.intents ?? [], outcome.scenario.intents ?? []);
+      if (weakening) {
+        deps.obs.increment('testwriter.judge_repair_weakened', { verdict: p.verdict });
+        settleUnrescued(p, `rewrite blocked — ${weakening}`, stepsOf(outcome.scenario));
+        continue;
+      }
       candidates.push({ from: p, rewritten: outcome.scenario });
       continue;
     }

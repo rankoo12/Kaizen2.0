@@ -1,5 +1,6 @@
 import type { StepIntent } from '../../../types/test-writer';
 import { isAssertion } from './step-intent.schema';
+import { oracleProfile } from './oracle-strength';
 
 /**
  * Free AST lints — deterministic checks that strip the mechanical slice off the
@@ -16,6 +17,9 @@ const STATE_CHANGING = new Set([
   'click', 'double_click', 'right_click', 'type', 'select', 'check', 'uncheck',
   'clear', 'press_key', 'click_random', 'drag_and_drop', 'navigate',
 ]);
+
+/** Actions that do something to the app beyond arriving at a page. */
+const ACTING = new Set([...STATE_CHANGING].filter((a) => a !== 'navigate'));
 
 /** Values that drift between runs and turn an assertion into a false alarm. */
 const VOLATILE = [
@@ -58,6 +62,29 @@ export function lintScenario(steps: StepIntent[], kind: 'positive' | 'negative')
     }
   } else {
     findings.push('scenario does not end on an assertion');
+  }
+
+  // ── oracle-strength: a happy-path scenario that ACTS and then asserts only
+  //    boolean-only things (visible / enabled / checked) passes while the app is
+  //    wrong in every way that matters — it proves an element exists, not that
+  //    the action produced the right value (arXiv 2606.18168: 80% of
+  //    agent-written tests). Advisory, like the rest: the finding rides into the
+  //    judge's prompt, and a REVISE verdict sends it through the repair round
+  //    with this as the instruction.
+  //    Scoped on purpose, because two shapes are SANCTIONED elsewhere in this
+  //    file and condemning them would re-open a fixed problem: a navigation-only
+  //    test ("arrive at the 404 page, its heading is visible" — an existence
+  //    check is the right oracle) and a negative ("the error is visible" — the
+  //    negative-shape rule below asks for exactly that).
+  //    Spec: spec-research-adoption-2026-11 §S3.
+  if (kind === 'positive' && steps.some((s) => ACTING.has(s.action))) {
+    const profile = oracleProfile(steps);
+    if (profile.assertions > 0 && profile.best === 'weak') {
+      findings.push(
+        'every assertion is boolean-only (visible / enabled / checked) after an action — the test ' +
+        'can pass while the app shows the wrong value; prefer asserting a text, count or attribute value',
+      );
+    }
   }
 
   // ── negative-shape: Tier-1 negatives assert the PRESENCE of a rejection.
