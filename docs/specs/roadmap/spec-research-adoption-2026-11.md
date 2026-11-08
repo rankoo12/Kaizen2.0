@@ -22,6 +22,9 @@ Updated: 2026-11-08 (S4a) — run-outcome-deferred heal persistence shipped
 Updated: 2026-11-08 (S3a) — oracle-strength lint + assertion-weakening guard
 shipped (the two S3 gates that need no model); measured on 1,465 generated
 cases. See §S3.
+Updated: 2026-11-08 (S4b) — the worker re-derives behindAuth from the case
+(defense in depth for any future enqueue site); prompt-cache tenant scoping
+review is what remains of S4's behindAuth boundary.
 Status: ACTIVE — this is the decision record for docs/research/2026-11-08.md
 and docs/research/2026-backfill.md. Items not listed under §2 or §3 were read
 and deliberately not adopted.
@@ -258,8 +261,11 @@ Backfill §3.4, with two repo corrections:
   security fix that did not need to wait for the sprint. What REMAINS for S4
   on this boundary: review prompt-cache tenant scoping (the campaign
   observed cross-tenant prompt-cache replays — fine for public pages, needs
-  a decision for private ones), and consider letting the worker re-derive
-  behindAuth from the case as defense in depth for any future enqueue site.
+  a decision for private ones). **Worker-side re-derivation SHIPPED
+  2026-11-08** (`src/workers/behind-auth.ts`): the worker protects a run when
+  the payload OR the case says so (never an override), fails closed on a
+  lookup error, and was proven live with an unflagged enqueue — see the #14 row
+  in spec-changing-sites §12.
 - New pieces adopted: scope filter INSIDE the pgvector query (+
   `hnsw.iterative_scan`), N-distinct-tenant promotion with provenance
   columns, expected-state predicate (URL pattern + landmark signature) on
