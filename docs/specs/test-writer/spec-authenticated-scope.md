@@ -3,6 +3,7 @@
 Created: 2026-08-06
 Updated: 2026-08-17 — §11 expanded from design sketch to implementable spec
 Updated: 2026-11-08 — §4.1 amended: behindAuth travels with the case (migration 045)
+Updated: 2026-11-08 (later) — §4.1: the worker re-derives behindAuth from the case (fail-closed, OR-not-override)
 (Mission 1 deliverable 1): build status, the two backend gaps the UI needs, the
 error→copy contract, and the test plan.
 Branch: `feat/test-writer/authenticated-scope` (off main, after P2 merged as #65)
@@ -258,6 +259,14 @@ memory of its own app, and it is what makes the login prefix free (§6.3).
 > job's scope inside the case insert, and the case-run enqueue site sends
 > `behindAuth` from it. Existing cases were backfilled from their job's scope
 > (conservatively — a job's whole output is flagged).
+>
+> **Amended again 2026-11-08 — the consumer re-derives it too.** The worker no
+> longer trusts the payload alone: `resolveBehindAuth` (`src/workers/behind-auth.ts`)
+> protects a run if the payload OR the run's case says so — OR, never an override,
+> so a payload that omits the flag (or sets it false) cannot switch protection off
+> for an authenticated case — and FAILS CLOSED if the case lookup throws. A flag
+> attached by every producer is one forgotten enqueue site from leaking; this makes
+> the boundary hold regardless of who enqueued.
 
 **The isolation test must change shape.** Today's guard is a text grep over
 `src/modules/test-writer/**` (safety.test.ts:173-197) and would catch neither

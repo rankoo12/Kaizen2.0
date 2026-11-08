@@ -51,6 +51,7 @@ import { resolveCountSelector } from '../modules/element-resolver/countable';
 import { interpolateStep } from './run-context';
 import { shouldResolveFresh, healCertifiesAssertion } from './assertion-cache-policy';
 import { DeferredHeals, pageShowsText, type PendingHeal, type SettleDecision } from './deferred-heals';
+import { resolveBehindAuth } from './behind-auth';
 import { RunLogger } from './run-logger';
 import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwright.execution-engine';
 import { PageChallengeDetector } from '../modules/execution-engine/challenge-detector';
@@ -388,12 +389,28 @@ async function processRun(payload: RunJobPayload, attempt: number): Promise<void
   // outcome corroborates them (S4). Per attempt: a BullMQ retry starts clean.
   const deferredHeals = new DeferredHeals(compiledSteps);
 
+  // The privacy boundary is decided HERE, from the case — not only from whatever
+  // the producer remembered to put in the payload (finding #14, defense in depth).
+  const behindAuthDecision = await resolveBehindAuth({
+    tenantId, runId, payloadFlag: payload.behindAuth === true,
+  });
+  if (behindAuthDecision.behindAuth && behindAuthDecision.source !== 'payload') {
+    // The producer did NOT say so — the worker caught it. A 'case' hit means some
+    // enqueue site forgot the flag; 'lookup_failed' means we failed closed.
+    obs.increment('worker.behind_auth_derived', { source: behindAuthDecision.source });
+    runLog.log('run',
+      behindAuthDecision.source === 'case'
+        ? 'authenticated case — shared learning is off for this run (derived from the case; the queue payload did not carry the flag)'
+        : 'could not read the case\'s scope — treating the run as behind a login (shared learning off)',
+      { level: behindAuthDecision.source === 'case' ? 'info' : 'warn', data: { source: behindAuthDecision.source } });
+  }
+
   let loopResult;
   try {
     loopResult = await runStepLoop(runId, compiledSteps, {
       isCancelled,
       executeStep: (step, stepIndex, previousAfterPng, runContext) =>
-        executeStep(step, tabs.current, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext, runLog, attempt, (p) => { tabs.current = p; }, payload.behindAuth === true, payload.triggeredBy === 'testwriter', delta, deferredHeals),
+        executeStep(step, tabs.current, tenantId, runId, domain, stepIndex, previousAfterPng, stepIds[stepIndex] ?? null, runContext, runLog, attempt, (p) => { tabs.current = p; }, behindAuthDecision.behindAuth, payload.triggeredBy === 'testwriter', delta, deferredHeals),
       recordSkippedSteps: (steps, startIndex, reason) =>
         recordSkippedSteps(tenantId, runId, steps, startIndex, reason, stepIds, attempt),
       onStepFailed: (stepIndex, step) => {
