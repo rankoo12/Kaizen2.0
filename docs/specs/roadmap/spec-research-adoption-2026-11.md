@@ -9,8 +9,11 @@ for S4 — S4 keeps the prompt-cache scoping review.
 Updated: 2026-11-08 (latest) — S2.1 shipped (model routing + reasoning_effort
 guard + retirement warning, defaults unchanged); real-API smoke A/B done
 (Luna 10/10 = gpt-4o-mini 10/10, JSON mode OK, effort none OK; an overstated
-reasoning-cost claim corrected with measured numbers); the Luna flip is gated
-on the full-bench S2.2 A/B. See §S2 status.
+reasoning-cost claim corrected with measured numbers).
+Updated: 2026-11-08 (final) — S2.2 (the paid real-API A/B) CANCELLED by the
+owner: project rule is zero OpenAI spend, everything validated locally. The
+Luna flip becomes an operator env change before 2027-01-14 (runbook callout in
+spec-deployment §4); S2.3–S2.5 deferred. See §S2 status.
 Status: ACTIVE — this is the decision record for docs/research/2026-11-08.md
 and docs/research/2026-backfill.md. Items not listed under §2 or §3 were read
 and deliberately not adopted.
@@ -54,8 +57,8 @@ below is MEASURED by this harness, so it completes first. Owner: this session.
 ### S2 — LLM gateway modernization (3–4 days; hard-fails Jan 14 2027)
 
 **Status 2026-11-08 — S2.1 SHIPPED (plumbing, zero behavior change by default);
-S2.2–S2.5 below remain** (the separate "S2b" section further down is Playwright,
-unrelated). Facts re-verified against OpenAI's primary pages
+S2.2 CANCELLED, S2.3–S2.5 DEFERRED — see the bullets below** (the separate "S2b"
+section further down is Playwright, unrelated). Facts re-verified against OpenAI's primary pages
 (developers.openai.com deprecations + `gpt-6-luna` model page): `gpt-4o-2024-08-06`,
 `gpt-4o-2024-11-20` and `gpt-4o-mini-2024-07-18` shut down **2027-01-14**
 (announced 2026-10-14), replacement `gpt-6-luna` ($0.10 in / $0.01 cached /
@@ -74,15 +77,20 @@ real exposure was the runtime gateway's two HARDCODED `'gpt-4o-mini'` calls.
   deliberately unchanged** (gpt-4o-mini / gpt-4o): the request on the wire is
   byte-identical to before (verified by capturing raw HTTP bodies for default,
   Luna, an effort override, and an ignored override).
-- **S2.2 — the A/B that earns the flip (gated, PAID):** the local inbox answers
-  with a weak Claude model regardless of the requested model name, so it can prove
-  wire shape but NOT Luna's quality. Validating Luna needs real OpenAI calls on the
-  tenant key. **Cost, measured:** the whole archived request history (3,513 calls,
-  ~9.1M input tokens, every bench since the inbox started) would cost roughly $1–2
-  to replay on Luna — cost is not the constraint, discipline is. Acceptance for the
-  flip: FALSE-PASS stays 0, heal rates and the must-fail probes match the
-  haiku-floor baseline in campaign.jsonl.
-  - **Smoke A/B DONE 2026-11-08 (real API, ~$0.01, same 10 prompts through the real
+- **S2.2 — CANCELLED 2026-11-08 by the owner.** It was to be a paid, full-bench
+  A/B against the real API (estimated $1–2 to replay the whole archived history,
+  ~9.1M input tokens). Project rule instead: **zero OpenAI spend — everything is
+  validated locally on the Claude subscription.** The local inbox answers with a
+  weak Claude model regardless of the requested model name, so it can prove wire
+  shape but NOT Luna's quality; therefore Kaizen's tooling does not validate the
+  Luna flip and the defaults in `model-tier.ts` stay on gpt-4o-mini / gpt-4o. **The
+  flip is an operator action before 2027-01-14** — set `KAIZEN_LLM_MODEL_MINI` and
+  `KAIZEN_LLM_MODEL_FRONTIER` in production (config only, thanks to S2.1) and canary
+  it; the runbook callout is in spec-deployment §4, and both gateways warn at boot
+  while a retiring model is configured. What follows is the only evidence that
+  exists, recorded for the operator's confidence, not as an acceptance test.
+  - **Smoke A/B DONE 2026-11-08 (real API, ~$0.01 — taken BEFORE the rule was
+    restated; not to be repeated; same 10 prompts through the real
     gateway — 7 compileStep incl. the assertion-polarity and count traps + 3
     resolveElement incl. the 4-inert-decoys reactor and row-context disambiguation):**
     `gpt-4o-mini` 10/10, `gpt-6-luna` 10/10 (effort `none`), identical tokens
@@ -96,24 +104,20 @@ real exposure was the runtime gateway's two HARDCODED `'gpt-4o-mini'` calls.
     claim that `medium` would "bill reasoning tokens on every compile/resolve" was
     overstated. `none` stays (lowest latency, determinism, and function-calling
     requires it) but it is NOT a large cost saving. Small sample, easy prompts.
-  - **Still to do before the flip:** the full-bench A/B (nightmare + social + the
-    fleet at `--skip-analyze` with `KAIZEN_LLM_MODEL_MINI=gpt-6-luna`), then flip
-    the defaults in a small evidence-bearing PR. Deadline 2027-01-14; no rush, but
-    do not let it drift into January. **Design trap to avoid:** services read
+  - **Why no local substitute exists, for whoever reconsiders:** services read
     `OPENAI_BASE_URL` from `.env` (the local inbox) and each gateway uses ONE client
-    for chat AND embeddings — repointing the containers at api.openai.com would also
-    move embeddings from the bench's instant hash vectors to real semantic
-    embeddings, a confound that changes cache/semantic-guard behavior and breaks
-    comparability with the haiku-floor baseline. Do it instead by giving
-    `scripts/llm-inbox.ts` a chat-passthrough mode (chat completions forwarded to
-    the real API with the tenant key, embeddings still answered locally) and setting
-    only `KAIZEN_LLM_MODEL_MINI` on api/worker/testwriter through a temporary compose
-    override (the model env IS the product config under test; never leave `.env`
-    edited). Note the compose `CHOKIDAR_USEPOLLING` does not make the API's `tsx
-    watch` reload — restart containers after any change.
-- **S2.3** openai SDK v4.104 → v7 (its `ReasoningEffort` type predates `none`; the
-  single cast in `reasoningParamsFor` goes away). **S2.4** cache layout /
-  `prompt_cache_key` / cached-token billing. **S2.5** Flex tier for background calls.
+    for chat AND embeddings, so any real-provider test must also keep embeddings on
+    the bench's instant hash vectors (a chat-only passthrough in the inbox) or the
+    semantic-guard behavior changes and results stop being comparable with the
+    haiku-floor baseline. That design is what a future, explicitly-funded A/B would
+    need. Note the compose `CHOKIDAR_USEPOLLING` does not make the API's `tsx watch`
+    reload — restart containers after any change.
+- **S2.3 / S2.4 / S2.5 — DEFERRED, not cancelled.** openai SDK v4.104 → v7 (its
+  `ReasoningEffort` type predates `none`; the single cast in `reasoningParamsFor`
+  would go away), cache layout / `prompt_cache_key` / cached-token billing, Flex
+  tier for background calls. All three change real-provider behavior that cannot be
+  validated locally, v4.104 already works with Luna per the smoke test, and none has
+  a deadline — revisit when the provider path is next touched on purpose.
 
 Follows backfill §3.2 as written, with these repo-specific points:
 - Route openai.gateway.ts:135/284 through `getModelForTier()` — the retirement
