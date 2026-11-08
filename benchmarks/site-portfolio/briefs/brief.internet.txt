@@ -1,0 +1,15 @@
+This is "The Internet" — a collection of small, independent widget pages for
+practicing UI automation. Each page does exactly one thing.
+
+Write focused tests for these flows, one flow per test, nothing speculative:
+- /login: valid login with tomsmith / SuperSecretPassword!, see the success
+  flash, then logout and see the logout flash.
+- /login: wrong password shows "Your password is invalid!".
+- /checkboxes: check the first checkbox, verify it is checked.
+- /dynamic_loading/2: click Start, wait for "Hello World!" to render.
+- /inputs: type a number, verify the field contains it.
+- /notification_message_rendered: click the link, verify a notification
+  message appears.
+
+Keep every test 3-7 steps. Assert on visible text the page actually renders.
+Do not invent flows for pages not listed here.

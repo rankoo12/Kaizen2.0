@@ -1,0 +1,64 @@
+* { box-sizing: border-box; }
+body { margin: 0; font-family: system-ui, sans-serif; color: #e8e5f2; background: #14121c; }
+.boot { padding: 48px; color: #8a84a3; }
+
+/* ── chrome ──────────────────────────────────────────────────────────────── */
+.topbar { position: relative; background: #0d0b14; color: #fff; padding: 12px 24px; display: flex; align-items: center; gap: 22px; border-bottom: 1px solid #2a2440; }
+.brand { color: #ff5d73; font-weight: 800; font-size: 19px; text-decoration: none; letter-spacing: -.02em; }
+nav a { color: #b6aed1; text-decoration: none; margin-right: 15px; font-size: 14px; }
+nav a:hover { color: #fff; text-decoration: underline; }
+footer { text-align: center; color: #6a6384; font-size: 12px; padding: 26px; }
+
+/* ── layout ──────────────────────────────────────────────────────────────── */
+.layout { display: flex; gap: 18px; max-width: 1040px; margin: 0 auto; padding: 20px 16px 70px; align-items: flex-start; }
+.col-main { flex: 1; min-width: 0; max-width: 640px; }
+.col-side { flex: 0 0 320px; }
+.layout.one-col .col-main { margin: 0 auto; }
+@media (max-width: 900px) { .col-side { display: none; } }
+h1 { font-size: 24px; margin: 6px 0 14px; }
+h2 { font-size: 17px; margin-top: 0; }
+.card { background: #1d1a2b; border: 1px solid #2e2947; border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; }
+.muted { color: #8a84a3; font-size: 13px; }
+.btn { background: #c23b53; color: #fff; border: none; border-radius: 7px; padding: 9px 16px; font-size: 14px; cursor: pointer; }
+.btn:hover { background: #a82e45; }
+.btn.ghost { background: #26213b; color: #d8d2ea; border: 1px solid #3d3660; }
+.btn.ghost:hover { background: #302a4a; }
+.ok-line { margin: 10px 0 0; padding: 9px 12px; border-radius: 7px; background: #14301c; color: #8fe39d; border: 1px solid #2c6b3c; font-size: 13px; }
+.err-line { margin: 10px 0 0; padding: 9px 12px; border-radius: 7px; background: #3a1620; color: #ff9aa8; border: 1px solid #8a2f42; font-size: 13px; }
+input[type="text"], input[type="email"], input:not([type]) { background: #14121c; color: #e8e5f2; border: 1px solid #3d3660; border-radius: 7px; padding: 9px 11px; font: inherit; font-size: 14px; width: 100%; }
+
+/* ── trap 2: skeletons that mimic the final layout (same boxes, shimmer) ─── */
+.sk { border-radius: 8px; background: linear-gradient(90deg, #262238 25%, #332d4e 50%, #262238 75%); background-size: 200% 100%; animation: shimmer 1.1s infinite; }
+.sk-line { height: 14px; margin: 10px 0; }
+.sk-block { margin: 10px 0; }
+.sk-pill { display: inline-block; }
+.sk-row { height: 54px; margin: 8px 0; }
+.sk-ledger { height: 40px; margin: 4px 2px; }
+@keyframes shimmer { from { background-position: 200% 0; } to { background-position: -200% 0; } }
+
+/* ── trap 5: div soup — all five look EXACTLY the same ───────────────────── */
+.pill-row { display: flex; gap: 8px; flex-wrap: wrap; margin: 10px 0 4px; }
+.soup-btn { background: #26213b; color: #d8d2ea; border: 1px solid #3d3660; border-radius: 7px; padding: 9px 18px; font-size: 14px; cursor: pointer; user-select: none; }
+.soup-btn:hover { background: #302a4a; }
+
+/* ── trap 6: cookie wall — fixed, opaque, bottom third, eats clicks ──────── */
+.cookie-wall { position: fixed; left: 0; right: 0; bottom: 0; height: 33vh; z-index: 90; background: #0d0b14; border-top: 2px solid #c23b53; display: flex; align-items: center; justify-content: center; box-shadow: 0 -18px 50px rgba(0,0,0,.55); }
+.cookie-inner { max-width: 560px; padding: 0 24px; text-align: center; }
+.cookie-inner h3 { margin: 0 0 8px; font-size: 18px; }
+
+/* ── trap 7: churn feed rows ─────────────────────────────────────────────── */
+.feed-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 10px 12px; margin: 8px 0; background: #221e33; border: 1px solid #2e2947; border-radius: 8px; font-size: 14px; }
+
+/* ── trap 8: portal modal ────────────────────────────────────────────────── */
+.scrim { position: fixed; inset: 0; background: rgba(8, 6, 14, .6); display: flex; align-items: center; justify-content: center; z-index: 80; }
+.modal { background: #1d1a2b; border: 1px solid #3d3660; border-radius: 12px; padding: 24px; width: 90%; max-width: 420px; box-shadow: 0 22px 60px rgba(0,0,0,.5); }
+.modal h3 { margin-top: 0; }
+.modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+
+/* ── trap 9: ledger ──────────────────────────────────────────────────────── */
+.ledger-scroll { max-height: 60vh; min-height: 320px; overflow-y: auto; border: 1px solid #2e2947; border-radius: 8px; padding: 0 2px; }
+.ledger-row { height: 44px; display: flex; align-items: center; padding: 0 14px; font-size: 14px; border-bottom: 1px solid #262238; }
+
+/* ── trap 10: captcha ────────────────────────────────────────────────────── */
+.captcha-row { display: flex; align-items: center; gap: 10px; font-size: 15px; padding: 10px 12px; background: #221e33; border: 1px solid #2e2947; border-radius: 8px; cursor: pointer; }
+.captcha-row input { width: 18px; height: 18px; accent-color: #c23b53; }

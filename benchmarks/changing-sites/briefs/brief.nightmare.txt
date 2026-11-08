@@ -1,0 +1,19 @@
+This is "Blackout" — a deliberately hostile internal dashboard. Widgets load
+slowly and at different speeds (some take several seconds); skeleton
+placeholders render first. A cookie banner appears a few seconds after load
+and must be accepted (the "Accept the inevitable" button) before interacting
+with anything in the lower part of the page.
+
+Write focused tests for these flows, one flow per test:
+- Reactor: click the "Activate reactor" control, verify "Reactor online."
+- Rating: click a star rating, verify the "Rated N stars" confirmation.
+- Live feed: pin a feed row with its "Pin this" button, verify the
+  "Pinned:" confirmation appears.
+- Modal: click "Summon modal", type a short text, click "Seal it", verify the
+  "Sealed:" confirmation shows the text.
+- Ledger (#/ledger): verify the page shows ledger entries.
+- About (#/about): verify the text "Built to break the brave."
+
+Keep tests 3-6 steps. Widgets are SLOW — the content genuinely arrives, so
+assert on the real outcome text. Never test the "Secret vault" or the
+"I am not a robot" captcha — they are decorative.

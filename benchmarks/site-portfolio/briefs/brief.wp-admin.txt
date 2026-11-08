@@ -1,0 +1,13 @@
+This is the WordPress admin dashboard of "Kaizen Bench WP", explored as a
+signed-in administrator. You are already logged in when exploration starts.
+
+Write focused tests for these flows, one flow per test:
+- Dashboard: verify the "At a Glance" panel is shown on /wp-admin/.
+- Posts: open the Posts list from the admin menu, verify "Hello world!" is
+  listed.
+- New post draft: open Posts > Add New Post, type a title "Bench draft", save
+  the draft, verify "Draft saved" or the saved state is shown.
+- Profile: open Users > Profile, verify the "Nickname" field is present.
+
+Keep tests 3-7 steps. Assert on text the admin screens genuinely render. Do
+not deactivate plugins, change settings, or delete anything.

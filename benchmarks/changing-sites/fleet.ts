@@ -366,6 +366,113 @@ export const FLEET: SiteDef[] = [
       },
     ],
   },
+  {
+    // The portfolio campaign's §6 nightmare: every trap judged, nothing
+    // unfalsifiable. v1-only until the v2 mutation set lands (the run loop
+    // stops after r1 when versions[1] is absent — that IS the baseline run).
+    // Spec: docs/specs/bench/spec-site-portfolio.md §6
+    id: 'nightmare',
+    host: 'site-nightmare',
+    versions: ['v1', 'v2'],
+    probes: {
+      v1: { path: '/__version.txt', contains: 'v1' },
+      v2: { path: '/index.html', contains: 'nightmare-v2-marker' },
+    },
+    brief: 'briefs/brief.nightmare.txt',
+    analyze: { maxPages: 4, maxScenarios: 8 },
+    seedCases: [
+      {
+        name: 'SEED: Reactor activates despite four decoys',
+        path: '/',
+        steps: [
+          'navigate to http://site-nightmare/',
+          'click the "Activate reactor" button',
+          'verify the text "Reactor online." is shown',
+        ],
+      },
+      {
+        name: 'SEED: Cookie wall accepted, then the rating works',
+        path: '/',
+        steps: [
+          'navigate to http://site-nightmare/',
+          'click the "Accept the inevitable" button',
+          'click the 4 star rating',
+          'verify the text "Rated 4 stars" is shown',
+        ],
+      },
+      {
+        // Every below-fold seed accepts the cookie wall first — round 1 proved
+        // the overlay intercepts their clicks otherwise (and surfaced finding
+        // #11: the engine has no overlay-dismissal recovery of its own).
+        name: 'SEED: Subscribe inside the nested iframe',
+        path: '/',
+        steps: [
+          'navigate to http://site-nightmare/',
+          'click the "Accept the inevitable" button',
+          'type "bench@kaizen.local" in the email field of the subscribe form',
+          'click the "Subscribe" button',
+          'verify the text "Subscribed to the void." is shown',
+        ],
+      },
+      {
+        name: 'SEED: Pin a row in the churning live feed',
+        path: '/',
+        steps: [
+          'navigate to http://site-nightmare/',
+          'click the "Accept the inevitable" button',
+          'click the first "Pin this" button',
+          'verify the text "Pinned:" is shown',
+        ],
+      },
+      {
+        name: 'SEED: Portal modal seals the typed text',
+        path: '/',
+        steps: [
+          'navigate to http://site-nightmare/',
+          'click the "Accept the inevitable" button',
+          'click the "Summon modal" button',
+          'type "kaizen was here" in the modal text field',
+          'click the "Seal it" button',
+          'verify the text "Sealed: kaizen was here" is shown',
+        ],
+      },
+      {
+        name: 'SEED: Deep ledger row renders after scroll',
+        path: '/#/ledger',
+        steps: [
+          'navigate to http://site-nightmare/#/ledger',
+          'verify the text "Entry #333 — the hidden ledger line" is shown',
+        ],
+      },
+      {
+        name: 'SEED: About page is boring on purpose',
+        path: '/#/about',
+        steps: [
+          'navigate to http://site-nightmare/#/about',
+          'verify the text "Built to break the brave." is shown',
+        ],
+      },
+      {
+        name: 'SEED: Captcha fails honestly (must-fail)',
+        path: '/',
+        steps: [
+          'navigate to http://site-nightmare/',
+          'click the "Accept the inevitable" button',
+          'check the "I am not a robot" checkbox',
+          'verify the text "Verification passed" is shown',
+        ],
+      },
+      {
+        name: 'SEED: Closed vault stays closed (must-fail)',
+        path: '/',
+        steps: [
+          'navigate to http://site-nightmare/',
+          'click the "Secret vault" button',
+          'verify the text "The vault opens. It is empty." is shown',
+        ],
+      },
+    ],
+  },
 ];
 
 export function siteById(id: string): SiteDef {

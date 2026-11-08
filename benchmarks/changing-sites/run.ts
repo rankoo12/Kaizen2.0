@@ -108,6 +108,20 @@ async function benchSite(site: SiteDef, args: Args): Promise<string> {
   const authRef: AuthRef = { auth: await getAuth() };
   await grantBudget(authRef.auth.tenantId);
 
+  // Split-brain guard (2026-11-08): a TEMP cleanup ate the creds file once and
+  // getAuth silently registered a NEW tenant — the reused suites became
+  // invisible ("0 active cases") while the judge replayed STALE evidence for
+  // them. A state entry whose tenant is not ours is a repair job, never a
+  // silent re-register.
+  if (state[site.id] && state[site.id].tenantId !== authRef.auth.tenantId) {
+    throw new Error(
+      `[${site.id}] bench tenant mismatch: state.json says ${state[site.id].tenantId.slice(0, 8)}, ` +
+      `auth landed on ${authRef.auth.tenantId.slice(0, 8)} — the creds file was likely recreated. ` +
+      `Restore access to the original tenant (reset its user's scrypt hash, rewrite the TEMP creds file) ` +
+      `or deliberately delete this site's state entry to re-analyze under the new tenant.`,
+    );
+  }
+
   let suiteId = args.skipAnalyze ? state[site.id]?.suiteId : undefined;
 
   if (!suiteId) {
