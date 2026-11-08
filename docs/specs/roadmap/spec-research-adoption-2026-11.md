@@ -22,6 +22,9 @@ Updated: 2026-11-08 (S4a) — run-outcome-deferred heal persistence shipped
 Updated: 2026-11-08 (S3a) — oracle-strength lint + assertion-weakening guard
 shipped (the two S3 gates that need no model); measured on 1,465 generated
 cases. See §S3.
+Updated: 2026-11-08 (S3a-fix) — oracle-strength taxonomy corrected (state
+assertions are real oracles; only plain visible is weak) and the prevalence
+figures recorded in §S3 CORRECTED (the sign-in prefix had distorted them).
 Updated: 2026-11-08 (S4b) — the worker re-derives behindAuth from the case
 (defense in depth for any future enqueue site); prompt-cache tenant scoping
 review is what remains of S4's behindAuth boundary.
@@ -219,13 +222,24 @@ negative shape, determinism and the `click_random` loop; `oracle-audit.ts`'s
 `weakOracle` is a different thing (a post-run flag for "the terminal assertion's
 element was picked by the LLM resolver"). What was missing is a STATIC strength
 taxonomy, now `write/oracle-strength.ts`: strong = compares a concrete value
-(text / count / attribute), moderate = URL / title / absence of text, weak =
-boolean-only (visible / enabled / checked).
+(text / count / attribute) OR is a state assertion on a target an earlier step
+acted on ("state relative to a prior step"), moderate = URL / title / absence of
+text / a control's state or disappearance (checked / enabled / not-visible),
+weak = plain `assert_visible` (the element merely exists).
+**Corrected after shipping (S3a-fix):** the first cut called every boolean-only
+assertion weak, which flagged legitimate state-transition tests ("toggle the
+checkbox, verify it is checked", "click ×, verify the notification is gone")
+where the state IS the outcome — found by sampling real generated tests, and it
+also left a hole in the guard (a repair swapping `assert_checked` for
+`assert_visible` was not seen as weakening, since both ranked weak).
 - **Lint** (advisory — the finding rides into the judge's prompt and a REVISE
   sends it through the repair round): a POSITIVE scenario that ACTS and asserts
-  only boolean-only things. Scoped on purpose: a navigation-only test ("arrive at
-  the 404 page, heading visible") and a negative ("the error is visible") are
-  shapes the existing rules sanction; condemning them would re-open a fixed bug.
+  ONLY that an element is visible. Scoped on purpose: a navigation-only test
+  ("arrive at the 404 page, heading visible"), a negative ("the error is
+  visible") and any state assertion are shapes that are sanctioned or are real
+  oracles; condemning them would re-open a fixed bug. The finding's wording tells
+  the writer not to invent text: a stronger-looking assertion it cannot ground
+  just fails validation and costs yield.
 - **Assertion-weakening guard** in `judgeWithRepair`: a rewrite with fewer
   assertions OR lower total strength than the original is blocked before the
   re-judge — REVISE falls back to its original, REJECT stays rejected with the
@@ -234,12 +248,24 @@ boolean-only (visible / enabled / checked).
   blocked. The heal half of the research item needs no new code — the engine
   already refuses to certify an assertion healed onto a different element
   (`healCertifiesAssertion`).
-- **Measured on the 1,465 generated cases in the dev DB (compiled steps, no LLM):**
-  39.6% carry a value-bearing assertion, **46.2% assert at best a URL / title /
-  absence**, 14.2% are boolean-only, and the lint would flag at most 13.7%
-  (upper bound — the real lint also exempts negatives). So the lint is a signal
-  on roughly one test in eight, not a flood, and the larger weak-oracle population
-  is the URL/title-only tests — the natural next target.
+- **Measured on the generated cases in the dev DB (compiled steps, no LLM) —
+  CORRECTED.** The first figures I recorded here (39.6% strong / 46.2% "URL or
+  title only" / 14.2% boolean-only / lint ≤13.7%) were WRONG: authenticated-scope
+  cases carry a sign-in PREFIX whose `assert_url` is the login proof, and the
+  query counted it as the test's best oracle, hiding weak test bodies behind it
+  (and the "URL/title-only is the bigger population" conclusion was an artifact).
+  Re-measured on 1,404 cases with that prefix stripped (public cases have none):
+  roughly **60% asserted only boolean state in their body** — consistent with the
+  paper's 80% — and under the corrected taxonomy **39.8% are "visible-only after
+  an action"** (upper bound: negatives are exempt in the real lint; 23.2% if
+  additionally excluding visibility checks whose target names specific quoted
+  content), with another 6.1% state-only (now correctly NOT flagged). So the lint
+  is a signal on roughly **a third to two-fifths** of generated tests — large, and
+  the honest reading is that most of what Kaizen generates today asserts
+  existence rather than outcome. Because it is advisory it costs judge-evidence
+  and possibly extra repair rounds, not rejections; whether that is the right
+  cost is a tuning question to revisit with real yield numbers (a stronger
+  assertion must be GROUNDED, or it just fails validation).
 - **Still open, deliberately (each needs a model or labelled data we do not
   have):** judge "no evidence = Inconclusive" and per-criterion calls (prompt
   changes), cross-step symbolic oracles (a WRITE capability), judge validation
