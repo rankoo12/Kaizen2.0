@@ -62,6 +62,54 @@ export const STATE_CHANGING_ACTIONS = new Set([
   'press_key', 'drag_and_drop',
 ]);
 
+/**
+ * Actions whose effect on the control they TARGET can be read back, so that a
+ * no-op can be recognised. `type` is deliberately absent: re-typing identical
+ * text still fires `input`, and apps react to that (re-run a search, re-validate)
+ * — it may be a no-op on the value yet not on the page.
+ */
+export const NOOP_DETECTABLE_ACTIONS = new Set(['clear', 'check', 'uncheck', 'select']);
+
+type ControlReadingPage = {
+  $eval?: <R>(selector: string, fn: (el: Element) => R) => Promise<R>;
+};
+
+/**
+ * A comparable snapshot of a control's OWN state — value, checked, selected
+ * option — or null when it cannot be read (a missing or detached element, a page
+ * type without `$eval`). `$eval` does not wait, so an absent element answers at
+ * once rather than after Playwright's 30s default.
+ */
+export async function readControlState(page: unknown, selector: string): Promise<string | null> {
+  try {
+    const p = page as ControlReadingPage;
+    if (typeof p.$eval !== 'function') return null;
+    return await p.$eval(selector, (el) => {
+      const c = el as HTMLInputElement & HTMLSelectElement;
+      return JSON.stringify({
+        v: typeof c.value === 'string' ? c.value : null,
+        c: typeof c.checked === 'boolean' ? c.checked : null,
+        s: typeof c.selectedIndex === 'number' ? c.selectedIndex : null,
+      });
+    });
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Did this action leave the control it targeted exactly as it found it? Then it
+ * did nothing — "clear" on a box that was already empty, "check" on a box already
+ * ticked — and it cannot be credited with whatever else the page happened to do
+ * while it ran. Unknown (either reading missing) is never "unchanged": claiming a
+ * no-op wrongly would throw away real evidence.
+ */
+export function actionLeftControlUnchanged(
+  action: string, before: string | null, after: string | null,
+): boolean {
+  return NOOP_DETECTABLE_ACTIONS.has(action) && before !== null && after !== null && before === after;
+}
+
 /** Actions that replace the page outright, so the previous delta is meaningless. */
 export const DELTA_CLEARING_ACTIONS = new Set([
   'navigate', 'go_back', 'go_forward', 'reload', 'switch_tab', 'close_tab',

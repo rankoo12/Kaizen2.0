@@ -57,7 +57,8 @@ import { PlaywrightExecutionEngine } from '../modules/execution-engine/playwrigh
 import { PageChallengeDetector } from '../modules/execution-engine/challenge-detector';
 import {
   captureDeltaFull, captureDeltaBaseline, isDeltaScoped, pickDeltaMatch, summariseDelta,
-  STATE_CHANGING_ACTIONS, DELTA_CLEARING_ACTIONS, type DeltaSnapshot,
+  STATE_CHANGING_ACTIONS, DELTA_CLEARING_ACTIONS, NOOP_DETECTABLE_ACTIONS,
+  readControlState, actionLeftControlUnchanged, type DeltaSnapshot,
 } from '../modules/execution-engine/delta';
 import { HealingEngine } from '../modules/healing-engine/healing-engine';
 import { FallbackSelectorStrategy } from '../modules/healing-engine/strategies/fallback-selector.strategy';
@@ -1343,8 +1344,17 @@ async function executeStep(
   // back to Node rather than living on `window`, so the comparison survives the
   // navigation a submit causes. One evaluate, no model call.
   const dialogsBefore = delta.dialogs.count;
+  // The state of the control this action targets, read BEFORE it runs — so that
+  // an action which leaves it exactly as it found it can be recognised as a no-op
+  // afterwards (see captureWhatChanged). Only for actions whose effect on their
+  // own target is readable; null means "could not tell", never "unchanged".
+  const noopTargetSelector = selectorSet.selectors[0]?.selector ?? null;
+  let controlBefore: string | null = null;
   if (delta.enabled && STATE_CHANGING_ACTIONS.has(step.action)) {
     delta.baseline = await captureDeltaBaseline(page);
+    if (noopTargetSelector && NOOP_DETECTABLE_ACTIONS.has(step.action)) {
+      controlBefore = await readControlState(page, noopTargetSelector);
+    }
   }
 
   try {
@@ -1411,6 +1421,36 @@ async function executeStep(
       return;
     }
     if (!STATE_CHANGING_ACTIONS.has(step.action) || !delta.baseline) return;
+
+    // An action that left the control it targeted exactly as it found it did
+    // NOTHING, and must not be credited with whatever else the page did while it
+    // ran. Without this, "clear a box that is already empty" passed whenever the
+    // page happened to be rendering on its own at that moment: the baseline was
+    // taken before that render, the settle-then-diff after it, so the page's own
+    // late rows landed in "what changed" and a later assertion matched them
+    // (finding #17; found by the stress site's vacuous-clear must-fail guard,
+    // which passed in one round of three). The baseline is dropped as well:
+    // the assertion side re-diffs an empty delta against it, which would
+    // re-attribute the same late render a second time.
+    if (controlBefore !== null && noopTargetSelector) {
+      const controlAfter = await readControlState(page, noopTargetSelector);
+      if (actionLeftControlUnchanged(step.action, controlBefore, controlAfter)) {
+        delta.baseline = null;
+        delta.last = {
+          elements: [],
+          removed: 0,
+          afterStep: step.rawText,
+          dialogAccepted: delta.dialogs.count > dialogsBefore,
+        };
+        obs.increment('worker.delta_noop_action', { action: step.action });
+        runLog?.log('execute',
+          `what changed: nothing — "${(step.targetDescription ?? step.rawText).slice(0, 60)}" was left exactly as it was, ` +
+          'so anything the page did on its own is not this step\'s doing',
+          { stepIndex, data: { noop: true, action: step.action } });
+        return;
+      }
+    }
+
     // The click has returned; the app may still be rendering what it did.
     await settleDom(page);
     const after = await captureDeltaFull(page, delta.baseline);
